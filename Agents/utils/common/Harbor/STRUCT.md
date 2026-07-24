@@ -41,6 +41,7 @@ Agents/utils/common/Harbor/
     │   ├── plan_generation.py  # Task summary and plan generation flow
     │   ├── planning_context/   # Runtime inventory and workspace evidence
     │   ├── prompts.py          # Task and plan agent contracts
+    │   ├── reporter.py         # Machine report and deterministic Markdown rendering
     │   ├── validation.py       # Plan, execution, and verification validation
     │   └── verifier.py         # Deterministic sampled verification
     ├── online_rule_analyzer.py # Optional console-only online analysis
@@ -72,6 +73,14 @@ shared fixtures in the non-discovered `fixer_test_support.py`.
 Harbor results back to Analyzer task identities, and produces fixed-rule
 verification statuses. These stages do not invoke agents. Their tests live in
 `test_harbor_fixer_exec.py` and `test_harbor_fixer_verification.py`.
+
+## Harbor Fixer Reporting
+
+`reporter.py` joins Analyzer, Fix Plan, execution, verification, and optional
+baseline Monitor artifacts. Structured classifications remain deterministic;
+Pi produces only a bounded summary. Reporting tests live in
+`test_harbor_fixer_report.py`, while cross-stage agent schema and retry
+contracts live in `test_harbor_fixer_agent_contracts.py`.
 
 ```text
 Agents/utils/rl/

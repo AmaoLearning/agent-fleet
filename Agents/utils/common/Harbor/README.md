@@ -301,6 +301,26 @@ line-to-task mapping. Verification writes
 `verification-smoke-selection.json`, `verification-smoke-tasks.txt`, and
 `verification-result-latest.json`.
 
+### Generate a report
+
+```bash
+python3 Agents/utils/common/Harbor/scripts/fixer.py \
+  --report-only \
+  --verification-result /path/to/fixer-output/verification-result-latest.json \
+  --analyzer-output /path/to/analyzer-output \
+  --output-dir /path/to/fixer-output \
+  --pi-model "$HARBOR_FIXER_MODEL" \
+  --pi-base-url "$BASE_URL" \
+  --baseline-run-dir /path/to/old-harbor-run
+```
+
+Reporter keeps task, plan, execution, and verification facts code-owned. A
+no-tool Pi agent may generate only the bounded summary. The machine contract is
+written to `fix-report-latest.json`; a deterministic, secret-redacted Markdown
+view is written to `fix-report-latest.md`. If summary generation fails, both
+reports are still produced with a failed deterministic summary and recorded
+errors.
+
 ## More Details
 
 Architecture, script roles, task resolution, and full variable descriptions are in [STRUCT.md](./STRUCT.md).

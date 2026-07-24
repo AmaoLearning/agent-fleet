@@ -24,8 +24,9 @@ from harbor_fixer.planning_context.runtime_inventory import collect_runtime_inve
 from harbor_fixer.planning_context.runtime_inventory import _path_state as inspect_runtime_path  # noqa: E402
 from harbor_fixer.planning_context.workspace_evidence import collect_workspace_evidence  # noqa: E402
 from harbor_fixer.planning_context.workspace_evidence import _path_state as inspect_workspace_path  # noqa: E402
-from harbor_fixer.prompts import MAIN_AGENT_PROMPT, TASK_SUBAGENT_PROMPT  # noqa: E402
-from harbor_fixer.validation import ValidationError, validate_fix_plan_set, validate_task_summary, validate_verification_result  # noqa: E402
+from harbor_fixer.prompts import MAIN_AGENT_PROMPT, REPORT_MAIN_AGENT_PROMPT, TASK_SUBAGENT_PROMPT  # noqa: E402
+from harbor_fixer.reporter import generate_report_summary, run_report_from_paths  # noqa: E402
+from harbor_fixer.validation import ValidationError, validate_fix_plan_set, validate_fix_report, validate_task_summary, validate_verification_result  # noqa: E402
 from harbor_fixer.verifier import run_verification_from_paths  # noqa: E402
 
 
@@ -194,6 +195,28 @@ class MainInvoker:
         return json.dumps(plan)
 
 
+def make_report_summary(status: str = "success") -> dict:
+    return {
+        "schema_version": 1,
+        "kind": "harbor_fixer_report_summary",
+        "status": status,
+        "text": "Fixture fix report summary.",
+        "highlights": ["1 planned task fixed"],
+        "caveats": [],
+        "generation_errors": [],
+    }
+
+
+class ReportInvoker:
+    def __init__(self, output: str | None = None) -> None:
+        self.output = output
+        self.calls: list[tuple[str, dict, int, str]] = []
+
+    def invoke(self, prompt: str, payload: dict, *, attempt: int, label: str) -> str:
+        self.calls.append((prompt, payload, attempt, label))
+        return self.output or json.dumps(make_report_summary())
+
+
 def make_fix_plan() -> dict:
     return {
         "schema_version": 1,
@@ -346,17 +369,24 @@ def write_smoke_rerun_script(path: Path, statuses: dict[str, str]) -> Path:
     return path
 
 
-def write_verification_fixture(root_path: Path) -> tuple[Path, Path, Path]:
-    analyzer_dir = write_analyzer_fixture(root_path, count=1)
-    output_dir = root_path / "fixer"
-    plan_path = root_path / "fix-plan-latest.json"
-    exec_path = root_path / "exec-result-latest.json"
-    write_json(plan_path, make_fix_plan())
-    write_json(exec_path, make_exec_result())
-    run_dir = write_harbor_run_fixture(root_path, ["task-1"], [("1", "task-1", "1.0", "", "")], [])
-    result = run_verification_from_paths(plan_path, exec_path, analyzer_dir, run_dir, output_dir, monitor_policy="off")
+def write_verification_fixture(root: Path) -> tuple[Path, Path, Path]:
+    analyzer, output, plan, execution = write_verification_inputs(root)
+    run_dir = write_harbor_run_fixture(
+        root,
+        ["task-1"],
+        [("1", "task-1", "1.0", "", "")],
+        [],
+    )
+    result = run_verification_from_paths(
+        plan,
+        execution,
+        analyzer,
+        run_dir,
+        output,
+        monitor_policy="off",
+    )
     validate_verification_result(result)
-    return analyzer_dir, output_dir, output_dir / "verification-result-latest.json"
+    return analyzer, output, output / "verification-result-latest.json"
 
 
 def write_fixture_pi(path: Path) -> Path:
@@ -380,6 +410,8 @@ def write_fixture_pi(path: Path) -> Path:
                 "      'strongest_evidence': [{'path': evidence.get('path', '/tmp/evidence.log'), 'line_start': evidence.get('line_start', 1), 'line_end': evidence.get('line_end', 1), 'summary': evidence.get('fact', 'fixture evidence')}],",
                 "      'fix_direction': {'suggested_scope': analyzer['scope'], 'summary': analyzer['root_cause_summary'], 'why_this_should_fix_it': 'fixture smoke test'},",
                 "      'grouping_key_hint': analyzer['root_cause_code'], 'confidence': 'high', 'unknowns': []}",
+                "elif payload['kind'] == 'harbor_fixer_report_summary_input':",
+                "    result = {'schema_version': 1, 'kind': 'harbor_fixer_report_summary', 'status': 'success', 'text': 'cli report summary', 'highlights': [], 'caveats': [], 'generation_errors': []}",
                 "else:",
                 "    summaries = payload['task_summaries']",
                 "    result = {",
