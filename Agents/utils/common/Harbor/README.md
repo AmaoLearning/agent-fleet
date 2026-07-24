@@ -321,6 +321,26 @@ view is written to `fix-report-latest.md`. If summary generation fails, both
 reports are still produced with a failed deterministic summary and recorded
 errors.
 
+### Process multiple benchmarks
+
+Batch planning and reporting use a versioned manifest containing independent
+benchmark entries:
+
+```bash
+python3 Agents/utils/common/Harbor/scripts/fixer.py \
+  --batch-plan-only \
+  --batch-manifest /path/to/fixer-batch-manifest.json \
+  --output-dir /path/to/batch-output \
+  --pi-model "$HARBOR_FIXER_MODEL" \
+  --pi-base-url "$BASE_URL" \
+  --benchmark-concurrency 4
+```
+
+Use `--batch-report-only` for report manifests. A failure is isolated to its
+benchmark, result ordering follows the manifest, and `batch-result-latest.json`
+reports `success`, `partial_failed`, or `failed`. Task-agent concurrency within
+one benchmark and benchmark concurrency are independent limits.
+
 ## More Details
 
 Architecture, script roles, task resolution, and full variable descriptions are in [STRUCT.md](./STRUCT.md).

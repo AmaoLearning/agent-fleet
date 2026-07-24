@@ -36,6 +36,7 @@ Agents/utils/common/Harbor/
     │   ├── agent_invocation.py # Fixer prompt assembly and Pi adapter
     │   ├── analyzer_inputs.py  # Analyzer artifact to task-input translation
     │   ├── artifact_io.py      # JSON, JSONL, and text artifact I/O
+    │   ├── batch.py            # Concurrent benchmark plan/report processing
     │   ├── executor.py         # Ordered Fix Plan command execution
     │   ├── harbor_run_state.py # Harbor task and monitor-state inspection
     │   ├── plan_generation.py  # Task summary and plan generation flow
@@ -81,6 +82,12 @@ baseline Monitor artifacts. Structured classifications remain deterministic;
 Pi produces only a bounded summary. Reporting tests live in
 `test_harbor_fixer_report.py`, while cross-stage agent schema and retry
 contracts live in `test_harbor_fixer_agent_contracts.py`.
+
+## Harbor Fixer Batch Processing
+
+`batch.py` applies plan or report stages to manifest entries with bounded
+benchmark concurrency, failure isolation, stable result order, and one
+aggregate result artifact. Its tests live in `test_harbor_fixer_batch.py`.
 
 ```text
 Agents/utils/rl/

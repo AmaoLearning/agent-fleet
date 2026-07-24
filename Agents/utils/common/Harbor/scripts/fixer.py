@@ -11,6 +11,7 @@ from pathlib import Path
 from harbor_fixer.agent_invocation import PiAgentInvoker, PiInvocationConfig
 from harbor_fixer.analyzer_inputs import build_task_inputs
 from harbor_fixer.artifact_io import write_json, write_text
+from harbor_fixer.batch import run_batch_plan_from_manifest, run_batch_report_from_manifest
 from harbor_fixer.executor import run_fix_exec_from_plan
 from harbor_fixer.plan_generation import run_plan_generation
 from harbor_fixer.prompts import (
@@ -54,9 +55,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pi-api-key-env", default="HARBOR_FIXER_API_KEY")
     parser.add_argument("--timeout", type=int, default=900)
     parser.add_argument("--max-concurrency", type=int, default=4)
+    parser.add_argument("--benchmark-concurrency", type=int, default=4)
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--write-prompts", action="store_true")
     parser.add_argument("--exec-only", action="store_true")
+    parser.add_argument("--batch-plan-only", action="store_true")
+    parser.add_argument("--batch-report-only", action="store_true")
+    parser.add_argument("--batch-manifest", type=Path)
     parser.add_argument("--fix-plan", type=Path)
     parser.add_argument("--workspace-root", type=Path, default=Path("."))
     parser.add_argument("--verify-only", action="store_true")
@@ -78,6 +83,8 @@ def main() -> int:
     args = parse_args()
     if args.max_concurrency <= 0:
         raise SystemExit("--max-concurrency must be positive")
+    if args.benchmark_concurrency <= 0:
+        raise SystemExit("--benchmark-concurrency must be positive")
     if args.timeout <= 0:
         raise SystemExit("--timeout must be positive")
     if args.verification_task_limit_per_plan <= 0:
@@ -87,18 +94,44 @@ def main() -> int:
         args.exec_only,
         args.verify_only,
         args.report_only,
+        args.batch_plan_only,
+        args.batch_report_only,
     ]
     if sum(1 for selected in selected_modes if selected) > 1:
         raise SystemExit(
-            "--prepare-only, --exec-only, --verify-only, and --report-only are mutually exclusive"
+            "--prepare-only, --exec-only, --verify-only, --report-only, --batch-plan-only, "
+            "and --batch-report-only are mutually exclusive"
         )
     args.output_dir.mkdir(parents=True, exist_ok=True)
     if args.write_prompts:
-        if args.report_only:
+        if args.report_only or args.batch_report_only:
             write_text(args.output_dir / "prompts" / "report-main-agent-prompt.md", REPORT_MAIN_AGENT_PROMPT)
         else:
             write_text(args.output_dir / "prompts" / "task-subagent-prompt.md", TASK_SUBAGENT_PROMPT)
             write_text(args.output_dir / "prompts" / "main-agent-prompt.md", MAIN_AGENT_PROMPT)
+    if args.batch_plan_only:
+        if args.batch_manifest is None:
+            raise SystemExit("--batch-manifest is required with --batch-plan-only")
+        result = run_batch_plan_from_manifest(
+            args.batch_manifest,
+            args.output_dir,
+            pi_config=build_pi_config(args),
+            max_concurrency=args.max_concurrency,
+            benchmark_concurrency=args.benchmark_concurrency,
+            workspace_root=args.workspace_root,
+        )
+        return 0 if result["status"] == "success" else 1
+    if args.batch_report_only:
+        if args.batch_manifest is None:
+            raise SystemExit("--batch-manifest is required with --batch-report-only")
+        result = run_batch_report_from_manifest(
+            args.batch_manifest,
+            args.output_dir,
+            pi_config=build_pi_config(args),
+            benchmark_concurrency=args.benchmark_concurrency,
+            baseline_monitor_policy=args.baseline_monitor_policy,
+        )
+        return 0 if result["status"] == "success" else 1
     if args.exec_only:
         if args.fix_plan is None:
             raise SystemExit("--fix-plan is required with --exec-only")

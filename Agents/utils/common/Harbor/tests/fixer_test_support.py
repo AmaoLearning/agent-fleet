@@ -18,6 +18,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from harbor_fixer.agent_invocation import PiAgentInvoker, PiInvocationConfig  # noqa: E402
 from harbor_fixer.analyzer_inputs import build_task_inputs  # noqa: E402
+from harbor_fixer.batch import run_batch_plan_from_manifest, run_batch_report_from_manifest  # noqa: E402
 from harbor_fixer.executor import build_exec_input, run_fix_exec  # noqa: E402
 from harbor_fixer.plan_generation import collect_task_summaries, request_fix_plan, run_plan_generation  # noqa: E402
 from harbor_fixer.planning_context.runtime_inventory import collect_runtime_inventory  # noqa: E402
