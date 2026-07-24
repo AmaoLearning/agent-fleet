@@ -31,6 +31,11 @@ Agents/utils/common/Harbor/
     │   ├── evaluator.py        # Compose one monitor sample
     │   ├── contracts.py        # User, analyzer, and runner output contracts
     │   └── runner.py           # Control commands, retries, and follow loop
+    ├── harbor_fixer/
+    │   ├── analyzer_inputs.py  # Analyzer artifact to task-input translation
+    │   ├── artifact_io.py      # JSON, JSONL, and text artifact I/O
+    │   ├── planning_context/   # Runtime inventory and workspace evidence
+    │   └── validation.py       # Analyzer, task-summary, and Fix Plan validation
     ├── online_rule_analyzer.py # Optional console-only online analysis
     └── write_harbor_registry_summary.py # Native registry summary writer
 ```
@@ -43,6 +48,15 @@ in the environment as `HARBOR_ANALYZER_*` variables.
 JSON-event validation, final JSON extraction, and provenance shared by Harbor
 Pi callers. Analyzer-specific tool access, path gating, prompts, artifact
 locations, and error compatibility remain in `harbor_analyzer/pi.py`.
+
+## Harbor Fixer Planning Context
+
+The Fixer foundation validates Analyzer handoff artifacts and builds a bounded,
+redacted planning context without invoking an agent. It records runtime
+inventory and selected workspace evidence for later plan generation. Analyzer
+inputs are selected through `analyzer-artifacts-latest.json`; Fixer reads the
+current env/infra and evidence snapshot for each handover without depending on
+the deprecated flat latest-report files.
 
 ```text
 Agents/utils/rl/
