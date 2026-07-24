@@ -30,6 +30,21 @@ Agents/utils/common/Harbor/
     │   ├── evaluator.py        # Compose one monitor sample
     │   ├── contracts.py        # User, analyzer, and runner output contracts
     │   └── runner.py           # Control commands, retries, and follow loop
+    ├── fixer.py                # Fixer MVP CLI entrypoint
+    ├── harbor_fixer/
+    │   ├── artifacts.py        # Analyzer output parsing and task input assembly
+    │   ├── batch.py            # Benchmark-level batch plan/report orchestration
+    │   ├── environment.py      # Bounded read-only host, dependency, and evidence probes
+    │   ├── executor.py         # Stage-2 fix command execution and logs
+    │   ├── orchestrator.py     # Task subagent dispatch, validation, and plan generation
+    │   ├── pi_runtime.py       # Isolated Pi process, event, JSON, and provenance boundary
+    │   ├── prompts.py          # Task, planning, report, and validation-retry prompts
+    │   ├── reporter.py         # Stage-4 JSON contract, Markdown rendering, and summary-agent boundary
+    │   ├── run_artifacts.py    # Shared Harbor run and monitor artifact collection
+    │   ├── runner.py           # Pi child-process runner for Stage-1/4 agent calls
+    │   ├── target_context.py   # Deterministic bounded workspace and Analyzer evidence context
+    │   ├── verifier.py         # Stage-3 code-only smoke verification and result collection
+    │   └── validation.py       # Stdlib schema checks for fixer JSON contracts
     ├── online_rule_analyzer.py # Optional console-only online analysis
     └── write_harbor_registry_summary.py # Native registry summary writer
 ```
@@ -37,6 +52,70 @@ Agents/utils/common/Harbor/
 Analyzer architecture and output boundaries are documented in
 [ANALYZER_ARCHITECTURE.md](ANALYZER_ARCHITECTURE.md). Analyzer credentials stay
 in the environment as `HARBOR_ANALYZER_*` variables.
+
+## Harbor Fixer Flow
+
+| Stage | Owner | Agent use | Primary outputs |
+| --- | --- | --- | --- |
+| Plan | `artifacts.py`, `environment.py`, `target_context.py`, `orchestrator.py` | No-tool task Pi agents summarize tasks; one no-tool main Pi agent creates plans | `target-environment.json`, `target-context.json`, `main-agent-input.json`, `fix-plan-latest.json` |
+| Exec | `executor.py` | None | `exec-input.json`, `exec-result-latest.json`, `command-logs/` |
+| Verification | `verifier.py`, `run_artifacts.py` | None | `verification-smoke-tasks.txt`, `verification-smoke-selection.json`, `verification-result-latest.json` |
+| Report | `reporter.py`, `run_artifacts.py` | One no-tool Pi agent writes only the bounded human summary | `report-input.json`, `fix-report-latest.json`, `fix-report-latest.md`, optional monitor snapshots |
+
+Stage 1 performs deterministic inspection before any model call. Environment
+probes cover command paths and versions, Python modules, uv tool environments,
+Docker/Compose/daemon state, repository paths, and Analyzer evidence-file
+metadata. Target context adds bounded workspace entries, project manifests, and
+redacted Analyzer evidence excerpts. Sensitive, binary, oversized, missing, or
+unreadable evidence is skipped or represented as `unavailable`; Pi receives the
+resulting JSON and no filesystem tools.
+
+Task Pi agents use `thinking=off` and only compress one task into the validated
+task-summary contract. The planning and report agents retain the configured
+thinking level. Every agent attempt runs independently through
+`harbor_fixer/pi_runtime.py`; no Pi session, extension, skill, prompt template,
+context file, or built-in tool is shared or enabled.
+
+Batch planning and reporting are implemented in `batch.py`. A benchmark failure
+is isolated from sibling items, results retain manifest order, and the aggregate
+status is `success`, `partial_failed`, or `failed`. Task-agent concurrency
+within one benchmark and benchmark-level concurrency are separate limits.
+
+Verification samples successfully executed plan tasks with a stable hash. The
+generated `TASK_SOURCE_FILE` is an ordered contract: the rerun wrapper must
+consume it unchanged because line positions are the smoke-task indexes used to
+map Harbor results back to Analyzer tasks.
+
+Report facts and status classification are code-owned. Pi may only generate the
+bounded human summary. `reporter.py` preserves the JSON machine contract and
+deterministically renders a Markdown report from Analyzer root causes, Fix Plan
+commands and reasoning, Exec outcomes, Verification before/after facts, sampled
+task results, and stage errors. Secret-like command values are redacted in the
+Markdown output. After repeated provider or schema failures, the reporter emits
+a deterministic non-empty fallback summary, records the agent errors, and
+leaves task/plan classifications unchanged. Batch report entries expose the
+paths of both report formats.
+
+## Fixer Pi Runtime
+
+`harbor_fixer/pi_runtime.py` owns the process and protocol mechanics below the
+Fixer agent adapter. It remains in the Fixer package because no other Harbor
+component imports it:
+
+1. Normalize the provider URL and create an isolated Pi `models.json`.
+2. Build a minimal environment and optional gateway-specific `NO_PROXY`.
+3. Launch one process group with explicit tools/thinking/context restrictions.
+4. Persist a compact JSONL stream while preserving final messages, lifecycle,
+   retry, and tool evidence.
+5. Validate process/session/turn lifecycle, extract the final JSON object, map
+   provider and truncation failures to stable reason codes, and return
+   provenance.
+6. Kill the whole process group on timeout so child processes are not leaked.
+
+It intentionally does not understand Analyzer/Fixer schemas or Harbor task
+semantics. `harbor_fixer/runner.py` composes the Fixer prompt and payload, calls
+this runtime, writes Fixer-specific provenance paths, and turns runtime block
+reasons into agent-attempt errors.
 
 ```text
 Agents/utils/rl/

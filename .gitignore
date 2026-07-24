@@ -27,6 +27,13 @@ Tasks/clawBio/cache/
 Tasks/clawBio/results/
 scripts/logs/
 
+# Harbor Fixer local smoke-test reports and outputs
+Agents/utils/common/Harbor/tests/harbor_fixer_*_report.md
+Agents/utils/common/Harbor/tests/harbor_fixer_*_results/
+Agents/utils/common/Harbor/tests/harbor_fixer_*_output/
+Agents/utils/common/Harbor/tests/fixer-output*/
+Agents/utils/common/Harbor/tests/fixer-results*/
+
 # Logs
 *.log
 
