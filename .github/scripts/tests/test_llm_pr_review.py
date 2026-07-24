@@ -229,8 +229,12 @@ class ApiClientTest(unittest.TestCase):
         self.assertEqual(client.review("system", "diff"), {"findings": []})
 
         request = opener.call_args.args[0]
+        self.assertEqual(
+            request.full_url,
+            "https://example.invalid/v3/chat/completions",
+        )
         self.assertEqual(request.get_header("Authorization"), "Bearer secret-value")
-        self.assertEqual(opener.call_args.kwargs["timeout"], 90)
+        self.assertEqual(opener.call_args.kwargs["timeout"], 600)
         body = json.loads(request.data)
         self.assertEqual(body["model"], "test-model")
         self.assertEqual(body["temperature"], 0.1)
@@ -626,17 +630,15 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertNotIn("pull_request.head.ref", workflow)
 
     def test_workflow_has_least_permissions_and_base_checkout(self) -> None:
-        workflow = SCRIPT_DIR.parent.joinpath("workflows/llm-pr-review.yml").read_text()
-        reusable = SCRIPT_DIR.parent.joinpath(
-            "workflows/reusable-llm-pr-review.yml"
-        ).read_text()
-
-        self.assertIn("contents: read", workflow)
-        self.assertIn("pull-requests: write", workflow)
-        self.assertNotIn("issues: write", workflow)
-        self.assertIn("cancel-in-progress: true", workflow)
-        self.assertIn("pull_request.base.sha", reusable)
-        self.assertIn("persist-credentials: false", reusable)
+        for name in ("llm-pr-review.yml", "self-hosted-llm-pr-review.yml"):
+            workflow = SCRIPT_DIR.parent.joinpath("workflows", name).read_text()
+            with self.subTest(workflow=name):
+                self.assertIn("contents: read", workflow)
+                self.assertIn("pull-requests: write", workflow)
+                self.assertNotIn("issues: write", workflow)
+                self.assertIn("cancel-in-progress: true", workflow)
+                self.assertIn("pull_request.base.sha", workflow)
+                self.assertIn("persist-credentials: false", workflow)
 
 
 if __name__ == "__main__":
