@@ -11,8 +11,13 @@ from pathlib import Path
 from harbor_fixer.agent_invocation import PiAgentInvoker, PiInvocationConfig
 from harbor_fixer.analyzer_inputs import build_task_inputs
 from harbor_fixer.artifact_io import write_json, write_text
+from harbor_fixer.executor import run_fix_exec_from_plan
 from harbor_fixer.plan_generation import run_plan_generation
-from harbor_fixer.prompts import MAIN_AGENT_PROMPT, TASK_SUBAGENT_PROMPT
+from harbor_fixer.prompts import (
+    MAIN_AGENT_PROMPT,
+    TASK_SUBAGENT_PROMPT,
+)
+from harbor_fixer.verifier import run_verification_from_paths
 
 
 def _default_model() -> str:
@@ -49,7 +54,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-concurrency", type=int, default=4)
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--write-prompts", action="store_true")
+    parser.add_argument("--exec-only", action="store_true")
+    parser.add_argument("--fix-plan", type=Path)
     parser.add_argument("--workspace-root", type=Path, default=Path("."))
+    parser.add_argument("--verify-only", action="store_true")
+    parser.add_argument("--exec-result", type=Path)
+    parser.add_argument("--verification-run-dir", type=Path)
+    parser.add_argument("--rerun-command", default=None)
+    parser.add_argument("--monitor-policy", choices=["auto", "on", "off"], default="auto")
+    parser.add_argument("--monitor-wait-timeout", type=int, default=3600)
+    parser.add_argument("--monitor-poll-interval", type=float, default=30.0)
+    parser.add_argument("--verification-task-limit-per-plan", type=int, default=2)
     return parser.parse_args()
 
 
@@ -59,12 +74,50 @@ def main() -> int:
         raise SystemExit("--max-concurrency must be positive")
     if args.timeout <= 0:
         raise SystemExit("--timeout must be positive")
+    if args.verification_task_limit_per_plan <= 0:
+        raise SystemExit("--verification-task-limit-per-plan must be positive")
+    selected_modes = [
+        args.prepare_only,
+        args.exec_only,
+        args.verify_only,
+    ]
+    if sum(1 for selected in selected_modes if selected) > 1:
+        raise SystemExit(
+            "--prepare-only, --exec-only, and --verify-only are mutually exclusive"
+        )
     args.output_dir.mkdir(parents=True, exist_ok=True)
     if args.write_prompts:
         write_text(args.output_dir / "prompts" / "task-subagent-prompt.md", TASK_SUBAGENT_PROMPT)
         write_text(args.output_dir / "prompts" / "main-agent-prompt.md", MAIN_AGENT_PROMPT)
+    if args.exec_only:
+        if args.fix_plan is None:
+            raise SystemExit("--fix-plan is required with --exec-only")
+        result = run_fix_exec_from_plan(args.fix_plan, args.output_dir, args.workspace_root)
+        return 0 if result["status"] == "success" else 1
+    if args.verify_only:
+        if args.fix_plan is None:
+            raise SystemExit("--fix-plan is required with --verify-only")
+        if args.exec_result is None:
+            raise SystemExit("--exec-result is required with --verify-only")
+        if args.analyzer_output is None:
+            raise SystemExit("--analyzer-output is required with --verify-only")
+        if args.verification_run_dir is None:
+            raise SystemExit("--verification-run-dir is required with --verify-only")
+        result = run_verification_from_paths(
+            args.fix_plan,
+            args.exec_result,
+            args.analyzer_output,
+            args.verification_run_dir,
+            args.output_dir,
+            rerun_command=args.rerun_command,
+            monitor_policy=args.monitor_policy,
+            monitor_wait_timeout=args.monitor_wait_timeout,
+            monitor_poll_interval=args.monitor_poll_interval,
+            verification_task_limit_per_plan=args.verification_task_limit_per_plan,
+        )
+        return 0 if result["status"] in {"fixed", "partially_fixed"} else 1
     if args.analyzer_output is None:
-        raise SystemExit("--analyzer-output is required")
+        raise SystemExit("--analyzer-output is required unless --exec-only is used")
     if args.prepare_only:
         task_inputs, source = build_task_inputs(args.analyzer_output)
         write_json(args.output_dir / "source.json", source)

@@ -16,6 +16,12 @@ FIX_SCOPES = {"task", "benchmark", "host"}
 SUMMARY_SCOPES = {"task", "benchmark", "host", "unknown"}
 SCOPE_AGREEMENTS = {"agree", "unclear", "disagree"}
 CONFIDENCE_LABELS = {"high", "medium", "low"}
+EXEC_STATUSES = {"success", "partial_failed", "failed"}
+EXEC_COMMAND_STATUSES = {"success", "failed", "skipped"}
+MONITOR_POLICIES = {"auto", "on", "off"}
+VERIFICATION_STATUSES = {"fixed", "partially_fixed", "not_fixed", "inconclusive", "exec_failed"}
+TASK_VERIFICATION_STATUSES = {"fixed", "not_fixed", "unknown", "not_complete", "not_sampled", "exec_failed"}
+TASK_COMPLETE_STATUSES = {"complete_success", "complete_failed", "complete_unknown", "not_complete"}
 def require_dict(value: Any, name: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValidationError(f"{name} must be an object")
@@ -149,3 +155,87 @@ def validate_fix_plan_set(payload: dict[str, Any]) -> None:
         require_dict(plan_obj.get("verification_hint"), f"plans[{index}].verification_hint")
     require_list(payload.get("unplanned_tasks"), "unplanned_tasks")
     require_list(payload.get("generation_errors"), "generation_errors")
+
+
+def validate_exec_input(payload: dict[str, Any]) -> None:
+    _check_kind(payload, version=1, kind="harbor_fixer_exec_input", name="exec input")
+    require_string(payload.get("fix_plan_path"), "fix_plan_path")
+    require_string(payload.get("workspace_root"), "workspace_root")
+    validate_fix_plan_set(require_dict(payload.get("fix_plan"), "fix_plan"))
+
+
+def validate_exec_result(payload: dict[str, Any]) -> None:
+    _check_kind(payload, version=1, kind="harbor_fixer_exec_result", name="exec result")
+    status = require_enum(payload.get("status"), "status", EXEC_STATUSES)
+    plans = require_list(payload.get("plans"), "plans")
+    failed_plan_count = 0
+    for plan_index, plan in enumerate(plans):
+        plan_obj = require_dict(plan, f"plans[{plan_index}]")
+        plan_status = require_enum(plan_obj.get("status"), f"plans[{plan_index}].status", {"success", "failed"})
+        if plan_status == "failed":
+            failed_plan_count += 1
+        for command_index, command in enumerate(require_list(plan_obj.get("commands"), f"plans[{plan_index}].commands")):
+            command_obj = require_dict(command, f"plans[{plan_index}].commands[{command_index}]")
+            command_status = require_enum(command_obj.get("status"), "command.status", EXEC_COMMAND_STATUSES)
+            exit_code = command_obj.get("exit_code")
+            if command_status == "success" and exit_code != 0:
+                raise ValidationError("successful command exit_code must be 0")
+            if command_status == "skipped" and exit_code is not None:
+                raise ValidationError("skipped command exit_code must be null")
+    expected = "success" if failed_plan_count == 0 else "failed" if failed_plan_count == len(plans) else "partial_failed"
+    if status != expected:
+        raise ValidationError(f"status must be {expected}")
+
+
+def validate_verification_input(payload: dict[str, Any]) -> None:
+    version = _check_kind_versions(payload, versions={1, 2}, kind="harbor_fixer_verification_input", name="verification input")
+    for key in ("fix_plan_path", "exec_result_path", "analyzer_output_path", "verification_run_dir", "output_dir"):
+        require_string(payload.get(key), key)
+    require_enum(payload.get("monitor_policy"), "monitor_policy", MONITOR_POLICIES)
+    if version >= 2:
+        mode = payload.get("verification_mode")
+        if mode != "smoke_test":
+            raise ValidationError("verification_mode must be smoke_test")
+        try:
+            limit = int(payload.get("verification_task_limit_per_plan"))
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("verification_task_limit_per_plan must be a positive integer") from exc
+        if limit <= 0:
+            raise ValidationError("verification_task_limit_per_plan must be a positive integer")
+    validate_fix_plan_set(require_dict(payload.get("fix_plan"), "fix_plan"))
+    validate_exec_result(require_dict(payload.get("exec_result"), "exec_result"))
+
+
+def _validate_run_record(payload: dict[str, Any], name: str) -> None:
+    require_string(payload.get("task_index"), f"{name}.task_index")
+    require_enum(payload.get("task_complete_status"), f"{name}.task_complete_status", TASK_COMPLETE_STATUSES)
+
+
+def validate_verification_result(payload: dict[str, Any]) -> None:
+    version = _check_kind_versions(payload, versions={1, 2}, kind="harbor_fixer_verification_result", name="verification result")
+    require_enum(payload.get("status"), "status", VERIFICATION_STATUSES)
+    require_dict(payload.get("source"), "source")
+    require_dict(payload.get("rerun"), "rerun")
+    require_dict(payload.get("new_run_summary"), "new_run_summary")
+    if version >= 2:
+        if payload.get("verification_mode") != "smoke_test":
+            raise ValidationError("verification_mode must be smoke_test")
+        require_dict(payload.get("sampling"), "sampling")
+    for index, plan in enumerate(require_list(payload.get("plan_results"), "plan_results")):
+        plan_obj = require_dict(plan, f"plan_results[{index}]")
+        require_string(plan_obj.get("plan_id"), f"plan_results[{index}].plan_id")
+        require_enum(plan_obj.get("status"), f"plan_results[{index}].status", VERIFICATION_STATUSES)
+    for index, task in enumerate(require_list(payload.get("task_results"), "task_results")):
+        task_obj = require_dict(task, f"task_results[{index}]")
+        require_string(require_dict(task_obj.get("task"), f"task_results[{index}].task").get("task_index"), f"task_results[{index}].task.task_index")
+        verification_status = require_enum(task_obj.get("verification_status"), f"task_results[{index}].verification_status", TASK_VERIFICATION_STATUSES)
+        new_run = task_obj.get("new_run")
+        if verification_status in {"not_sampled", "exec_failed"}:
+            if new_run is not None:
+                raise ValidationError(f"task_results[{index}].new_run must be null when verification_status is {verification_status}")
+        else:
+            _validate_run_record(require_dict(new_run, f"task_results[{index}].new_run"), f"task_results[{index}].new_run")
+    for index, record in enumerate(require_list(payload.get("non_plan_task_results"), "non_plan_task_results")):
+        _validate_run_record(require_dict(record, f"non_plan_task_results[{index}]"), f"non_plan_task_results[{index}]")
+    for index, record in enumerate(require_list(payload.get("unexpected_run_task_results", []), "unexpected_run_task_results")):
+        _validate_run_record(require_dict(record, f"unexpected_run_task_results[{index}]"), f"unexpected_run_task_results[{index}]")

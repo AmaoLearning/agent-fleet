@@ -36,10 +36,13 @@ Agents/utils/common/Harbor/
     │   ├── agent_invocation.py # Fixer prompt assembly and Pi adapter
     │   ├── analyzer_inputs.py  # Analyzer artifact to task-input translation
     │   ├── artifact_io.py      # JSON, JSONL, and text artifact I/O
+    │   ├── executor.py         # Ordered Fix Plan command execution
+    │   ├── harbor_run_state.py # Harbor task and monitor-state inspection
     │   ├── plan_generation.py  # Task summary and plan generation flow
     │   ├── planning_context/   # Runtime inventory and workspace evidence
     │   ├── prompts.py          # Task and plan agent contracts
-    │   └── validation.py       # Analyzer, task-summary, and Fix Plan validation
+    │   ├── validation.py       # Plan, execution, and verification validation
+    │   └── verifier.py         # Deterministic sampled verification
     ├── online_rule_analyzer.py # Optional console-only online analysis
     └── write_harbor_registry_summary.py # Native registry summary writer
 ```
@@ -61,6 +64,14 @@ Plan generation is independently usable and produces
 dispatching isolated no-tool Pi agents. Tests are split between
 `test_harbor_fixer_plan.py` and `test_harbor_fixer_runtime_context.py`, with
 shared fixtures in the non-discovered `fixer_test_support.py`.
+
+## Harbor Fixer Execution and Verification
+
+`executor.py` turns a Fix Plan into ordered command records and durable logs.
+`verifier.py` selects stable smoke samples, optionally launches a rerun, maps
+Harbor results back to Analyzer task identities, and produces fixed-rule
+verification statuses. These stages do not invoke agents. Their tests live in
+`test_harbor_fixer_exec.py` and `test_harbor_fixer_verification.py`.
 
 ```text
 Agents/utils/rl/

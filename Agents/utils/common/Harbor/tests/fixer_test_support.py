@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -17,13 +18,15 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from harbor_fixer.agent_invocation import PiAgentInvoker, PiInvocationConfig  # noqa: E402
 from harbor_fixer.analyzer_inputs import build_task_inputs  # noqa: E402
+from harbor_fixer.executor import build_exec_input, run_fix_exec  # noqa: E402
 from harbor_fixer.plan_generation import collect_task_summaries, request_fix_plan, run_plan_generation  # noqa: E402
 from harbor_fixer.planning_context.runtime_inventory import collect_runtime_inventory  # noqa: E402
 from harbor_fixer.planning_context.runtime_inventory import _path_state as inspect_runtime_path  # noqa: E402
 from harbor_fixer.planning_context.workspace_evidence import collect_workspace_evidence  # noqa: E402
 from harbor_fixer.planning_context.workspace_evidence import _path_state as inspect_workspace_path  # noqa: E402
 from harbor_fixer.prompts import MAIN_AGENT_PROMPT, TASK_SUBAGENT_PROMPT  # noqa: E402
-from harbor_fixer.validation import ValidationError, validate_fix_plan_set, validate_task_summary  # noqa: E402
+from harbor_fixer.validation import ValidationError, validate_fix_plan_set, validate_task_summary, validate_verification_result  # noqa: E402
+from harbor_fixer.verifier import run_verification_from_paths  # noqa: E402
 
 
 def write_json(path: Path, payload: dict) -> None:
@@ -230,6 +233,130 @@ def make_fix_plan() -> dict:
         "unplanned_tasks": [],
         "generation_errors": [],
     }
+
+
+def make_exec_result(plan_status: str = "success") -> dict:
+    command_status = "success" if plan_status == "success" else "failed"
+    return {
+        "schema_version": 1,
+        "kind": "harbor_fixer_exec_result",
+        "source": {"fix_plan_path": "fix-plan-latest.json", "workspace_root": "/workspace"},
+        "status": "success" if plan_status == "success" else "failed",
+        "plans": [
+            {
+                "plan_id": "fix-001",
+                "status": plan_status,
+                "commands": [
+                    {
+                        "command_id": "cmd-001",
+                        "cwd": "/workspace",
+                        "command": "true" if command_status == "success" else "false",
+                        "purpose": "Fixture command.",
+                        "expected_effect": "Fixture effect.",
+                        "status": command_status,
+                        "exit_code": 0 if command_status == "success" else 1,
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def write_verification_inputs(
+    root: Path,
+    *,
+    count: int = 1,
+    exec_status: str = "success",
+) -> tuple[Path, Path, Path, Path]:
+    analyzer_dir = write_analyzer_fixture(root, count=count)
+    output_dir = root / "fixer"
+    plan_path = root / "fix-plan-latest.json"
+    exec_path = root / "exec-result-latest.json"
+    plan = make_fix_plan()
+    plan["plans"][0]["task_list"] = [
+        {
+            "task_index": str(index),
+            "task_name": f"task-{index}",
+            "attempt_id": None,
+            "root_cause_code": "fixture",
+            "final_class": "env_fail",
+        }
+        for index in range(1, count + 1)
+    ]
+    write_json(plan_path, plan)
+    write_json(exec_path, make_exec_result(exec_status))
+    return analyzer_dir, output_dir, plan_path, exec_path
+
+
+def write_harbor_run_fixture(root: Path, task_names: list[str], done_rows: list[tuple[str, str, str, str, str]], failed_rows: list[tuple[str, str, str, str]]) -> Path:
+    run_dir = root / "verification-run"
+    queue_dir = run_dir / "queue" / "claude-code"
+    queue_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "tasks.txt").write_text("\n".join(task_names) + "\n", encoding="utf-8")
+    (queue_dir / "done.txt").write_text("".join("\t".join(row) + "\n" for row in done_rows), encoding="utf-8")
+    (queue_dir / "failed.txt").write_text("".join("\t".join(row) + "\n" for row in failed_rows), encoding="utf-8")
+    return run_dir
+
+
+def write_smoke_rerun_script(path: Path, statuses: dict[str, str]) -> Path:
+    path.write_text(
+        "\n".join(
+            [
+                f"#!{sys.executable}",
+                "import json, os, pathlib, shutil",
+                f"statuses = {json.dumps(statuses, sort_keys=True)}",
+                "for inherited_name in ('QUEUE_DIR', 'RUNTIME_DIR', 'JOBS_ROOT', 'HARBOR_MONITOR_DIR', 'NEXT_INDEX_FILE', 'RL_QUEUE_DIR'):",
+                "    if inherited_name in os.environ:",
+                "        raise SystemExit(f'inherited run path was not cleared: {inherited_name}')",
+                "run_dir = pathlib.Path(os.environ['OUTPUT_PATH'])",
+                "task_file = pathlib.Path(os.environ['TASK_FILE'])",
+                "source_file = pathlib.Path(os.environ['TASK_SOURCE_FILE'])",
+                "selection = json.loads(pathlib.Path(os.environ['HARBOR_FIXER_SMOKE_SELECTION']).read_text(encoding='utf-8'))",
+                "task_file.parent.mkdir(parents=True, exist_ok=True)",
+                "shutil.copyfile(source_file, task_file)",
+                "queue_dir = run_dir / 'queue' / 'fixture-agent'",
+                "queue_dir.mkdir(parents=True, exist_ok=True)",
+                "done_rows = []",
+                "failed_rows = []",
+                "task_names = task_file.read_text(encoding='utf-8').splitlines()",
+                "for task in selection.get('tasks', []):",
+                "    smoke_index = str(task.get('smoke_task_index'))",
+                "    original_index = str(task.get('original_task_index'))",
+                "    task_name = task_names[int(smoke_index) - 1]",
+                "    status = statuses.get(original_index, 'success')",
+                "    if status == 'success':",
+                "        done_rows.append((smoke_index, task_name, '1.0', '', ''))",
+                "    elif status == 'failed':",
+                "        done_rows.append((smoke_index, task_name, '0.0', '', ''))",
+                "    elif status == 'unknown':",
+                "        done_rows.append((smoke_index, task_name, '', '', ''))",
+                "    elif status == 'hard_failed':",
+                "        failed_rows.append((smoke_index, task_name, '1', 'fixture failure'))",
+                "    elif status == 'not_complete':",
+                "        pass",
+                "    else:",
+                "        raise SystemExit(f'unknown fixture status: {status}')",
+                "(queue_dir / 'done.txt').write_text(''.join('\\t'.join(row) + '\\n' for row in done_rows), encoding='utf-8')",
+                "(queue_dir / 'failed.txt').write_text(''.join('\\t'.join(row) + '\\n' for row in failed_rows), encoding='utf-8')",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+    return path
+
+
+def write_verification_fixture(root_path: Path) -> tuple[Path, Path, Path]:
+    analyzer_dir = write_analyzer_fixture(root_path, count=1)
+    output_dir = root_path / "fixer"
+    plan_path = root_path / "fix-plan-latest.json"
+    exec_path = root_path / "exec-result-latest.json"
+    write_json(plan_path, make_fix_plan())
+    write_json(exec_path, make_exec_result())
+    run_dir = write_harbor_run_fixture(root_path, ["task-1"], [("1", "task-1", "1.0", "", "")], [])
+    result = run_verification_from_paths(plan_path, exec_path, analyzer_dir, run_dir, output_dir, monitor_policy="off")
+    validate_verification_result(result)
+    return analyzer_dir, output_dir, output_dir / "verification-result-latest.json"
 
 
 def write_fixture_pi(path: Path) -> Path:

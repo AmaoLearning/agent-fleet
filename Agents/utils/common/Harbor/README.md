@@ -266,6 +266,41 @@ subprocess. Task summarizers use `thinking=off`; the plan agent retains the
 configured thinking level. Events, stderr, prompts, and provenance are retained
 under the output directory. No default model is assumed.
 
+### Execute and verify a plan
+
+Execute validated commands in plan and command order:
+
+```bash
+python3 Agents/utils/common/Harbor/scripts/fixer.py \
+  --exec-only \
+  --fix-plan /path/to/fixer-output/fix-plan-latest.json \
+  --workspace-root /path/to/workspace \
+  --output-dir /path/to/fixer-output
+```
+
+Exec writes `exec-input.json`, `exec-result-latest.json`, and full command logs.
+A failed command skips the rest of its plan but does not prevent later plans
+from running.
+
+Verification is code-only and samples at most two successfully executed tasks
+per plan by default:
+
+```bash
+python3 Agents/utils/common/Harbor/scripts/fixer.py \
+  --verify-only \
+  --fix-plan /path/to/fixer-output/fix-plan-latest.json \
+  --exec-result /path/to/fixer-output/exec-result-latest.json \
+  --analyzer-output /path/to/analyzer-output \
+  --verification-run-dir /path/to/new-harbor-run \
+  --output-dir /path/to/fixer-output
+```
+
+Use `--rerun-command` to launch the smoke run. The wrapper receives an ordered
+`TASK_SOURCE_FILE` and `HARBOR_FIXER_SMOKE_SELECTION`; it must preserve their
+line-to-task mapping. Verification writes
+`verification-smoke-selection.json`, `verification-smoke-tasks.txt`, and
+`verification-result-latest.json`.
+
 ## More Details
 
 Architecture, script roles, task resolution, and full variable descriptions are in [STRUCT.md](./STRUCT.md).
