@@ -26,12 +26,14 @@ MAX_CHUNK_CHARS = 50_000
 MAX_TOTAL_CHARS = 200_000
 MAX_COMMENTS = 20
 MAX_FIELD_CHARS = 2_000
+MAX_RESPONSE_TOKENS = 12_000
 SEVERITY_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 API_VERSION = "2022-11-28"
 REQUEST_TIMEOUT_SECONDS = 90
 RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 MAX_PR_METADATA_CHARS = 4_000
 MAX_SKIPPED_PATHS_IN_SUMMARY = 50
+DEFAULT_REVIEW_ID = "llm-pr-review"
 
 
 @dataclass(frozen=True)
@@ -243,7 +245,7 @@ class LlmClient:
                 {"role": "user", "content": diff_chunk},
             ],
             "temperature": 0.1,
-            "max_tokens": 4_000,
+            "max_tokens": MAX_RESPONSE_TOKENS,
         }
         request = Request(
             self.base_url,
@@ -258,15 +260,17 @@ class LlmClient:
         for attempt in range(3):
             try:
                 response = _json_request(request, opener=self.opener)
-                content = response["choices"][0]["message"]["content"]
+                content = response["choices"][0]["message"].get("content")
                 if not isinstance(content, str):
                     raise ModelResponseError("model content must be text")
+                if not content.strip():
+                    return {"findings": [], "incomplete": True}
                 return extract_json(content)
             except HTTPError as exc:
                 if exc.code not in RETRYABLE_STATUS or attempt == 2:
                     raise
                 self.sleeper(attempt + 1)
-            except (KeyError, IndexError, TypeError) as exc:
+            except (KeyError, IndexError, TypeError, AttributeError) as exc:
                 raise ModelResponseError(
                     "unexpected chat completion response"
                 ) from exc
@@ -375,8 +379,8 @@ def collect_files(
     return parsed, skipped
 
 
-def review_marker(head_sha: str) -> str:
-    return f"<!-- llm-pr-review:{head_sha} -->"
+def review_marker(head_sha: str, review_id: str = DEFAULT_REVIEW_ID) -> str:
+    return f"<!-- {review_id}:{head_sha} -->"
 
 
 def build_model_input(pull: dict[str, Any], chunk: str) -> str:
@@ -389,8 +393,12 @@ def build_model_input(pull: dict[str, Any], chunk: str) -> str:
     )
 
 
-def has_existing_review(reviews: list[dict[str, Any]], head_sha: str) -> bool:
-    marker = review_marker(head_sha)
+def has_existing_review(
+    reviews: list[dict[str, Any]],
+    head_sha: str,
+    review_id: str = DEFAULT_REVIEW_ID,
+) -> bool:
+    marker = review_marker(head_sha, review_id)
     return any(
         (item.get("user") or {}).get("login") == "github-actions[bot]"
         and marker in (item.get("body") or "")
@@ -404,15 +412,19 @@ def build_summary(
     rejected: int,
     skipped: list[tuple[str, str]],
     truncated: bool,
+    incomplete_chunks: int = 0,
+    review_id: str = DEFAULT_REVIEW_ID,
 ) -> str:
-    coverage = "Partial" if skipped or truncated else "Complete"
+    coverage = (
+        "Partial" if skipped or truncated or incomplete_chunks else "Complete"
+    )
     headline = (
         f"Automated review found {len(findings)} actionable finding(s)."
         if findings
         else "Automated review found no actionable findings."
     )
     lines = [
-        review_marker(head_sha),
+        review_marker(head_sha, review_id),
         headline,
         "",
         f"Reviewed head: `{head_sha}`",
@@ -432,6 +444,14 @@ def build_summary(
         lines.extend(
             ["", "- Additional diff content exceeded the total review budget."]
         )
+    if incomplete_chunks:
+        lines.extend(
+            [
+                "",
+                f"- {incomplete_chunks} diff chunk(s) returned an empty model "
+                "response and were not reviewed.",
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -440,13 +460,12 @@ def run_review(
     llm: LlmClient,
     pull_number: int,
     prompt: str,
+    review_id: str = DEFAULT_REVIEW_ID,
 ) -> str:
     pull = github.get_pull(pull_number)
-    if pull.get("draft"):
-        return "draft"
 
     head_sha = pull["head"]["sha"]
-    if has_existing_review(github.list_reviews(pull_number), head_sha):
+    if has_existing_review(github.list_reviews(pull_number), head_sha, review_id):
         return "duplicate"
 
     files, skipped = collect_files(github.list_files(pull_number))
@@ -454,8 +473,11 @@ def run_review(
     chunks, truncated = build_chunks(files)
     findings: list[Finding] = []
     rejected = 0
+    incomplete_chunks = 0
     for chunk in chunks:
         payload = llm.review(prompt, build_model_input(pull, chunk))
+        if payload.get("incomplete"):
+            incomplete_chunks += 1
         chunk_findings, chunk_rejected = validate_findings(payload, by_path)
         findings.extend(chunk_findings)
         rejected += chunk_rejected
@@ -468,7 +490,15 @@ def run_review(
     if current["head"]["sha"] != head_sha:
         return "stale"
 
-    summary = build_summary(head_sha, findings, rejected, skipped, truncated)
+    summary = build_summary(
+        head_sha,
+        findings,
+        rejected,
+        skipped,
+        truncated,
+        incomplete_chunks=incomplete_chunks,
+        review_id=review_id,
+    )
     github.create_review(pull_number, head_sha, summary, findings)
     return "published"
 
@@ -499,7 +529,8 @@ def main() -> int:
         require_env("LLM_REVIEW_MODEL"),
     )
     prompt = args.prompt_path.read_text()
-    result = run_review(github, llm, pull_number, prompt)
+    review_id = os.environ.get("LLM_REVIEW_ID", DEFAULT_REVIEW_ID)
+    result = run_review(github, llm, pull_number, prompt, review_id)
     print(f"LLM PR review result: {result}")
     return 0
 
