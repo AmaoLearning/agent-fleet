@@ -219,6 +219,53 @@ All files are refreshed on each sample. The actual action is
 
 Automatic restart is only used when tasks remain and no worker is alive.
 
+## Harbor Fixer: Plan Generation
+
+`scripts/fixer.py` reads Analyzer output artifacts and generates a validated
+`fix-plan-latest.json`:
+
+```text
+analyzer-report-latest.json
+env-infra-tasks-latest.json
+fix-line-index-latest.jsonl
+```
+
+It builds one input per environment or infrastructure failure, asks isolated
+no-tool Pi agents for task summaries, and asks one planning agent to group
+shared fixes. Before model calls, the Python harness records a bounded
+`target-environment.json` runtime inventory and redacted
+`target-context.json` workspace/evidence snapshot. Both are embedded in
+`main-agent-input.json`; the agents receive no filesystem tools.
+
+Prepare inputs and prompts without invoking Pi:
+
+```bash
+python3 Agents/utils/common/Harbor/scripts/fixer.py \
+  --analyzer-output /path/to/analyzer-output \
+  --output-dir /path/to/fixer-output \
+  --prepare-only \
+  --write-prompts
+```
+
+Generate a plan:
+
+```bash
+python3 Agents/utils/common/Harbor/scripts/fixer.py \
+  --analyzer-output /path/to/analyzer-output \
+  --output-dir /path/to/fixer-output \
+  --pi-bin pi \
+  --pi-provider harbor-fixer \
+  --pi-model "$HARBOR_FIXER_MODEL" \
+  --pi-base-url "$BASE_URL" \
+  --workspace-root /path/to/workspace \
+  --max-concurrency 4
+```
+
+Each invocation uses an isolated `pi --mode json --print --no-session`
+subprocess. Task summarizers use `thinking=off`; the plan agent retains the
+configured thinking level. Events, stderr, prompts, and provenance are retained
+under the output directory. No default model is assumed.
+
 ## More Details
 
 Architecture, script roles, task resolution, and full variable descriptions are in [STRUCT.md](./STRUCT.md).

@@ -15,12 +15,23 @@ from fixer_test_support import *  # noqa: E402,F403
 
 
 class HarborFixerRuntimeContextTest(FixerTestCase):
-    def test_analyzer_artifacts_build_task_inputs(self) -> None:
-        inputs, source = build_task_inputs(write_analyzer_fixture(self.root))
-
-        self.assertEqual(source["handover_id"], "handover-1")
-        self.assertEqual(inputs[0]["task"]["task_index"], "1")
-        self.assertEqual(inputs[0]["evidence"][0]["analysis_report_pointer"], "/tasks/0")
+    def test_pi_invoker_requires_explicit_model(self) -> None:
+        invoker = PiAgentInvoker(
+            self.root / "out",
+            PiInvocationConfig(
+                pi_bin=str(write_fixture_pi(self.root / "fixture_pi.py")),
+                base_url="https://example.test/v1",
+                api_key_env="FIXTURE_PI_API_KEY",
+            ),
+        )
+        with mock.patch.dict("os.environ", {"FIXTURE_PI_API_KEY": "fixture"}):
+            with self.assertRaisesRegex(RuntimeError, "pi_model_not_configured"):
+                invoker.invoke(
+                    "Return JSON only.",
+                    {"kind": "fixture"},
+                    attempt=1,
+                    label="fixture",
+                )
 
     def test_target_environment_rejects_missing_workspace_and_records_file_state(self) -> None:
         evidence = self.root / "evidence.log"
