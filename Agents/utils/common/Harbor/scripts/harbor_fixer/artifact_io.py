@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,12 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    write_json(temp_path, payload)
+    temp_path.replace(path)
 
 
 def write_text(path: Path, text: str) -> None:

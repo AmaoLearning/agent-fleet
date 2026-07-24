@@ -24,47 +24,43 @@ def _path_component(value: Any, name: str) -> str:
 
 
 def resolve_analyzer_paths(analyzer_output_path: Path) -> dict[str, Any]:
-    """Resolve manifest-selected snapshots without trusting recorded absolute paths."""
+    """Resolve every handover's current publication from the Analyzer manifest."""
 
-    requested = analyzer_output_path.expanduser().resolve()
-    if requested.is_file():
-        if requested.parent.parent.name != "env-infra-tasks" or requested.suffix != ".json":
-            raise ValidationError(
-                "analyzer output file must be env-infra-tasks/<handover_id>/<publication_id>.json"
-            )
-        analyzer_root = requested.parents[2]
-        selected_identity = (requested.parent.name, requested.stem)
-    else:
-        analyzer_root = requested
-        selected_identity = None
-
+    analyzer_root = analyzer_output_path.expanduser().resolve()
+    if not analyzer_root.is_dir():
+        raise ValidationError("analyzer output must be the Analyzer root directory")
     manifest_path = analyzer_root / "analyzer-artifacts-latest.json"
     manifest = read_json(manifest_path)
     validate_analyzer_manifest(manifest)
 
     publications: list[dict[str, str]] = []
     for index, item in enumerate(manifest["publications"]):
-        handover_id = _path_component(item["handover_id"], f"publications[{index}].handover_id")
+        handover_id = _path_component(
+            item["handover_id"],
+            f"publications[{index}].handover_id",
+        )
         publication_id = _path_component(
             item["publication_id"],
             f"publications[{index}].publication_id",
         )
-        if selected_identity is not None and selected_identity != (handover_id, publication_id):
-            continue
         publications.append(
             {
                 "handover_id": handover_id,
                 "publication_id": publication_id,
                 "env_infra_tasks_path": str(
-                    analyzer_root / "env-infra-tasks" / handover_id / f"{publication_id}.json"
+                    analyzer_root
+                    / "env-infra-tasks"
+                    / handover_id
+                    / f"{publication_id}.json"
                 ),
                 "fix_line_index_path": str(
-                    analyzer_root / "fix-line-index" / handover_id / f"{publication_id}.jsonl"
+                    analyzer_root
+                    / "fix-line-index"
+                    / handover_id
+                    / f"{publication_id}.jsonl"
                 ),
             }
         )
-    if selected_identity is not None and not publications:
-        raise ValidationError("selected env/infra snapshot is not current in analyzer manifest")
     return {
         "analyzer_root": analyzer_root,
         "manifest_path": manifest_path,
@@ -91,7 +87,9 @@ def _identity_from_task(task: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_task_inputs(analyzer_output_path: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def build_task_inputs(
+    analyzer_output_path: Path,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     resolved = resolve_analyzer_paths(analyzer_output_path)
     source = {
         "analyzer_root": str(resolved["analyzer_root"]),
@@ -100,7 +98,7 @@ def build_task_inputs(analyzer_output_path: Path) -> tuple[list[dict[str, Any]],
         "publications": resolved["publications"],
     }
 
-    task_inputs: list[dict[str, Any]] = []
+    task_inputs: dict[tuple[str, str, str], dict[str, Any]] = {}
     for publication in resolved["publications"]:
         env_infra = read_json(Path(publication["env_infra_tasks_path"]))
         fix_lines = read_jsonl(Path(publication["fix_line_index_path"]))
@@ -154,5 +152,6 @@ def build_task_inputs(analyzer_output_path: Path) -> tuple[list[dict[str, Any]],
                 "evidence": evidence,
             }
             validate_task_input(payload)
-            task_inputs.append(payload)
-    return task_inputs, source
+            # Later publications supersede older snapshots of the same benchmark task.
+            task_inputs[task_key(task)] = payload
+    return list(task_inputs.values()), source
