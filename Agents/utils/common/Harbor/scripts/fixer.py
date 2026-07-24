@@ -18,7 +18,12 @@ from harbor_fixer.plan_generation import (
     run_plan_generation,
     task_artifact_label,
 )
-from harbor_fixer.prompts import MAIN_AGENT_PROMPT, TASK_SUBAGENT_PROMPT
+from harbor_fixer.prompts import (
+    MAIN_AGENT_PROMPT,
+    REPORT_MAIN_AGENT_PROMPT,
+    TASK_SUBAGENT_PROMPT,
+)
+from harbor_fixer.reporter import run_report_from_paths
 from harbor_fixer.validation import HARBOR_AGENTS, ValidationError
 from harbor_fixer.verifier import run_verification_from_paths
 
@@ -110,13 +115,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--exec-result", type=Path)
     parser.add_argument("--verification-run-dir", type=Path)
     parser.add_argument("--agent", choices=sorted(HARBOR_AGENTS))
+    parser.add_argument("--report-only", action="store_true")
+    parser.add_argument("--verification-result", type=Path)
+    parser.add_argument("--baseline-run-dir", type=Path)
+    parser.add_argument(
+        "--baseline-monitor-policy", choices=["auto", "on", "off"], default="auto"
+    )
     parser.add_argument("--rerun-command", default=None)
     parser.add_argument(
         "--rerun-timeout",
         type=int,
         default=os.environ.get("HARBOR_FIXER_RERUN_TIMEOUT", "600"),
     )
-    parser.add_argument("--monitor-policy", choices=["auto", "on", "off"], default="auto")
+    parser.add_argument(
+        "--monitor-policy", choices=["auto", "on", "off"], default="auto"
+    )
     parser.add_argument("--monitor-wait-timeout", type=int, default=3600)
     parser.add_argument("--monitor-poll-interval", type=float, default=30.0)
     parser.add_argument("--verification-task-limit-per-plan", type=int, default=2)
@@ -134,24 +147,38 @@ def main() -> int:
     if args.rerun_timeout <= 0:
         raise SystemExit("--rerun-timeout must be positive")
     if not 0 < args.summary_limit <= MAX_SUMMARY_LIMIT:
-        raise SystemExit(
-            f"--summary-limit must be between 1 and {MAX_SUMMARY_LIMIT}"
-        )
+        raise SystemExit(f"--summary-limit must be between 1 and {MAX_SUMMARY_LIMIT}")
     if args.max_task_summary_chars <= 0:
         raise SystemExit("--max-task-summary-chars must be positive")
     if args.max_task_summaries_chars <= 0:
         raise SystemExit("--max-task-summaries-chars must be positive")
     if args.verification_task_limit_per_plan <= 0:
         raise SystemExit("--verification-task-limit-per-plan must be positive")
-    selected_modes = [args.prepare_only, args.exec_only, args.verify_only]
+    selected_modes = [
+        args.prepare_only,
+        args.exec_only,
+        args.verify_only,
+        args.report_only,
+    ]
     if sum(1 for selected in selected_modes if selected) > 1:
         raise SystemExit(
-            "--prepare-only, --exec-only, and --verify-only are mutually exclusive"
+            "--prepare-only, --exec-only, --verify-only, and --report-only are mutually exclusive"
         )
     args.output_dir.mkdir(parents=True, exist_ok=True)
     if args.write_prompts:
-        write_text(args.output_dir / "prompts" / "task-subagent-prompt.md", TASK_SUBAGENT_PROMPT)
-        write_text(args.output_dir / "prompts" / "main-agent-prompt.md", MAIN_AGENT_PROMPT)
+        if args.report_only:
+            write_text(
+                args.output_dir / "prompts" / "report-main-agent-prompt.md",
+                REPORT_MAIN_AGENT_PROMPT,
+            )
+        else:
+            write_text(
+                args.output_dir / "prompts" / "task-subagent-prompt.md",
+                TASK_SUBAGENT_PROMPT,
+            )
+            write_text(
+                args.output_dir / "prompts" / "main-agent-prompt.md", MAIN_AGENT_PROMPT
+            )
     if args.exec_only:
         if args.fix_plan is None:
             raise SystemExit("--fix-plan is required with --exec-only")
@@ -193,6 +220,20 @@ def main() -> int:
         except ValidationError as exc:
             raise SystemExit(str(exc)) from None
         return 0 if result["status"] in {"fixed", "partially_fixed"} else 1
+    if args.report_only:
+        if args.verification_result is None:
+            raise SystemExit("--verification-result is required with --report-only")
+        if args.analyzer_output is None:
+            raise SystemExit("--analyzer-output is required with --report-only")
+        result = run_report_from_paths(
+            args.verification_result,
+            args.analyzer_output,
+            args.output_dir,
+            PiAgentInvoker(args.output_dir, build_pi_config(args)),
+            baseline_run_dir=args.baseline_run_dir,
+            baseline_monitor_policy=args.baseline_monitor_policy,
+        )
+        return 0 if result["summary"]["status"] in {"success", "failed"} else 1
     if args.analyzer_output is None:
         raise SystemExit("--analyzer-output is required unless --exec-only is used")
     if args.prepare_only:

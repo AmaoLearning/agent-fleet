@@ -390,6 +390,30 @@ Verification writes
 `verification-result-latest.json`. If the Fix Plan was generated without a
 local monitor, select `claude-code`, `opencode`, or `oracle` with `--agent`.
 
+### Generate a report
+
+```bash
+python3 Agents/utils/common/Harbor/scripts/fixer.py \
+  --report-only \
+  --verification-result /path/to/fixer-output/verification-result-latest.json \
+  --analyzer-output /path/to/analyzer-output \
+  --output-dir /path/to/fixer-output \
+  --pi-model "$HARBOR_FIXER_MODEL" \
+  --pi-base-url "$BASE_URL" \
+  --baseline-run-dir /path/to/old-harbor-run
+```
+
+Reporter keeps task, execution, and verification observations code-owned. A
+no-tool Pi agent may generate only the bounded human-readable summary. The
+Markdown view presents observed results and explicitly unavailable data before
+attributed Analyzer findings and Fix Plan reasoning; it does not replace missing
+values with inferred failures or zero-value baselines. Smoke-test task outcomes
+list sampled fixed, sampled non-fixed/inconclusive, and unsampled tasks without
+promoting sampled success to a full-run conclusion. The machine contract is
+written to `fix-report-latest.json`; the deterministic, secret-redacted view is
+written to `fix-report-latest.md`. If summary generation fails, both reports are
+still produced with a factual deterministic summary and recorded errors.
+
 ## More Details
 
 Architecture, script roles, task resolution, and full variable descriptions are in [STRUCT.md](./STRUCT.md).
