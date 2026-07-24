@@ -22,6 +22,9 @@ SCOPE_RANK = {"task": 0, "benchmark": 1, "host": 2}
 FIX_PLAN_SCHEMA_VERSION = 2
 ACTION_TYPES = {"command", "file_edit"}
 
+EXEC_STATUSES = {"success", "partial_failed", "failed"}
+EXEC_COMMAND_STATUSES = {"success", "failed", "skipped"}
+
 
 def require_dict(value: Any, name: str) -> dict[str, Any]:
     if not isinstance(value, dict):
@@ -535,3 +538,53 @@ def validate_fix_plan_set(
     require_list(payload.get("generation_errors"), "generation_errors")
     if expected_tasks is not None and covered_tasks != set(expected_tasks):
         raise ValidationError("fix plan set does not cover every main agent task summary")
+
+
+def validate_exec_input(payload: dict[str, Any]) -> None:
+    _check_kind(payload, version=1, kind="harbor_fixer_exec_input", name="exec input")
+    require_string(payload.get("fix_plan_path"), "fix_plan_path")
+    require_string(payload.get("workspace_root"), "workspace_root")
+    validate_fix_plan_set(require_dict(payload.get("fix_plan"), "fix_plan"))
+
+
+def validate_exec_result(payload: dict[str, Any]) -> None:
+    _check_kind(payload, version=1, kind="harbor_fixer_exec_result", name="exec result")
+    status = require_enum(payload.get("status"), "status", EXEC_STATUSES)
+    plans = require_list(payload.get("plans"), "plans")
+    failed_plan_count = 0
+    for plan_index, plan in enumerate(plans):
+        plan_obj = require_dict(plan, f"plans[{plan_index}]")
+        plan_status = require_enum(
+            plan_obj.get("status"),
+            f"plans[{plan_index}].status",
+            {"success", "failed"},
+        )
+        if plan_status == "failed":
+            failed_plan_count += 1
+        actions = require_list(
+            plan_obj.get("actions"),
+            f"plans[{plan_index}].actions",
+        )
+        for action_index, action in enumerate(actions):
+            action_obj = require_dict(
+                action,
+                f"plans[{plan_index}].actions[{action_index}]",
+            )
+            action_status = require_enum(
+                action_obj.get("status"),
+                "action.status",
+                EXEC_COMMAND_STATUSES,
+            )
+            exit_code = action_obj.get("exit_code")
+            if action_status == "success" and exit_code != 0:
+                raise ValidationError("successful action exit_code must be 0")
+            if action_status == "skipped" and exit_code is not None:
+                raise ValidationError("skipped action exit_code must be null")
+    if failed_plan_count == 0:
+        expected = "success"
+    elif failed_plan_count == len(plans):
+        expected = "failed"
+    else:
+        expected = "partial_failed"
+    if status != expected:
+        raise ValidationError(f"status must be {expected}")

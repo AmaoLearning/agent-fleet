@@ -11,6 +11,7 @@ from pathlib import Path
 from harbor_fixer.agent_invocation import PiAgentInvoker, PiInvocationConfig
 from harbor_fixer.analyzer_inputs import build_task_inputs
 from harbor_fixer.artifact_io import write_json, write_text
+from harbor_fixer.executor import run_fix_exec_from_plan
 from harbor_fixer.plan_generation import (
     MAX_TASK_SUMMARIES_CHARS,
     MAX_TASK_SUMMARY_CHARS,
@@ -43,7 +44,7 @@ def build_pi_config(args: argparse.Namespace) -> PiInvocationConfig:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Harbor Fixer MVP CLI")
-    parser.add_argument("--analyzer-output", required=True, type=Path)
+    parser.add_argument("--analyzer-output", type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--pi-bin", default="pi")
     parser.add_argument("--pi-provider", default="harbor-fixer")
@@ -51,6 +52,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pi-base-url", default=_default_base_url())
     parser.add_argument("--pi-api-key-env", default="HARBOR_FIXER_API_KEY")
     parser.add_argument("--timeout", type=int, default=900)
+    parser.add_argument("--execution-timeout", type=int, default=300)
     parser.add_argument("--max-concurrency", type=int, default=4)
     parser.add_argument(
         "--max-task-summary-chars",
@@ -64,7 +66,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--write-prompts", action="store_true")
+    parser.add_argument("--exec-only", action="store_true")
+    parser.add_argument("--fix-plan", type=Path)
     parser.add_argument("--workspace-root", type=Path, default=Path("."))
+    parser.add_argument("--policy-rules", type=Path)
+    parser.add_argument(
+        "--policy-write-root",
+        action="append",
+        type=Path,
+        default=[],
+    )
     return parser.parse_args()
 
 
@@ -74,14 +85,36 @@ def main() -> int:
         raise SystemExit("--max-concurrency must be positive")
     if args.timeout <= 0:
         raise SystemExit("--timeout must be positive")
+    if args.execution_timeout <= 0:
+        raise SystemExit("--execution-timeout must be positive")
     if args.max_task_summary_chars <= 0:
         raise SystemExit("--max-task-summary-chars must be positive")
     if args.max_task_summaries_chars <= 0:
         raise SystemExit("--max-task-summaries-chars must be positive")
+    if args.prepare_only and args.exec_only:
+        raise SystemExit("--prepare-only and --exec-only are mutually exclusive")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     if args.write_prompts:
         write_text(args.output_dir / "prompts" / "task-subagent-prompt.md", TASK_SUBAGENT_PROMPT)
         write_text(args.output_dir / "prompts" / "main-agent-prompt.md", MAIN_AGENT_PROMPT)
+    if args.exec_only:
+        if args.fix_plan is None:
+            raise SystemExit("--fix-plan is required with --exec-only")
+        result = run_fix_exec_from_plan(
+            args.fix_plan,
+            args.output_dir,
+            args.workspace_root,
+            policy_invoker=PiAgentInvoker(
+                args.output_dir,
+                build_pi_config(args),
+            ),
+            policy_rules_path=args.policy_rules,
+            policy_write_roots=args.policy_write_root,
+            execution_timeout_seconds=args.execution_timeout,
+        )
+        return 0 if result["status"] == "success" else 1
+    if args.analyzer_output is None:
+        raise SystemExit("--analyzer-output is required unless --exec-only is used")
     if args.prepare_only:
         task_inputs, source = build_task_inputs(args.analyzer_output)
         write_json(args.output_dir / "source.json", source)

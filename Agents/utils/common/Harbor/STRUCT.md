@@ -43,11 +43,12 @@ Agents/utils/common/Harbor/
     │   ├── agent_invocation.py # Fixer prompt assembly and Pi adapter
     │   ├── analyzer_inputs.py  # Analyzer artifact to task-input translation
     │   ├── artifact_io.py      # JSON, JSONL, and text artifact I/O
+    │   ├── executor.py         # Ordered Fix Plan command execution
     │   ├── plan_generation.py  # Task summary and plan generation flow
     │   ├── planning_context/   # Runtime inventory and workspace evidence
     │   ├── policy/             # T1 rules, path routing, and T2/T3 Agent policy
     │   ├── prompts.py          # Task and plan agent contracts
-    │   └── validation.py       # Analyzer, task-summary, and Fix Plan validation
+    │   └── validation.py       # Plan and execution artifact validation
     ├── online_rule_analyzer.py # Optional console-only online analysis
     └── write_harbor_registry_summary.py # Native registry summary writer
 ```

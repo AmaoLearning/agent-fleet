@@ -300,12 +300,10 @@ class HarborFixerPlanTest(FixerTestCase):
             api_key,
             main_input_path.read_text(encoding="utf-8"),
         )
-        self.assertNotIn(
-            api_key,
-            (cli_out / "pi-agent-prompts" / "main-agent" / "attempt-1.txt").read_text(
-                encoding="utf-8"
-            ),
+        main_prompt = next(
+            (cli_out / "pi-agent-prompts").glob("main-agent-*/attempt-1.txt")
         )
+        self.assertNotIn(api_key, main_prompt.read_text(encoding="utf-8"))
         provenance_paths = sorted(
             (cli_out / "pi-agent-provenance").glob("task-*/attempt-1.json")
         )

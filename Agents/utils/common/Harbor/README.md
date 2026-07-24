@@ -277,34 +277,13 @@ for a run, set `HARBOR_ANALYZER_ENABLED=0`.
 
 ## Harbor Fixer
 
-Harbor Fixer consumes Analyzer artifacts in stages. Plan Generation proposes
-actions but does not execute them; Execution Policy independently decides
-whether each proposed action may proceed. Later execution and verification
-stages consume these artifacts without weakening the preceding boundary.
+Harbor Fixer consumes Analyzer output, generates a Fix Plan, checks every
+action against execution policy, and executes an allowed plan.
 
 ### Stage 1: Planning Context and Plan Generation
 
-`scripts/fixer.py` reads Analyzer output artifacts and generates a validated
-`fix-plan-latest.json`. From `analyzer-artifacts-latest.json`, Fixer selects
-each handover's current publication and reads:
-
-```text
-env-infra-tasks/<handover-id>/<publication-id>.json
-fix-line-index/<handover-id>/<publication-id>.jsonl
-```
-
-`--analyzer-output` must point to the Analyzer root containing the manifest.
-All unique environment and infrastructure failures across the benchmark's
-handovers are planned together. If the same task identity appears more than
-once, the later publication entry in the manifest supersedes the earlier
-snapshot.
-
-It builds one input per unique failure, asks isolated no-tool Pi agents for
-task summaries, and asks one planning agent to group shared fixes. Before model
-calls, the Python harness records a bounded
-`target-environment.json` runtime inventory and redacted
-`target-context.json` workspace/evidence snapshot. Both are embedded in
-`main-agent-input.json`; the agents receive no filesystem tools.
+Point `--analyzer-output` at an Analyzer output directory containing
+`analyzer-artifacts-latest.json`.
 
 Prepare inputs and prompts without invoking Pi:
 
@@ -332,109 +311,36 @@ python3 Agents/utils/common/Harbor/scripts/fixer.py \
   --max-task-summaries-chars 400000
 ```
 
-The two summary limits are optional and default to the values shown. Oversized
-summaries are omitted and recorded in `generation_errors`.
-
-Each invocation uses an isolated `pi --mode json --print --no-session`
-subprocess. Task summarizers use `thinking=off`; the plan agent retains the
-configured thinking level. Events, stderr, prompts, and provenance are retained
-under the output directory. No default model is assumed. An Analyzer snapshot
-with no env/infra tasks produces an empty fix plan without invoking Pi.
-Starting generation removes any stale `fix-plan-latest.json`; if no task
-summary succeeds, Fixer writes a diagnostic empty plan and exits nonzero.
-
-### Fix Plan action contract
-
-Fix Plan schema version 2 stores each plan's work as an ordered `actions`
-array. A command action separates the executable from its literal arguments;
-policy can inspect the resulting argv without splitting a shell command string.
-Execution must pass that argv directly without an implicit shell:
-
-```json
-{
-  "action_id": "action-001",
-  "action_type": "command",
-  "cwd": "/workspace",
-  "executable": "docker",
-  "arguments": ["build", "--tag", "benchmark-image", "."],
-  "purpose": "Build the benchmark image",
-  "expected_effect": "The benchmark image is available locally"
-}
-```
-
-File content changes use a separate exact-replacement contract:
-
-```json
-{
-  "action_id": "action-002",
-  "action_type": "file_edit",
-  "cwd": "/workspace",
-  "path": "config/daemon.json",
-  "edit": {
-    "kind": "replace_text",
-    "old_text": "\"enabled\": false",
-    "new_text": "\"enabled\": true",
-    "expected_replacements": 1
-  },
-  "purpose": "Enable the required daemon integration",
-  "expected_effect": "The daemon configuration enables the integration"
-}
-```
-
-`file_edit` is limited to existing UTF-8 files and literal paths. Creation,
-deletion, renaming, and dynamic edits are not represented by this action.
-The future executor must confirm the literal target and exact replacement count
-immediately before an atomic write.
-Commands that invoke a shell or Python to modify files remain command actions
-and must be assessed by the policy agent instead of inheriting `file_edit`
-approval.
+Generated artifacts, including `fix-plan-latest.json`, prompts, events, and
+provenance, are written below `--output-dir`. The summary-limit options are
+optional and use the defaults shown above.
 
 ### Stage 2: Execution Policy
 
-`harbor_fixer.policy` independently evaluates a complete Fix Plan before an
-executor consumes it. T1 applies deny-first rules to an unambiguous executable,
-but grants allow only to exact structured argv from a narrow read-only list or
-an explicit user rule. Docker, Git, find, execution wrappers, and explicit
-shell or interpreter payloads are left to an isolated Policy Agent. T2 handles
-only `file_edit` actions whose literal target is proven to remain inside an
-explicitly user-authorized writable root. The default authorized-root list is
-empty: the workspace and repository source are not implicitly writable. T3
-handles all remaining actions.
+Policy runs automatically before execution. Repeat `--policy-write-root` for
+each directory in which `file_edit` actions may write; no directory is writable
+by default. Use `--policy-rules` to load optional user allow and deny rules.
+The decision is written to `execution-policy-decision.json`.
 
-The standalone Policy API accepts any number of authorized roots:
+### Stage 3: Execute a plan
 
-```python
-from pathlib import Path
+Execute validated actions in plan and action order:
 
-from harbor_fixer.policy import run_policy_preflight
-
-decision = run_policy_preflight(
-    fix_plan,
-    workspace_root=Path("/path/to/workspace"),
-    output_dir=Path("/path/to/fixer-output/policy"),
-    invoker=policy_invoker,
-    writable_roots=[
-        Path("/path/to/authorized/benchmark-config"),
-        Path("/path/to/authorized/dockerfiles"),
-    ],
-)
+```bash
+python3 Agents/utils/common/Harbor/scripts/fixer.py \
+  --exec-only \
+  --fix-plan /path/to/fixer-output/fix-plan-latest.json \
+  --workspace-root /path/to/workspace \
+  --execution-timeout 300 \
+  --policy-write-root /path/to/approved/config-root \
+  --policy-rules /path/to/policy-rules.json \
+  --output-dir /path/to/fixer-output
 ```
 
-Omit `writable_roots` (or pass an empty list) to disable T2 routing. Supplying a
-root authorizes only Policy evaluation at T2; it does not itself approve or
-execute the action. `workspace_root` supplies path-resolution context only and
-never grants write permission. The T3 agent must deny direct, path-addressed
-host writes that cannot be proven to stay within the explicit roots. Internal
-Docker, package-manager, and service-manager state changes remain eligible for
-T3 evaluation, but explicit host writes, copies, or mounts still use the root
-boundary.
-
-The Policy Agent reuses the Fixer Pi invocation contract without tools. Invalid
-output, invocation failure, configuration errors, or any denied action fail
-closed. The complete decision is atomically written to
-`execution-policy-decision.json`, together with the exact Fix Plan and per-action
-SHA-256 bindings. Policy is admission and audit, not an OS sandbox, and does
-not execute actions.
+Execution writes `exec-input.json`, `execution-policy-decision.json`,
+`exec-result-latest.json`, and action logs below `--output-dir`. A policy denial
+blocks the complete plan set. A failed action skips the remainder of its plan;
+later plans continue. `--execution-timeout` applies to each command action.
 
 ## More Details
 

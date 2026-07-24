@@ -160,6 +160,16 @@ def run_policy_preflight(
                                 resolved_executable
                             ),
                         )
+                elif path_analysis["classification"] != "inside_writable_roots":
+                    decision = {
+                        "tier": "T3",
+                        "decision": "deny",
+                        "risk_level": "high",
+                        "source": "builtin_rule",
+                        "rule_id": "file_edit_outside_writable_roots",
+                        "reason_code": "file_edit_outside_writable_roots",
+                        "reason": "file_edit target is outside the authorized roots",
+                    }
                 if decision is None:
                     tier = (
                         "T2"
