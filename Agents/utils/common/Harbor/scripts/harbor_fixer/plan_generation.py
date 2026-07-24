@@ -1,4 +1,4 @@
-"""Stage 1 Fix Plan Generation orchestration."""
+"""Generate Fix Plans from Analyzer outputs and bounded planning context."""
 
 from __future__ import annotations
 
@@ -9,11 +9,11 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .artifacts import build_task_inputs, write_json, write_text
-from .environment import collect_target_environment
+from .agent_invocation import AgentInvoker
+from .analyzer_inputs import build_task_inputs
+from .artifact_io import write_json, write_text
+from .planning_context import collect_planning_context
 from .prompts import MAIN_AGENT_PROMPT, TASK_SUBAGENT_PROMPT, build_validation_retry_prompt
-from .runner import AgentRunner
-from .target_context import collect_target_context
 from .validation import (
     ValidationError,
     parse_strict_json_object,
@@ -34,8 +34,8 @@ def _task_label_from_identity(task: dict[str, Any]) -> str:
     return f"task-{slug}-{digest}"
 
 
-def _validate_or_retry_task(
-    runner: AgentRunner,
+def _summarize_task_with_retry(
+    invoker: AgentInvoker,
     task_input: dict[str, Any],
     raw_output_dir: Path,
     *,
@@ -47,7 +47,7 @@ def _validate_or_retry_task(
     for attempt in range(1, max_attempts + 1):
         raw = ""
         try:
-            raw = runner.run(prompt, task_input, attempt=attempt, label=label)
+            raw = invoker.invoke(prompt, task_input, attempt=attempt, label=label)
             write_text(raw_output_dir / f"{label}-attempt-{attempt}.txt", raw)
             payload = parse_strict_json_object(raw)
             validate_task_summary(payload, expected_task=task_input["task"])
@@ -69,7 +69,7 @@ def _validate_or_retry_task(
 
 def collect_task_summaries(
     task_inputs: list[dict[str, Any]],
-    runner: AgentRunner,
+    invoker: AgentInvoker,
     output_dir: Path,
     *,
     max_concurrency: int = 4,
@@ -81,8 +81,8 @@ def collect_task_summaries(
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrency) as executor:
         future_to_key = {
             executor.submit(
-                _validate_or_retry_task,
-                runner,
+                _summarize_task_with_retry,
+                invoker,
                 task_input,
                 raw_output_dir,
                 max_attempts=max_attempts,
@@ -102,26 +102,26 @@ def collect_task_summaries(
     return summaries, errors
 
 
-def build_main_agent_input(
+def build_plan_agent_input(
     source: dict[str, Any],
     task_summaries: list[dict[str, Any]],
     generation_errors: list[dict[str, Any]],
-    target_environment: dict[str, Any],
-    target_environment_path: Path,
-    target_context: dict[str, Any],
-    target_context_path: Path,
+    runtime_inventory: dict[str, Any],
+    runtime_inventory_path: Path,
+    workspace_evidence: dict[str, Any],
+    workspace_evidence_path: Path,
 ) -> dict[str, Any]:
-    target_environment_sha256 = hashlib.sha256(
+    runtime_inventory_sha256 = hashlib.sha256(
         json.dumps(
-            target_environment,
+            runtime_inventory,
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()
-    target_context_sha256 = hashlib.sha256(
+    workspace_evidence_sha256 = hashlib.sha256(
         json.dumps(
-            target_context,
+            workspace_evidence,
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -133,21 +133,21 @@ def build_main_agent_input(
         "source": source,
         "task_summaries": task_summaries,
         "generation_errors": generation_errors,
-        "target_environment": target_environment,
+        "target_environment": runtime_inventory,
         "target_environment_artifact": {
-            "path": str(target_environment_path),
-            "sha256": target_environment_sha256,
+            "path": str(runtime_inventory_path),
+            "sha256": runtime_inventory_sha256,
         },
-        "target_context": target_context,
+        "target_context": workspace_evidence,
         "target_context_artifact": {
-            "path": str(target_context_path),
-            "sha256": target_context_sha256,
+            "path": str(workspace_evidence_path),
+            "sha256": workspace_evidence_sha256,
         },
     }
 
 
-def generate_fix_plan(
-    main_runner: AgentRunner,
+def request_fix_plan(
+    main_invoker: AgentInvoker,
     main_input: dict[str, Any],
     output_dir: Path,
     *,
@@ -158,7 +158,7 @@ def generate_fix_plan(
     for attempt in range(1, max_attempts + 1):
         raw = ""
         try:
-            raw = main_runner.run(prompt, main_input, attempt=attempt, label="main-agent")
+            raw = main_invoker.invoke(prompt, main_input, attempt=attempt, label="main-agent")
             write_text(output_dir / "raw-main-agent-output" / f"attempt-{attempt}.txt", raw)
             payload = parse_strict_json_object(raw)
             payload.setdefault("generation_errors", [])
@@ -196,51 +196,46 @@ def generate_fix_plan(
     return fallback
 
 
-def run_stage1(
+def run_plan_generation(
     analyzer_output_path: Path,
     output_dir: Path,
-    task_runner: AgentRunner,
-    main_runner: AgentRunner,
+    task_invoker: AgentInvoker,
+    main_invoker: AgentInvoker,
     *,
     max_concurrency: int = 4,
     workspace_root: Path = Path("."),
 ) -> dict[str, Any]:
     task_inputs, source = build_task_inputs(analyzer_output_path)
-    target_environment_path = output_dir / "target-environment.json"
-    target_environment = collect_target_environment(
+    runtime_inventory_path = output_dir / "target-environment.json"
+    runtime_inventory, workspace_evidence = collect_planning_context(
         workspace_root,
         analyzer_output_path,
         task_inputs,
-        pi_bin=getattr(main_runner, "configured_pi_binary", None),
+        pi_bin=getattr(main_invoker, "configured_pi_binary", None),
     )
-    write_json(target_environment_path, target_environment)
-    target_context_path = output_dir / "target-context.json"
-    target_context = collect_target_context(
-        workspace_root,
-        analyzer_output_path,
-        task_inputs,
-    )
-    write_json(target_context_path, target_context)
+    write_json(runtime_inventory_path, runtime_inventory)
+    workspace_evidence_path = output_dir / "target-context.json"
+    write_json(workspace_evidence_path, workspace_evidence)
     for task_input in task_inputs:
         write_json(output_dir / "task-inputs" / f"{_task_label(task_input)}.json", task_input)
     task_summaries, errors = collect_task_summaries(
         task_inputs,
-        task_runner,
+        task_invoker,
         output_dir,
         max_concurrency=max_concurrency,
     )
     for summary in task_summaries:
         write_json(output_dir / "task-summaries" / f"{_task_label_from_identity(summary['task'])}.json", summary)
-    main_input = build_main_agent_input(
+    main_input = build_plan_agent_input(
         source,
         task_summaries,
         errors,
-        target_environment,
-        target_environment_path,
-        target_context,
-        target_context_path,
+        runtime_inventory,
+        runtime_inventory_path,
+        workspace_evidence,
+        workspace_evidence_path,
     )
     write_json(output_dir / "main-agent-input.json", main_input)
-    fix_plan = generate_fix_plan(main_runner, main_input, output_dir)
+    fix_plan = request_fix_plan(main_invoker, main_input, output_dir)
     write_json(output_dir / "fix-plan-latest.json", fix_plan)
     return fix_plan

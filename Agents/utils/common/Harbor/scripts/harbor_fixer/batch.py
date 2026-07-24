@@ -9,10 +9,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from .artifacts import read_json, write_json
-from .orchestrator import run_stage1
+from .agent_invocation import PiAgentInvoker, PiInvocationConfig
+from .artifact_io import read_json, write_json
+from .plan_generation import run_plan_generation
 from .reporter import run_report_from_paths
-from .runner import PiAgentConfig, PiAgentRunner
 from .validation import MONITOR_POLICIES, ValidationError
 
 
@@ -104,7 +104,7 @@ def run_batch_plan_from_manifest(
     manifest_path: Path,
     output_dir: Path,
     *,
-    pi_config: PiAgentConfig,
+    pi_config: PiInvocationConfig,
     max_concurrency: int,
     benchmark_concurrency: int,
     workspace_root: Path = Path("."),
@@ -117,14 +117,14 @@ def run_batch_plan_from_manifest(
     def worker(index: int, benchmark: dict[str, Any]) -> dict[str, Any]:
         benchmark_id = str(benchmark["benchmark_id"])
         item_output_dir = Path(str(benchmark["output_dir"]))
-        plan = run_stage1(
+        plan = run_plan_generation(
             Path(str(benchmark["analyzer_output"])),
             item_output_dir,
-            PiAgentRunner(
+            PiAgentInvoker(
                 item_output_dir,
                 replace(pi_config, thinking_level="off"),
             ),
-            PiAgentRunner(item_output_dir, pi_config),
+            PiAgentInvoker(item_output_dir, pi_config),
             max_concurrency=max_concurrency,
             workspace_root=workspace_root,
         )
@@ -167,7 +167,7 @@ def run_batch_report_from_manifest(
     manifest_path: Path,
     output_dir: Path,
     *,
-    pi_config: PiAgentConfig,
+    pi_config: PiInvocationConfig,
     benchmark_concurrency: int,
     baseline_monitor_policy: str,
 ) -> dict[str, Any]:
@@ -198,7 +198,7 @@ def run_batch_report_from_manifest(
             Path(str(benchmark["verification_result"])),
             Path(str(benchmark["analyzer_output"])),
             item_output_dir,
-            PiAgentRunner(item_output_dir, pi_config),
+            PiAgentInvoker(item_output_dir, pi_config),
             baseline_run_dir=baseline_run_dir,
             baseline_monitor_policy=item_policy,
         )

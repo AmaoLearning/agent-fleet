@@ -8,17 +8,18 @@ import os
 from dataclasses import replace
 from pathlib import Path
 
-from harbor_fixer.artifacts import build_task_inputs, write_json, write_text
+from harbor_fixer.agent_invocation import PiAgentInvoker, PiInvocationConfig
+from harbor_fixer.analyzer_inputs import build_task_inputs
+from harbor_fixer.artifact_io import write_json, write_text
 from harbor_fixer.batch import run_batch_plan_from_manifest, run_batch_report_from_manifest
 from harbor_fixer.executor import run_fix_exec_from_plan
-from harbor_fixer.orchestrator import run_stage1
+from harbor_fixer.plan_generation import run_plan_generation
 from harbor_fixer.prompts import (
     MAIN_AGENT_PROMPT,
     REPORT_MAIN_AGENT_PROMPT,
     TASK_SUBAGENT_PROMPT,
 )
 from harbor_fixer.reporter import run_report_from_paths
-from harbor_fixer.runner import PiAgentConfig, PiAgentRunner
 from harbor_fixer.verifier import run_verification_from_paths
 
 
@@ -30,10 +31,10 @@ def _default_base_url() -> str:
     return os.environ.get("HARBOR_FIXER_BASE_URL") or os.environ.get("BASE_URL") or ""
 
 
-def build_pi_config(args: argparse.Namespace) -> PiAgentConfig:
+def build_pi_config(args: argparse.Namespace) -> PiInvocationConfig:
     if not os.environ.get(args.pi_api_key_env) and os.environ.get("API_KEY"):
         os.environ[args.pi_api_key_env] = os.environ["API_KEY"]
-    return PiAgentConfig(
+    return PiInvocationConfig(
         pi_bin=args.pi_bin,
         provider=args.pi_provider,
         model=args.pi_model,
@@ -167,7 +168,7 @@ def main() -> int:
             args.verification_result,
             args.analyzer_output,
             args.output_dir,
-            PiAgentRunner(args.output_dir, build_pi_config(args)),
+            PiAgentInvoker(args.output_dir, build_pi_config(args)),
             baseline_run_dir=args.baseline_run_dir,
             baseline_monitor_policy=args.baseline_monitor_policy,
         )
@@ -182,16 +183,16 @@ def main() -> int:
         return 0
 
     pi_config = build_pi_config(args)
-    task_runner = PiAgentRunner(
+    task_invoker = PiAgentInvoker(
         args.output_dir,
         replace(pi_config, thinking_level="off"),
     )
-    main_runner = PiAgentRunner(args.output_dir, pi_config)
-    run_stage1(
+    main_invoker = PiAgentInvoker(args.output_dir, pi_config)
+    run_plan_generation(
         args.analyzer_output,
         args.output_dir,
-        task_runner,
-        main_runner,
+        task_invoker,
+        main_invoker,
         max_concurrency=args.max_concurrency,
         workspace_root=args.workspace_root,
     )

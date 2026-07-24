@@ -438,8 +438,8 @@ and writes `batch-result-latest.json` with `success`, `partial_failed`, or
 
 ### Pi Runtime Boundary
 
-`scripts/harbor_fixer/pi_runtime.py` is the Fixer-owned low-level subprocess
-boundary used by `harbor_fixer/runner.py`. It does not build Fixer prompts, collect target
+`scripts/harbor_fixer/pi_subprocess.py` is the Fixer-owned low-level subprocess
+boundary used by `harbor_fixer/agent_invocation.py`. It does not build Fixer prompts, collect target
 context, generate plans, execute commands, verify tasks, or classify reports.
 It:
 

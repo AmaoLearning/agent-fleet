@@ -1,4 +1,4 @@
-"""Agent runner abstractions for Harbor Fixer MVP."""
+"""Fixer agent invocation contract and Pi-backed implementation."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from .pi_runtime import dispatch_pi_json, write_text_atomic
+from .pi_subprocess import run_pi_json_process, write_text_atomic
 
 
 FIXER_INPUT_MARKER = "HARBOR_FIXER_INPUT_JSON:"
@@ -19,13 +19,13 @@ FIXER_SYSTEM_PROMPT = (
 )
 
 
-class AgentRunner(Protocol):
-    def run(self, prompt: str, payload: dict[str, Any], *, attempt: int, label: str) -> str:
+class AgentInvoker(Protocol):
+    def invoke(self, prompt: str, payload: dict[str, Any], *, attempt: int, label: str) -> str:
         """Return raw agent output."""
 
 
 @dataclass(frozen=True)
-class PiAgentConfig:
+class PiInvocationConfig:
     pi_bin: str = "pi"
     provider: str = "harbor-fixer"
     model: str = ""
@@ -53,10 +53,10 @@ def _compose_prompt(prompt: str, payload: dict[str, Any]) -> str:
     )
 
 
-class PiAgentRunner:
+class PiAgentInvoker:
     """Run one isolated no-session Pi coding-agent subprocess per agent call."""
 
-    def __init__(self, output_dir: Path, config: PiAgentConfig) -> None:
+    def __init__(self, output_dir: Path, config: PiInvocationConfig) -> None:
         self.output_dir = output_dir
         self.config = config
 
@@ -64,14 +64,14 @@ class PiAgentRunner:
     def configured_pi_binary(self) -> str:
         return self.config.pi_bin
 
-    def run(self, prompt: str, payload: dict[str, Any], *, attempt: int, label: str) -> str:
+    def invoke(self, prompt: str, payload: dict[str, Any], *, attempt: int, label: str) -> str:
         safe_label = _safe_path_component(label)
         attempt_name = f"attempt-{attempt}"
         call_id = f"{safe_label}-{attempt_name}"
         rendered_prompt = _compose_prompt(prompt, payload)
         prompt_path = self.output_dir / "pi-agent-prompts" / safe_label / f"{attempt_name}.txt"
         write_text_atomic(prompt_path, rendered_prompt)
-        result = dispatch_pi_json(
+        result = run_pi_json_process(
             prompt=rendered_prompt,
             events_path=self.output_dir / "pi-agent-events" / safe_label / f"{attempt_name}.jsonl",
             stderr_path=self.output_dir / "pi-agent-stderr" / safe_label / f"{attempt_name}.txt",

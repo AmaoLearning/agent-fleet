@@ -1,4 +1,4 @@
-"""Harbor Fixer helpers for isolated Pi coding-agent JSON subprocesses."""
+"""Launch isolated Pi subprocesses and validate their JSON event streams."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ PERSISTED_EVENT_TYPES = {
 
 
 @dataclass
-class PiDispatchResult:
+class PiProcessResult:
     output_json: dict[str, Any] | None
     output_text: str
     provenance: dict[str, Any]
@@ -355,7 +355,7 @@ def write_text_atomic(path: Path, content: str) -> None:
     temp_path.replace(path)
 
 
-def dispatch_pi_json(
+def run_pi_json_process(
     *,
     prompt: str,
     events_path: Path,
@@ -385,7 +385,7 @@ def dispatch_pi_json(
     disable_skills: bool = True,
     disable_prompt_templates: bool = True,
     disable_context_files: bool = True,
-) -> PiDispatchResult:
+) -> PiProcessResult:
     normalized_url = normalized_base_url(base_url)
     record: dict[str, Any] = {
         "launch_mode": launch_mode,
@@ -402,22 +402,22 @@ def dispatch_pi_json(
 
     resolved_pi = shutil.which(pi_bin)
     if resolved_pi is None:
-        return PiDispatchResult(None, "", record, "pi_binary_not_found", "")
+        return PiProcessResult(None, "", record, "pi_binary_not_found", "")
     if not provider.strip():
-        return PiDispatchResult(None, "", record, "pi_provider_not_configured", "")
+        return PiProcessResult(None, "", record, "pi_provider_not_configured", "")
     if not model.strip():
-        return PiDispatchResult(None, "", record, "pi_model_not_configured", "")
+        return PiProcessResult(None, "", record, "pi_model_not_configured", "")
     if not ENV_NAME_RE.fullmatch(api_key_env):
-        return PiDispatchResult(None, "", record, "pi_api_key_env_invalid", "")
+        return PiProcessResult(None, "", record, "pi_api_key_env_invalid", "")
     if thinking_level is not None and thinking_level not in THINKING_LEVELS:
-        return PiDispatchResult(None, "", record, "pi_thinking_level_invalid", "")
+        return PiProcessResult(None, "", record, "pi_thinking_level_invalid", "")
     if not os.environ.get(api_key_env):
-        return PiDispatchResult(None, "", record, f"pi_api_key_env_missing:{api_key_env}", "")
+        return PiProcessResult(None, "", record, f"pi_api_key_env_missing:{api_key_env}", "")
     parsed_url = urlparse(normalized_url)
     if parsed_url.scheme not in {"http", "https"} or not parsed_url.hostname:
-        return PiDispatchResult(None, "", record, "pi_base_url_invalid", "")
+        return PiProcessResult(None, "", record, "pi_base_url_invalid", "")
     if extension_path is not None and not extension_path.is_file():
-        return PiDispatchResult(None, "", record, "pi_extension_missing", "")
+        return PiProcessResult(None, "", record, "pi_extension_missing", "")
 
     runtime_home.mkdir(parents=True, exist_ok=True)
     runtime_workdir.mkdir(parents=True, exist_ok=True)
@@ -529,10 +529,10 @@ def dispatch_pi_json(
                     record.update(event_record)
                 finally:
                     raw_events_path.unlink(missing_ok=True)
-                return PiDispatchResult(None, "", record, "pi_dispatch_timeout", stderr[-4000:])
+                return PiProcessResult(None, "", record, "pi_dispatch_timeout", stderr[-4000:])
     except OSError as exc:
         raw_events_path.unlink(missing_ok=True)
-        return PiDispatchResult(None, "", record, f"pi_dispatch_os_error:{exc}", "")
+        return PiProcessResult(None, "", record, f"pi_dispatch_os_error:{exc}", "")
 
     stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
     record["pi_exit_code"] = return_code
@@ -543,7 +543,7 @@ def dispatch_pi_json(
         )
         record.update(event_record)
     except OSError as exc:
-        return PiDispatchResult(
+        return PiProcessResult(
             None,
             "",
             record,
@@ -553,7 +553,7 @@ def dispatch_pi_json(
     finally:
         raw_events_path.unlink(missing_ok=True)
     if return_code != 0:
-        return PiDispatchResult(None, "", record, f"pi_dispatch_exit_code:{return_code}", stderr[-4000:])
+        return PiProcessResult(None, "", record, f"pi_dispatch_exit_code:{return_code}", stderr[-4000:])
 
     session_ids = [
         str(event.get("id"))
@@ -583,13 +583,13 @@ def dispatch_pi_json(
         }
     )
     if invalid_lines:
-        return PiDispatchResult(None, "", record, "pi_jsonl_invalid", stderr[-4000:])
+        return PiProcessResult(None, "", record, "pi_jsonl_invalid", stderr[-4000:])
     if len(session_ids) != 1:
-        return PiDispatchResult(None, "", record, "pi_subagent_session_not_observed", stderr[-4000:])
+        return PiProcessResult(None, "", record, "pi_subagent_session_not_observed", stderr[-4000:])
     if agent_start_count < 1 or agent_start_count != agent_end_count:
-        return PiDispatchResult(None, "", record, "pi_subagent_lifecycle_invalid", stderr[-4000:])
+        return PiProcessResult(None, "", record, "pi_subagent_lifecycle_invalid", stderr[-4000:])
     if turn_start_count < 1 or turn_start_count != turn_end_count:
-        return PiDispatchResult(None, "", record, "pi_subagent_turn_invalid", stderr[-4000:])
+        return PiProcessResult(None, "", record, "pi_subagent_turn_invalid", stderr[-4000:])
 
     output_block_reason, provider_error = final_output_block_reason(events, retry_end_events)
     final_message = final_assistant_message(events)
@@ -601,18 +601,18 @@ def dispatch_pi_json(
         if output_block_reason:
             if provider_error:
                 record["pi_provider_final_error"] = provider_error
-            return PiDispatchResult(None, "", record, output_block_reason, stderr[-4000:])
+            return PiProcessResult(None, "", record, output_block_reason, stderr[-4000:])
     output_json, extracted_from_text = loads_final_json(final_text)
     if output_json is None:
         if output_block_reason:
             if provider_error:
                 record["pi_provider_final_error"] = provider_error
-            return PiDispatchResult(None, final_text, record, output_block_reason, stderr[-4000:])
+            return PiProcessResult(None, final_text, record, output_block_reason, stderr[-4000:])
         if final_text:
             record["final_message_sha256"] = hashlib.sha256(final_text.encode("utf-8")).hexdigest()
-        return PiDispatchResult(None, final_text, record, "pi_final_message_invalid_json", stderr[-4000:])
+        return PiProcessResult(None, final_text, record, "pi_final_message_invalid_json", stderr[-4000:])
 
     record["final_message_sha256"] = hashlib.sha256(final_text.encode("utf-8")).hexdigest()
     record["final_json_extracted_from_text"] = extracted_from_text
     record["provenance_valid"] = True
-    return PiDispatchResult(output_json, final_text, record, None, stderr[-4000:])
+    return PiProcessResult(output_json, final_text, record, None, stderr[-4000:])

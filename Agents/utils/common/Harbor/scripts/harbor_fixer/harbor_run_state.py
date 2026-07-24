@@ -1,4 +1,4 @@
-"""Shared Harbor run artifact collection for Fixer stages."""
+"""Inspect Harbor run task state and monitor snapshots for Fixer stages."""
 
 from __future__ import annotations
 
@@ -16,10 +16,10 @@ from harbor_monitor.artifacts import (
 from harbor_monitor.classification import classify_task_status
 from harbor_monitor.runner import run_loop
 
-from .artifacts import read_json
+from .artifact_io import read_json
 
 
-def queue_paths(run_dir: Path) -> tuple[Path, Path]:
+def locate_queue_files(run_dir: Path) -> tuple[Path, Path]:
     queue_root = run_dir / "queue"
     if queue_root.is_dir():
         for queue_dir in sorted(queue_root.iterdir()):
@@ -32,7 +32,7 @@ def queue_paths(run_dir: Path) -> tuple[Path, Path]:
     return run_dir / "done.txt", run_dir / "failed.txt"
 
 
-def task_manifest(run_dir: Path) -> dict[str, str]:
+def load_task_manifest(run_dir: Path) -> dict[str, str]:
     candidates = [
         run_dir / "task-manifest.tsv",
         run_dir / "task_manifest.tsv",
@@ -45,10 +45,10 @@ def task_manifest(run_dir: Path) -> dict[str, str]:
     return load_task_file_manifest(run_dir / "tasks.txt")
 
 
-def collect_run_tasks(run_dir: Path) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
-    done_path, failed_path = queue_paths(run_dir)
+def collect_task_results(run_dir: Path) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    done_path, failed_path = locate_queue_files(run_dir)
     tasks: dict[str, TaskInput] = load_task_records(done_path, failed_path)
-    for task_index, task_name in task_manifest(run_dir).items():
+    for task_index, task_name in load_task_manifest(run_dir).items():
         tasks.setdefault(task_index, TaskInput(task_index=task_index, task_name=task_name))
 
     records: dict[str, dict[str, Any]] = {}
@@ -115,7 +115,7 @@ def generate_monitor_snapshot(
     output_dir: Path,
     artifact_dir_name: str,
 ) -> tuple[dict[str, Any] | None, str]:
-    done_path, failed_path = queue_paths(run_dir)
+    done_path, failed_path = locate_queue_files(run_dir)
     queue_dir = done_path.parent if done_path.parent.exists() else None
     monitor_dir = output_dir / artifact_dir_name
     monitor_output = monitor_dir / "monitor-latest.json"

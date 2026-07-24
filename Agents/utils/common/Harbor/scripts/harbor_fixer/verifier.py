@@ -12,8 +12,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .artifacts import build_task_inputs, read_json, write_json
-from .run_artifacts import collect_run_tasks, generate_monitor_snapshot, read_monitor_snapshot
+from .analyzer_inputs import build_task_inputs
+from .artifact_io import read_json, write_json
+from .harbor_run_state import collect_task_results, generate_monitor_snapshot, read_monitor_snapshot
 from .validation import (
     validate_exec_result,
     validate_fix_plan_set,
@@ -102,7 +103,7 @@ def _wait_for_monitor_terminal(
 
 
 def _collect_run_tasks(run_dir: Path) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
-    return collect_run_tasks(run_dir)
+    return collect_task_results(run_dir)
 
 
 def _analyzer_task_context(analyzer_output_path: Path) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:

@@ -1,4 +1,4 @@
-"""Deterministic, bounded target project context for Fix Plan generation."""
+"""Collect deterministic, bounded workspace manifests and evidence excerpts."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .safe_paths import inspect_path
 
 MAX_TOP_LEVEL_ENTRIES = 200
 MAX_MANIFESTS = 100
@@ -127,47 +128,13 @@ def _bounded(text: str) -> str:
 
 
 def _path_state(path: Path) -> dict[str, Any]:
-    try:
-        exists = path.exists()
-        readable = os.access(path, os.R_OK)
-    except OSError as exc:
-        return {
-            "path": str(path),
-            "status": "unavailable",
-            "reason": f"path_unavailable:{exc.__class__.__name__}",
-            "exists": False,
-            "readable": False,
-            "error": f"{exc.__class__.__name__}: {exc}",
-        }
-    state: dict[str, Any] = {
-        "path": str(path),
-        "exists": exists,
-        "readable": readable,
-    }
-    if not state["exists"]:
-        return state
-    try:
-        resolved = path.resolve(strict=True)
-        info = resolved.stat()
-    except OSError as exc:
-        state["status"] = "unavailable"
-        state["reason"] = f"path_unavailable:{exc.__class__.__name__}"
-        state["error"] = f"{exc.__class__.__name__}: {exc}"
-        return state
-    state.update(
-        {
-            "realpath": str(resolved),
-            "type": (
-                "directory"
-                if resolved.is_dir()
-                else "file"
-                if resolved.is_file()
-                else "other"
-            ),
-            "size_bytes": info.st_size,
-        }
+    return inspect_path(
+        path,
+        expand_user=False,
+        include_writable=False,
+        include_executable=False,
+        include_mode=False,
     )
-    return state
 
 
 def _read_lines(path: Path, start: int, end: int) -> tuple[str, str]:
@@ -305,7 +272,7 @@ def _evidence_excerpts(task_inputs: list[dict[str, Any]]) -> tuple[list[dict[str
     return excerpts, truncated
 
 
-def collect_target_context(
+def collect_workspace_evidence(
     workspace_root: Path,
     analyzer_output_path: Path,
     task_inputs: list[dict[str, Any]],

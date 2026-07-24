@@ -8,10 +8,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .artifacts import read_json, resolve_analyzer_paths, write_json, write_text
+from .agent_invocation import AgentInvoker
+from .analyzer_inputs import resolve_analyzer_paths
+from .artifact_io import read_json, write_json, write_text
+from .harbor_run_state import collect_task_results, generate_monitor_snapshot, read_monitor_snapshot
 from .prompts import REPORT_MAIN_AGENT_PROMPT, build_validation_retry_prompt
-from .run_artifacts import collect_run_tasks, generate_monitor_snapshot, read_monitor_snapshot
-from .runner import AgentRunner
 from .validation import (
     TASK_COMPLETE_STATUSES,
     ValidationError,
@@ -614,7 +615,7 @@ def _collect_baseline_monitor(
         snapshot, output_path = read_monitor_snapshot(baseline_run_dir, output_dir, "baseline-monitor")
         if snapshot is None:
             snapshot, output_path = generate_monitor_snapshot(baseline_run_dir, output_dir, "baseline-monitor")
-    records, summary = collect_run_tasks(baseline_run_dir)
+    records, summary = collect_task_results(baseline_run_dir)
     return snapshot, output_path, records, summary
 
 
@@ -797,7 +798,7 @@ def _fallback_summary(summary_input: dict[str, Any], errors: list[dict[str, Any]
 
 
 def generate_report_summary(
-    runner: AgentRunner,
+    invoker: AgentInvoker,
     summary_input: dict[str, Any],
     output_dir: Path,
     *,
@@ -809,7 +810,7 @@ def generate_report_summary(
     for attempt in range(1, max_attempts + 1):
         raw = ""
         try:
-            raw = runner.run(prompt, summary_input, attempt=attempt, label="report-main-agent")
+            raw = invoker.invoke(prompt, summary_input, attempt=attempt, label="report-main-agent")
             raw_path = output_dir / "raw-report-main-agent-output" / f"attempt-{attempt}.txt"
             write_text(raw_path, raw)
             raw_paths.append(str(raw_path))
@@ -919,13 +920,13 @@ def _apply_summary_caveats(summary: dict[str, Any], report_input: dict[str, Any]
     return summary
 
 
-def run_report(report_input: dict[str, Any], output_dir: Path, runner: AgentRunner) -> dict[str, Any]:
+def run_report(report_input: dict[str, Any], output_dir: Path, invoker: AgentInvoker) -> dict[str, Any]:
     validate_report_input(report_input)
     output_dir.mkdir(parents=True, exist_ok=True)
     write_json(output_dir / "report-input.json", report_input)
 
     verification_result = report_input["verification_result"]
-    summary, raw_paths = generate_report_summary(runner, report_input["summary_input"], output_dir)
+    summary, raw_paths = generate_report_summary(invoker, report_input["summary_input"], output_dir)
     target_environment_path = output_dir / "target-environment.json"
     target_context_path = output_dir / "target-context.json"
     if not target_environment_path.is_file() or not target_context_path.is_file():
@@ -998,7 +999,7 @@ def run_report_from_paths(
     verification_result_path: Path,
     analyzer_output_path: Path,
     output_dir: Path,
-    runner: AgentRunner,
+    invoker: AgentInvoker,
     *,
     baseline_run_dir: Path | None = None,
     baseline_monitor_policy: str = "auto",
@@ -1012,4 +1013,4 @@ def run_report_from_paths(
         baseline_run_dir=baseline_run_dir,
         baseline_monitor_policy=baseline_monitor_policy,
     )
-    return run_report(report_input, output_dir, runner)
+    return run_report(report_input, output_dir, invoker)

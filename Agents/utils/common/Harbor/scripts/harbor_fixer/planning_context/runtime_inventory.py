@@ -1,4 +1,4 @@
-"""Read-only target environment discovery for Fix Plan generation."""
+"""Collect a read-only inventory of runtimes and tools available to Fixer."""
 
 from __future__ import annotations
 
@@ -10,7 +10,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .validation import ValidationError
+from ..validation import ValidationError
+from .safe_paths import inspect_path
 
 
 COMMANDS = (
@@ -62,55 +63,13 @@ PROBE_TIMEOUT_SECONDS = 5
 
 
 def _path_state(path: Path) -> dict[str, Any]:
-    expanded = path.expanduser()
-    try:
-        exists = expanded.exists()
-        readable = os.access(expanded, os.R_OK)
-        writable = os.access(expanded, os.W_OK)
-        executable = os.access(expanded, os.X_OK)
-    except OSError as exc:
-        return {
-            "path": str(expanded),
-            "status": "unavailable",
-            "reason": f"path_unavailable:{exc.__class__.__name__}",
-            "exists": False,
-            "readable": False,
-            "writable": False,
-            "executable": False,
-            "error": f"{exc.__class__.__name__}: {exc}",
-        }
-    payload: dict[str, Any] = {
-        "path": str(expanded),
-        "exists": exists,
-        "readable": readable,
-        "writable": writable,
-        "executable": executable,
-    }
-    if not payload["exists"]:
-        return payload
-    try:
-        resolved = expanded.resolve(strict=True)
-        info = resolved.stat()
-    except OSError as exc:
-        payload["status"] = "unavailable"
-        payload["reason"] = f"path_unavailable:{exc.__class__.__name__}"
-        payload["error"] = f"{exc.__class__.__name__}: {exc}"
-        return payload
-    payload.update(
-        {
-            "realpath": str(resolved),
-            "type": (
-                "directory"
-                if resolved.is_dir()
-                else "file"
-                if resolved.is_file()
-                else "other"
-            ),
-            "size_bytes": info.st_size,
-            "mode": oct(info.st_mode & 0o777),
-        }
+    return inspect_path(
+        path,
+        expand_user=True,
+        include_writable=True,
+        include_executable=True,
+        include_mode=True,
     )
-    return payload
 
 
 def _run_probe(argv: list[str], *, timeout: int = PROBE_TIMEOUT_SECONDS) -> dict[str, Any]:
@@ -304,7 +263,7 @@ def _evidence_paths(task_inputs: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def collect_target_environment(
+def collect_runtime_inventory(
     workspace_root: Path,
     analyzer_output_path: Path,
     task_inputs: list[dict[str, Any]],
@@ -320,7 +279,7 @@ def collect_target_environment(
     if not workspace.is_dir() or not os.access(workspace, os.R_OK):
         raise ValidationError(f"workspace root must be a readable directory: {workspace_root}")
 
-    harbor_root = Path(__file__).resolve().parents[2]
+    harbor_root = Path(__file__).resolve().parents[3]
     repo_root = _find_repo_root(harbor_root)
     commands = _command_snapshot(pi_bin)
     repository_paths: dict[str, dict[str, Any]] = {

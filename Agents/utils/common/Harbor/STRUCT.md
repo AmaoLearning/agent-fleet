@@ -32,17 +32,21 @@ Agents/utils/common/Harbor/
     │   └── runner.py           # Control commands, retries, and follow loop
     ├── fixer.py                # Fixer MVP CLI entrypoint
     ├── harbor_fixer/
-    │   ├── artifacts.py        # Analyzer output parsing and task input assembly
+    │   ├── agent_invocation.py # Fixer agent contract, prompt assembly, and Pi adapter
+    │   ├── analyzer_inputs.py  # Analyzer output parsing and task input assembly
+    │   ├── artifact_io.py      # Shared Fixer JSON, JSONL, and text file I/O
     │   ├── batch.py            # Benchmark-level batch plan/report orchestration
-    │   ├── environment.py      # Bounded read-only host, dependency, and evidence probes
     │   ├── executor.py         # Stage-2 fix command execution and logs
-    │   ├── orchestrator.py     # Task subagent dispatch, validation, and plan generation
-    │   ├── pi_runtime.py       # Isolated Pi process, event, JSON, and provenance boundary
+    │   ├── harbor_run_state.py # Harbor task results and monitor snapshot inspection
+    │   ├── pi_subprocess.py    # Isolated Pi process, event, JSON, and provenance boundary
+    │   ├── plan_generation.py  # Task-agent dispatch, validation, and plan generation
+    │   ├── planning_context/
+    │   │   ├── builder.py      # Unified planning-context collection entrypoint
+    │   │   ├── runtime_inventory.py # Host tools, dependencies, and runtime probes
+    │   │   ├── safe_paths.py   # Shared non-throwing path inspection
+    │   │   └── workspace_evidence.py # Bounded manifests and Analyzer evidence excerpts
     │   ├── prompts.py          # Task, planning, report, and validation-retry prompts
     │   ├── reporter.py         # Stage-4 JSON contract, Markdown rendering, and summary-agent boundary
-    │   ├── run_artifacts.py    # Shared Harbor run and monitor artifact collection
-    │   ├── runner.py           # Pi child-process runner for Stage-1/4 agent calls
-    │   ├── target_context.py   # Deterministic bounded workspace and Analyzer evidence context
     │   ├── verifier.py         # Stage-3 code-only smoke verification and result collection
     │   └── validation.py       # Stdlib schema checks for fixer JSON contracts
     ├── online_rule_analyzer.py # Optional console-only online analysis
@@ -57,10 +61,22 @@ in the environment as `HARBOR_ANALYZER_*` variables.
 
 | Stage | Owner | Agent use | Primary outputs |
 | --- | --- | --- | --- |
-| Plan | `artifacts.py`, `environment.py`, `target_context.py`, `orchestrator.py` | No-tool task Pi agents summarize tasks; one no-tool main Pi agent creates plans | `target-environment.json`, `target-context.json`, `main-agent-input.json`, `fix-plan-latest.json` |
+| Plan | `analyzer_inputs.py`, `planning_context/`, `plan_generation.py` | No-tool task Pi agents summarize tasks; one no-tool main Pi agent creates plans | `target-environment.json`, `target-context.json`, `main-agent-input.json`, `fix-plan-latest.json` |
 | Exec | `executor.py` | None | `exec-input.json`, `exec-result-latest.json`, `command-logs/` |
-| Verification | `verifier.py`, `run_artifacts.py` | None | `verification-smoke-tasks.txt`, `verification-smoke-selection.json`, `verification-result-latest.json` |
-| Report | `reporter.py`, `run_artifacts.py` | One no-tool Pi agent writes only the bounded human summary | `report-input.json`, `fix-report-latest.json`, `fix-report-latest.md`, optional monitor snapshots |
+| Verification | `verifier.py`, `harbor_run_state.py` | None | `verification-smoke-tasks.txt`, `verification-smoke-selection.json`, `verification-result-latest.json` |
+| Report | `reporter.py`, `harbor_run_state.py` | One no-tool Pi agent writes only the bounded human summary | `report-input.json`, `fix-report-latest.json`, `fix-report-latest.md`, optional monitor snapshots |
+
+Fixer tests follow the same responsibility split:
+`test_harbor_fixer_plan.py`, `test_harbor_fixer_exec.py`,
+`test_harbor_fixer_verification.py`, `test_harbor_fixer_report.py`,
+`test_harbor_fixer_batch.py`, `test_harbor_fixer_runtime_context.py`, and
+`test_harbor_fixer_agent_contracts.py`. Shared builders and test doubles live in
+the non-discovered `tests/fixer_test_support.py` module. Run them with:
+
+```bash
+python3 -m unittest discover -s Agents/utils/common/Harbor/tests \
+  -p 'test_harbor_fixer_*.py'
+```
 
 Stage 1 performs deterministic inspection before any model call. Environment
 probes cover command paths and versions, Python modules, uv tool environments,
@@ -73,7 +89,7 @@ resulting JSON and no filesystem tools.
 Task Pi agents use `thinking=off` and only compress one task into the validated
 task-summary contract. The planning and report agents retain the configured
 thinking level. Every agent attempt runs independently through
-`harbor_fixer/pi_runtime.py`; no Pi session, extension, skill, prompt template,
+`harbor_fixer/pi_subprocess.py`; no Pi session, extension, skill, prompt template,
 context file, or built-in tool is shared or enabled.
 
 Batch planning and reporting are implemented in `batch.py`. A benchmark failure
@@ -98,7 +114,7 @@ paths of both report formats.
 
 ## Fixer Pi Runtime
 
-`harbor_fixer/pi_runtime.py` owns the process and protocol mechanics below the
+`harbor_fixer/pi_subprocess.py` owns the process and protocol mechanics below the
 Fixer agent adapter. It remains in the Fixer package because no other Harbor
 component imports it:
 
@@ -113,7 +129,7 @@ component imports it:
 6. Kill the whole process group on timeout so child processes are not leaked.
 
 It intentionally does not understand Analyzer/Fixer schemas or Harbor task
-semantics. `harbor_fixer/runner.py` composes the Fixer prompt and payload, calls
+semantics. `harbor_fixer/agent_invocation.py` composes the Fixer prompt and payload, calls
 this runtime, writes Fixer-specific provenance paths, and turns runtime block
 reasons into agent-attempt errors.
 
