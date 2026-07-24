@@ -9,11 +9,13 @@ evaluating Claude Code, OpenCode, and OpenClaw.
 
 - Docker with Docker Compose v2
 - Python 3.9 or newer
-- `git`, `curl`, `jq`, `openssl`, `tmux`, and `zellij`
+- `git`, `curl`, `jq`, and `openssl`
+- Linux `util-linux` (`flock`, `setsid`, and `script`) and `procps` (`pkill`)
 
-Install tmux with your package manager and install Zellij from its
-[releases page](https://github.com/zellij-org/zellij/releases). `setup.sh`
-below installs Node.js and Pi for the control-plane Prompt workflow. Harbor
+These system commands must be on `PATH`; downloading an executable without
+adding its directory to `PATH` is not sufficient. `setup.sh` installs the
+tested Zellij and uv releases, Node.js, and Pi to user-writable locations and
+records their paths for every runner. The scripts do not require tmux. Harbor
 task containers still install and run the selected benchmark agent, including
 Claude Code.
 
@@ -27,22 +29,25 @@ cd agent-fleet
 ### 3. Configure and set up
 
 Run the commands below, replacing the example values with your model gateway
-credentials. Opik tracing is on by default; setup persists whichever tracing
-choice you make:
+credentials. Setup asks whether to enable Opik tracing and defaults to no; it
+persists the choice in `config.local.env`:
 
 ```bash
 export BASE_URL=https://your-model-gateway.example.com  # Do not include /v1
 export API_KEY=your-api-key
 export MODEL=your-model-id
 
-export TRACE_TO_OPIK=false                       # run without an Opik server
-# export OPIK_URL=https://your-opik-host/api     # or keep tracing on and point it here
+# Optional automation override; omit it to answer the setup prompt.
+export TRACE_TO_OPIK=false
+# To enable tracing instead, set TRACE_TO_OPIK=true and OPIK_URL.
 
-REPO_DIR="$PWD" ./scripts/setup.sh
+./scripts/setup.sh
 ```
 
-`REPO_DIR="$PWD"` points setup at this checkout instead of its default
-`$HOME/agent-fleet` clone.
+After setup succeeds, this shell and future shells can invoke every public
+runner without manual `PATH`, Zellij, or cache overrides. Private configuration
+stays in this checkout's ignored `config.local.env`. There is no need to source
+`~/.bashrc` before running the repository scripts.
 
 ### 4. Run one benchmark
 
@@ -64,7 +69,12 @@ Then start the full benchmark, with direct arguments or in natural language
 ```
 
 The first run is slower while Harbor downloads the taskset and Docker images.
-Rerun `setup.sh` only when configuration changes.
+At launch, the runner prints the `RUN_ID`, Zellij session, output directory,
+and `summary.txt` path. A successful foreground run closes Zellij and prints
+the final counts and reward in the calling shell. A failed interactive or
+detached run keeps its Zellij pane open for diagnostics; leave it with `Ctrl-q`
+after inspection. Noninteractive foreground runs return Harbor's exit code
+without waiting for input. Rerun `setup.sh` only when configuration changes.
 
 ## FleetSpec runs
 
