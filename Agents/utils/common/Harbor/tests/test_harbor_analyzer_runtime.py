@@ -300,6 +300,36 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
 
             self.assertEqual(result.block_reason, "pi_dispatch_timeout")
             self.assertTrue(result.provenance["events_partial"])
+            self.assertEqual(result.provenance["pi_session_ids"], ["session-1"])
+            self.assertEqual(result.provenance["jsonl_event_count"], 1)
+            self.assertEqual(result.provenance["jsonl_invalid_line_count"], 0)
+
+    def test_dispatch_nonzero_exit_records_partial_event_counters(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            fake_pi = self._fake_pi(
+                root_path,
+                "print(json.dumps({'type': 'session', 'id': 'session-1'}), flush=True)\n"
+                "raise SystemExit(7)\n",
+            )
+
+            with mock.patch.dict(os.environ, {"HARBOR_ANALYZER_API_KEY": "test-key"}):
+                result = dispatch_to_child(
+                    prompt="{}",
+                    analysis_id="sha256-" + ("4" * 64),
+                    output_dir=root_path / "out",
+                    pi_bin=str(fake_pi),
+                    provider="harbor-analyzer",
+                    model="test-model",
+                    base_url="https://example.test/v1",
+                    api_key_env="HARBOR_ANALYZER_API_KEY",
+                    agent_name="harbor_analyzer_pi_subagent",
+                    timeout_seconds=1,
+                )
+
+            self.assertEqual(result.block_reason, "pi_dispatch_exit_code:7")
+            self.assertEqual(result.provenance["pi_session_ids"], ["session-1"])
+            self.assertEqual(result.provenance["jsonl_event_count"], 1)
 
     def test_task_slug_uses_safe_basename_for_untrusted_task_index(self) -> None:
         slug = _task_slug(task(task_index="/tmp/pr83-escape"))
