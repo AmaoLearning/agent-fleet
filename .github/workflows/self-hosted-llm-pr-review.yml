@@ -25,14 +25,25 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
 
-      - name: Review pull request
+      - name: Verify pi is available
+        env:
+          PI_VERSION: "0.81.1"
+        run: |
+          set -euo pipefail
+          INSTALLED_VERSION="$(pi --version 2>/dev/null || true)"
+          if [[ "$INSTALLED_VERSION" != "$PI_VERSION" ]]; then
+            echo "::error::Expected pi version $PI_VERSION, got ${INSTALLED_VERSION:-missing}" >&2
+            exit 1
+          fi
+
+      - name: Review pull request with pi agent
         env:
           GITHUB_TOKEN: ${{ github.token }}
           LLM_REVIEW_API_KEY: ${{ secrets.LLM_REVIEW_API_KEY }}
           LLM_REVIEW_BASE_URL: ${{ vars.LLM_REVIEW_BASE_URL }}
           LLM_REVIEW_MODEL: ${{ vars.LLM_REVIEW_MODEL }}
-          LLM_REVIEW_ID: self-hosted-llm-pr-review
+          LLM_REVIEW_ID: self-hosted-pi-pr-review
         run: >-
-          python3 .github/scripts/llm_pr_review.py
+          python3 .github/scripts/pi_pr_review.py
           --event-path "$GITHUB_EVENT_PATH"
-          --prompt-path .github/scripts/llm_review_prompt.md
+          --prompt-path .github/scripts/pi_review_prompt.md

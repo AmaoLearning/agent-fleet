@@ -379,8 +379,13 @@ def collect_files(
     return parsed, skipped
 
 
-def review_marker(head_sha: str, review_id: str = DEFAULT_REVIEW_ID) -> str:
-    return f"<!-- {review_id}:{head_sha} -->"
+def review_marker(
+    head_sha: str,
+    review_id: str = DEFAULT_REVIEW_ID,
+    base_sha: str | None = None,
+) -> str:
+    revision = f"{head_sha}:{base_sha}" if base_sha is not None else head_sha
+    return f"<!-- {review_id}:{revision} -->"
 
 
 def build_model_input(pull: dict[str, Any], chunk: str) -> str:
@@ -397,8 +402,9 @@ def has_existing_review(
     reviews: list[dict[str, Any]],
     head_sha: str,
     review_id: str = DEFAULT_REVIEW_ID,
+    base_sha: str | None = None,
 ) -> bool:
-    marker = review_marker(head_sha, review_id)
+    marker = review_marker(head_sha, review_id, base_sha)
     return any(
         (item.get("user") or {}).get("login") == "github-actions[bot]"
         and marker in (item.get("body") or "")
@@ -414,6 +420,7 @@ def build_summary(
     truncated: bool,
     incomplete_chunks: int = 0,
     review_id: str = DEFAULT_REVIEW_ID,
+    base_sha: str | None = None,
 ) -> str:
     coverage = (
         "Partial" if skipped or truncated or incomplete_chunks else "Complete"
@@ -424,7 +431,7 @@ def build_summary(
         else "Automated review found no actionable findings."
     )
     lines = [
-        review_marker(head_sha, review_id),
+        review_marker(head_sha, review_id, base_sha),
         headline,
         "",
         f"Reviewed head: `{head_sha}`",
@@ -461,11 +468,26 @@ def run_review(
     pull_number: int,
     prompt: str,
     review_id: str = DEFAULT_REVIEW_ID,
+    *,
+    expected_head_sha: str | None = None,
+    expected_base_sha: str | None = None,
 ) -> str:
     pull = github.get_pull(pull_number)
 
     head_sha = pull["head"]["sha"]
-    if has_existing_review(github.list_reviews(pull_number), head_sha, review_id):
+    if expected_head_sha is not None and head_sha != expected_head_sha:
+        return "stale"
+    if (
+        expected_base_sha is not None
+        and pull["base"]["sha"] != expected_base_sha
+    ):
+        return "stale"
+    if has_existing_review(
+        github.list_reviews(pull_number),
+        head_sha,
+        review_id,
+        expected_base_sha,
+    ):
         return "duplicate"
 
     files, skipped = collect_files(github.list_files(pull_number))
@@ -487,7 +509,10 @@ def run_review(
     rejected += aggregate_rejected
 
     current = github.get_pull(pull_number)
-    if current["head"]["sha"] != head_sha:
+    if current["head"]["sha"] != head_sha or (
+        expected_base_sha is not None
+        and current["base"]["sha"] != expected_base_sha
+    ):
         return "stale"
 
     summary = build_summary(
@@ -498,6 +523,7 @@ def run_review(
         truncated,
         incomplete_chunks=incomplete_chunks,
         review_id=review_id,
+        base_sha=expected_base_sha,
     )
     github.create_review(pull_number, head_sha, summary, findings)
     return "published"
