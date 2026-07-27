@@ -78,8 +78,15 @@ printf 'args=%s\\n' "$*"
         pinchbench.write_text(
             """import os
 import signal
+import sys
 import time
 from pathlib import Path
+
+if "--validate-tasks-only" in sys.argv:
+    if "missing-task" in sys.argv:
+        print("unknown PinchBench task(s): missing-task", file=sys.stderr)
+        raise SystemExit(2)
+    raise SystemExit(0)
 
 pid_file = os.environ.get("STUB_CHILD_PID_FILE")
 if pid_file:
@@ -102,6 +109,13 @@ print("runner=pinchbench")
         clawbio.parent.mkdir(parents=True)
         clawbio.write_text(
             """#!/usr/bin/env bash
+if [[ "$*" == *"--validate-tasks-only"* ]]; then
+  if [[ "$*" == *"missing-task"* ]]; then
+    printf 'unknown ClawBio task(s): missing-task\\n' >&2
+    exit 2
+  fi
+  exit 0
+fi
 printf 'runner=clawbio\\n'
 if [[ -n "${STUB_GRANDCHILD_PID_FILE:-}" ]]; then
   # Mirror the real launcher shape: the benchmark work runs in a foreground
@@ -246,20 +260,26 @@ fi
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(self.calls.read_text(encoding="utf-8").splitlines()), 2)
 
-    def test_unsupported_task_selection_starts_nothing(self):
+    def test_unknown_openclaw_task_starts_nothing(self):
         valid = self.write_spec("valid.json", "owner/valid")
-        invalid = self.write_spec(
-            "invalid.json",
-            "pinchbench",
-            task="task_sanity",
-        )
+        for taskset in ("pinchbench", "clawbio"):
+            with self.subTest(taskset=taskset):
+                invalid = self.write_spec(
+                    "invalid.json",
+                    taskset,
+                    task="missing-task",
+                )
 
-        result = self.run_batch("--spec", str(valid), str(invalid))
+                result = self.run_batch("--spec", str(valid), str(invalid))
 
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("invalid FleetSpec", result.stderr)
-        self.assertFalse(self.calls.exists())
-        self.assertFalse(self.artifact_root.exists())
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("missing-task", result.stderr)
+                self.assertIn(
+                    "task selection preflight failed for spec 2",
+                    result.stderr,
+                )
+                self.assertFalse(self.calls.exists())
+                self.assertFalse(self.artifact_root.exists())
 
     def test_unknown_exact_task_starts_nothing(self):
         valid = self.write_spec("valid.json", "owner/valid")

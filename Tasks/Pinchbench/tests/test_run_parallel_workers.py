@@ -117,6 +117,72 @@ class BenchmarkCommandTests(unittest.TestCase):
 
         self.assertEqual(task_ids, ["task_b", "task_c"])
 
+    def test_expand_suite_validates_exact_ids_and_preserves_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pinchbench_dir = Path(tmp)
+            tasks_dir = pinchbench_dir / "tasks"
+            tasks_dir.mkdir()
+            for task_id in ("task_a", "task_b"):
+                self._write_task(tasks_dir, task_id)
+
+            task_ids = self.runner.expand_suite(
+                pinchbench_dir,
+                "task_b,task_a,task_b",
+                exact_task_ids=True,
+            )
+
+        self.assertEqual(task_ids, ["task_b", "task_a"])
+
+    def test_expand_suite_reports_every_unknown_exact_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pinchbench_dir = Path(tmp)
+            tasks_dir = pinchbench_dir / "tasks"
+            tasks_dir.mkdir()
+            self._write_task(tasks_dir, "task_a")
+
+            with self.assertRaisesRegex(
+                SystemExit,
+                r"unknown PinchBench task\(s\): missing-a, missing-b",
+            ):
+                self.runner.expand_suite(
+                    pinchbench_dir,
+                    "task_a,missing-a,missing-b",
+                    exact_task_ids=True,
+                )
+
+    def test_pinned_catalog_validation_does_not_checkout_the_worktree(self):
+        fetch = self.runner.subprocess.CompletedProcess([], 0)
+        tree = self.runner.subprocess.CompletedProcess(
+            [],
+            0,
+            stdout=(
+                "tasks/task_a.md\n"
+                "tasks/task_b.md\n"
+                "tasks/task_XX_name.md\n"
+                "tasks/nested/task_hidden.md\n"
+            ),
+        )
+        with mock.patch.object(
+            self.runner,
+            "ensure_checkout_repository",
+            return_value=True,
+        ), mock.patch.object(
+            self.runner.subprocess,
+            "run",
+            side_effect=(fetch, tree),
+        ) as run:
+            available = self.runner.load_pinned_task_ids(
+                Path("/tmp/pinchbench"),
+                "https://example.invalid/pinchbench.git",
+                "pinned-ref",
+            )
+
+        self.assertEqual(available, {"task_a", "task_b"})
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertTrue(any("fetch" in command for command in commands))
+        self.assertTrue(any("ls-tree" in command for command in commands))
+        self.assertFalse(any("checkout" in command for command in commands))
+
     def test_default_ref_tracks_latest_supported_pinchbench_commit(self):
         self.assertEqual(
             self.runner.DEFAULT_PINCHBENCH_REF,

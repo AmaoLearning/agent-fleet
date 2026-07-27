@@ -134,7 +134,7 @@ Docker containers are checked by their own deployment/runtime paths.
 | Option | Description |
 | --- | --- |
 | `-t, --taskset <value>` | Built-in alias (`seta`, `smith`, `terminalbench21`, `sweverify`), registry ID, explicit local path, `pinchbench`, or `clawbio` |
-| `--task <name>[,name...]` | Run exact task names for supported Harbor tasksets; repeat the flag to append more names, or use `--task=<name>` when an ID begins with `-` |
+| `--task <name>[,name...]` | Run exact task names only; repeat the flag to append more names, or use `--task=<name>` when an ID begins with `-` |
 | `-a, --agent <name>` | Optional Harbor agent override; `openclaw` is accepted for consistent OpenClaw commands |
 | `-n, --workers <n>` | Harbor workers or OpenClaw fleet instances |
 | `-s, --spec <file|-> [files...]` | Read one or more FleetSpec v1 objects or arrays; multiple runs are detected automatically |
@@ -171,8 +171,8 @@ Examples:
 ./scripts/run_fleet.sh --taskset terminalbench21 \
   --task fix-git,break-filter-js-from-html --workers 2
 ./scripts/run_fleet.sh --taskset ./my-taskset --agent opencode --workers 2
-./scripts/run_fleet.sh --taskset pinchbench --agent openclaw --workers 10
-./scripts/run_fleet.sh --taskset clawbio --agent openclaw --workers 10
+./scripts/run_fleet.sh --taskset pinchbench --task task_sanity --workers 1
+./scripts/run_fleet.sh --taskset clawbio --task rnaseq-de-demo --workers 1
 ./scripts/run_fleet.sh --taskset terminal-bench/terminal-bench-2-1 \
   --agent claude-code --workers 10 --output fleet-spec.json --dry-run
 ```
@@ -205,7 +205,7 @@ Create `fleet-spec.json` with any text editor, for example
 | --- | --- | --- |
 | `schema_version` | Yes | Must be `1` |
 | `taskset` | Yes | Built-in alias (`seta`, `smith`, `terminalbench21`, `sweverify`), registry ID, explicit local path, `pinchbench`, or `clawbio` |
-| `task` | No | Exact task names for supported Harbor tasksets in one comma-separated string |
+| `task` | No | Exact task names in one comma-separated string |
 | `agent` | No | Agent passed to the selected runner |
 | `workers` | No | Integer from 1 to 4096 |
 
@@ -392,12 +392,12 @@ In `--taskset` mode and single-spec `--spec` mode, `run_fleet.sh` only parses
 the input, maps it to the selected runner, and replaces itself with that
 runner. It does not generate run IDs, create output directories, create or
 monitor sessions, inspect task catalogs, run preflight checks, or translate
-downstream errors. For supported Harbor tasksets, it normalizes task names and
-passes the selection to Harbor, which owns exact catalog validation and
-filtering. Multi-run `--spec` input is the documented exception: it dispatches
-through Batch, which validates every exact task selection before creating
-artifacts or starting children, then generates per-run `RUN_ID`s, writes launch
-artifacts and logs, and starts detached Harbor sessions as described above.
+downstream errors. It normalizes task names and passes the selection to the
+selected runner, which owns exact catalog validation and filtering. Multi-run
+`--spec` input is the documented exception: it dispatches through Batch, which
+validates every exact task selection before creating artifacts or starting
+children, then generates per-run `RUN_ID`s, writes launch artifacts and logs,
+and starts detached Harbor sessions as described above.
 
 Harbor tasksets call `Agents/utils/common/Harbor/start.sh`. Local tasksets must
 use an explicit path beginning with `./`, `../`, `/`, or `~/`. Harbor owns its
@@ -409,12 +409,14 @@ When reusing a local Harbor `RUN_ID`, omitting `--task` resumes the task list
 already recorded in `tasks.txt`. A different explicit selection is rejected;
 use `RESET_RUN=1` or a new `RUN_ID` to redefine the task list.
 
-The `pinchbench` taskset calls the existing PinchBench parallel
-runner and maps workers to `--instances`; the OpenClaw fleet must already be
-configured and running. The `clawbio` taskset calls the existing
-ClawBio unified launcher and maps workers to `COUNT`. Those runners own setup,
-validation, execution, outputs, and failures. If `--agent` conflicts with an
-OpenClaw taskset, the router prints the requested and actual agents, ignores the
+The `pinchbench` taskset calls the existing PinchBench parallel runner, maps
+workers to `--instances`, and validates selected IDs against the pinned
+`task_*.md` checkout before image or result creation; the OpenClaw fleet must
+already be configured and running. The `clawbio` taskset calls the existing
+ClawBio unified launcher, maps workers to `COUNT`, and validates selected IDs
+against its task config before setup or fleet restart. Those runners own setup,
+execution, outputs, and failures. If `--agent` conflicts with an OpenClaw
+taskset, the router prints the requested and actual agents, ignores the
 conflicting value, and continues with OpenClaw. OpenClaw runners remain in the
 foreground; `--detach` is ignored with a warning.
 
@@ -427,10 +429,10 @@ interfaces:
   `agent`, and `workers`. Unknown fields and invalid values are rejected.
   `task` is a normalized comma-separated string; arrays, glob matching,
   taskset inference, task files, and fuzzy matching are not supported.
-- `--task` supports `seta`, `smith`, `terminalbench21`, `sweverify`, and
-  explicit local dataset paths. OpenClaw tasksets and arbitrary Harbor registry
-  IDs are rejected because this PR does not add their task-selection adapters.
-  `--task` is also rejected with `ROLLOUT=1`.
+- `--task` supports `seta`, `smith`, `terminalbench21`, `sweverify`, explicit
+  local dataset paths, `pinchbench`, and `clawbio`. TMax and other arbitrary
+  Harbor registry IDs are rejected because this MVP has no pinned local task
+  catalog for them. `--task` is also rejected with `ROLLOUT=1`.
 - FleetSpec cannot set a per-run model, timeout, retry policy, or environment
   variables; configure those in the caller environment, where they apply to
   every spec of the invocation and cannot vary between specs.

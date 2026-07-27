@@ -483,6 +483,11 @@ def parse_args(config: dict[str, str]) -> argparse.Namespace:
         metavar="N",
         help="Number of benchmark iterations to run (default: 1).",
     )
+    parser.add_argument(
+        "--validate-tasks-only",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     return parser.parse_args()
 
 
@@ -558,19 +563,25 @@ def ensure_clean_checkout(pinchbench_dir: Path) -> None:
         )
 
 
+def ensure_checkout_repository(pinchbench_dir: Path, repo_url: str) -> bool:
+    """Ensure the checkout's Git repository exists; return whether it was created."""
+    if (pinchbench_dir / ".git").exists():
+        return False
+    pinchbench_dir.parent.mkdir(parents=True, exist_ok=True)
+    if pinchbench_dir.exists():
+        sys.exit(f"Error: {pinchbench_dir} exists but is not a pinchbench git checkout.")
+    subprocess.run(["git", "init", str(pinchbench_dir)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(pinchbench_dir), "remote", "add", "origin", repo_url],
+        check=True,
+        capture_output=True,
+    )
+    return True
+
+
 def prepare_checkout(pinchbench_dir: Path, repo_url: str, ref: str, patches_dir: Path) -> None:
     """Clone or update the patched PinchBench checkout before worker containers start."""
-    created_checkout = False
-    if not (pinchbench_dir / ".git").exists():
-        pinchbench_dir.parent.mkdir(parents=True, exist_ok=True)
-        if pinchbench_dir.exists():
-            sys.exit(f"Error: {pinchbench_dir} exists but is not a pinchbench git checkout.")
-        subprocess.run(["git", "init", str(pinchbench_dir)], check=True, capture_output=True)
-        subprocess.run(
-            ["git", "-C", str(pinchbench_dir), "remote", "add", "origin", repo_url],
-            check=True, capture_output=True,
-        )
-        created_checkout = True
+    created_checkout = ensure_checkout_repository(pinchbench_dir, repo_url)
 
     git = ["git", "-C", str(pinchbench_dir)]
     if not created_checkout:
@@ -583,6 +594,31 @@ def prepare_checkout(pinchbench_dir: Path, repo_url: str, ref: str, patches_dir:
     if patches_dir.is_dir():
         for patch_file in sorted(patches_dir.glob("*.patch")):
             apply_patch(pinchbench_dir, patch_file)
+
+
+def load_pinned_task_ids(pinchbench_dir: Path, repo_url: str, ref: str) -> set[str]:
+    """Read exact task IDs from the pinned ref without changing the worktree."""
+    ensure_checkout_repository(pinchbench_dir, repo_url)
+
+    git = ["git", "-C", str(pinchbench_dir)]
+    subprocess.run(git + ["fetch", "--depth", "1", "origin", ref], check=True)
+    tree = subprocess.run(
+        git + ["ls-tree", "-r", "--name-only", "FETCH_HEAD", "--", "tasks"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    available: set[str] = set()
+    for name in tree.stdout.splitlines():
+        if not name.startswith("tasks/"):
+            continue
+        relative = name.removeprefix("tasks/")
+        if "/" in relative or not relative.startswith("task_") or not relative.endswith(".md"):
+            continue
+        task_id = relative.removesuffix(".md")
+        if task_id != "task_XX_name":
+            available.add(task_id)
+    return available
 
 
 def _manifest_item(line: str) -> str:
@@ -673,9 +709,39 @@ def _task_grading_type(task_path: Path) -> str:
     return "automated"
 
 
-def expand_suite(pinchbench_dir: Path, suite: str) -> list[str]:
-    """Expand a suite name or comma-separated task list into sorted task IDs."""
+def _validate_exact_task_ids(value: str, available: set[str]) -> list[str]:
+    requested = list(
+        dict.fromkeys(part.strip() for part in value.split(",") if part.strip())
+    )
+    if not requested:
+        sys.exit("Error: exact PinchBench selection must contain at least one task ID.")
+
+    missing = [task_id for task_id in requested if task_id not in available]
+    if missing:
+        sys.exit("Error: unknown PinchBench task(s): " + ", ".join(missing))
+    return requested
+
+
+def _expand_exact_task_ids(tasks_root: Path, value: str) -> list[str]:
+    available = {
+        path.stem
+        for path in tasks_root.glob("task_*.md")
+        if path.is_file() and path.stem != "task_XX_name"
+    }
+    return _validate_exact_task_ids(value, available)
+
+
+def expand_suite(
+    pinchbench_dir: Path,
+    suite: str,
+    *,
+    exact_task_ids: bool = False,
+) -> list[str]:
+    """Expand a suite or validate a comma-separated exact task selection."""
     tasks_root = pinchbench_dir / "tasks"
+    if exact_task_ids:
+        return _expand_exact_task_ids(tasks_root, suite)
+
     manifest = _load_task_manifest(tasks_root)
 
     if suite == "all":
@@ -1053,20 +1119,47 @@ def worker_image_build_command(config: dict[str, str], *, tracing_enabled: bool)
 def main() -> None:
     config = load_runner_config()
     args = parse_args(config)
-    validate(args, config)
     tracing_enabled = trace_to_opik_enabled(config.get("TRACE_TO_OPIK"))
+    exact_task_ids = os.environ.get("PINCHBENCH_EXACT_TASK_SELECTION") == "1"
 
     pinchbench_dir = Path(config["PINCHBENCH_DIR"])
     patches_dir = BENCH_DIR / "patches"
     repo_url = config["PINCHBENCH_REPO_URL"]
     config_base = Path(config["CONFIG_BASE"])
     workspace_base = Path(config["WORKSPACE_BASE"])
-    Path(config["PINCHBENCH_UV_CACHE_DIR"]).mkdir(parents=True, exist_ok=True)
 
-    if not tracing_enabled:
-        validate_trace_off_gateway_configs(config_base, args.instances)
+    if args.validate_tasks_only:
+        available = load_pinned_task_ids(
+            pinchbench_dir,
+            repo_url,
+            config["PINCHBENCH_REF"],
+        )
+        _validate_exact_task_ids(args.suite, available)
+        return
+
+    validate_before_checkout = not exact_task_ids
+    if validate_before_checkout:
+        validate(args, config)
+        Path(config["PINCHBENCH_UV_CACHE_DIR"]).mkdir(parents=True, exist_ok=True)
+        if not tracing_enabled:
+            validate_trace_off_gateway_configs(config_base, args.instances)
 
     prepare_checkout(pinchbench_dir, repo_url, config["PINCHBENCH_REF"], patches_dir)
+
+    suite_name = "core" if args.core else args.suite
+    task_ids = expand_suite(
+        pinchbench_dir,
+        suite_name,
+        exact_task_ids=exact_task_ids,
+    )
+    if not task_ids:
+        sys.exit(f"Error: no tasks selected for suite '{suite_name}'.")
+
+    if not validate_before_checkout:
+        validate(args, config)
+        Path(config["PINCHBENCH_UV_CACHE_DIR"]).mkdir(parents=True, exist_ok=True)
+        if not tracing_enabled:
+            validate_trace_off_gateway_configs(config_base, args.instances)
 
     image_missing = subprocess.run(
         ["docker", "image", "inspect", config["PINCHBENCH_DOCKER_IMAGE"]],
@@ -1097,11 +1190,6 @@ def main() -> None:
         "%Y%m%d-%H%M%S"
     )
     run_root_dir.mkdir()
-
-    suite_name = "core" if args.core else args.suite
-    task_ids = expand_suite(pinchbench_dir, suite_name)
-    if not task_ids:
-        sys.exit(f"Error: no tasks selected for suite '{suite_name}'.")
 
     worker_suites = shard_tasks(task_ids, args.instances)
 

@@ -117,8 +117,8 @@ Preserve explicit registry ids and local paths exactly.
 Copy task names exactly as written. Join multiple explicit names with commas.
 Never invent or complete a task name, and never infer a taskset from task names.
 Task selection is supported only for seta, smith, terminalbench21, sweverify,
-and explicit local paths. If exact tasks are requested for another taskset,
-including registry ids and OpenClaw tasksets, return ready=false.
+explicit local paths, pinchbench, and clawbio. If exact tasks are requested for
+another registry id, return ready=false.
 
 Return one specs element for each explicitly requested run. For example, a run
 requested once with claude-code and once with opencode becomes two specs. Do not

@@ -106,6 +106,7 @@ raise SystemExit(int(os.environ.get("STUB_EXIT", "0")))
             """#!/usr/bin/env bash
 printf 'runner=clawbio\\n'
 printf 'COUNT=%s\\n' "${COUNT-}"
+printf 'args=%s\\n' "$*"
 exit "${STUB_EXIT:-0}"
 """,
             encoding="utf-8",
@@ -245,6 +246,22 @@ exit "${STUB_EXIT:-0}"
             },
         )
 
+    def test_prompt_routes_openclaw_task_selection(self):
+        result = self.run_goal(
+            "--prompt",
+            "Run rnaseq-de-demo from clawbio",
+            response=self.response(
+                spec={
+                    "schema_version": 1,
+                    "taskset": "clawbio",
+                    "task": "rnaseq-de-demo",
+                }
+            ),
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("args=--tasks rnaseq-de-demo", result.stdout)
+
     def test_prompt_prefers_managed_pi_over_path_shadow(self):
         managed_bin = self.root / "managed-npm-bin"
         managed_bin.mkdir()
@@ -329,7 +346,7 @@ exec {shlex.quote(str(self.bin_dir / "pi"))} "$@"
         self.assertIn("Terminus-2", captured)
         self.assertIn("return ready=false", captured)
         self.assertIn("never infer a taskset", captured)
-        self.assertIn("OpenClaw tasksets", captured)
+        self.assertIn("another registry id", captured)
         self.assertIn('"specs"', captured)
         self.assertIn('"maxItems": 16', captured)
 

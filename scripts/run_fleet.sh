@@ -181,11 +181,7 @@ fi
 [[ -n "$TASKSET" ]] || { usage >&2; exit 2; }
 if [[ -n "$FLEET_TASK" ]]; then
   case "$TASKSET" in
-    seta|smith|terminalbench21|sweverify|/*|./*|../*|.|..|\~/*) ;;
-    pinchbench|clawbio)
-      printf '[ERROR] --task is unsupported for OpenClaw taskset: %s\n' "$TASKSET" >&2
-      exit 2
-      ;;
+    seta|smith|terminalbench21|sweverify|pinchbench|clawbio|/*|./*|../*|.|..|\~/*) ;;
     *)
       printf '[ERROR] --task is unsupported for Harbor registry taskset: %s\n' "$TASKSET" >&2
       exit 2
@@ -226,12 +222,21 @@ fi
 
 case "$TASKSET" in
   pinchbench)
-    cmd=(python3 "$REPO_DIR/Tasks/Pinchbench/scripts/run-parallel-workers.py")
+    pinchbench_exact_task_selection=0
+    [[ -z "$FLEET_TASK" ]] || pinchbench_exact_task_selection=1
+    cmd=(
+      env "PINCHBENCH_EXACT_TASK_SELECTION=$pinchbench_exact_task_selection"
+      python3 "$REPO_DIR/Tasks/Pinchbench/scripts/run-parallel-workers.py"
+    )
+    [[ -z "$FLEET_TASK" ]] || cmd+=(--suite "$FLEET_TASK")
     [[ -z "$WORKERS" ]] || cmd+=(--instances "$WORKERS")
+    (( VALIDATE_TASK_SELECTION == 0 )) || cmd+=(--validate-tasks-only)
     run_command "${cmd[@]}"
     ;;
   clawbio)
     cmd=(bash "$REPO_DIR/Tasks/clawBio/scripts/run-openclaw-clawbio.sh")
+    [[ -z "$FLEET_TASK" ]] || cmd+=(--tasks "$FLEET_TASK")
+    (( VALIDATE_TASK_SELECTION == 0 )) || cmd+=(--validate-tasks-only)
     [[ -z "$WORKERS" ]] || cmd=(env "COUNT=$WORKERS" "${cmd[@]}")
     run_command "${cmd[@]}"
     ;;

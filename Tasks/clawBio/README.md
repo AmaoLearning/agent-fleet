@@ -171,6 +171,10 @@ Execute the benchmark tasks:
 # Optional: override instance count / iteration count at runtime
 COUNT=20 ITERATIONS=3 ./Tasks/clawBio/scripts/run-openclaw-clawbio.sh
 
+# Run selected exact task IDs only
+./Tasks/clawBio/scripts/run-openclaw-clawbio.sh \
+  --tasks rnaseq-de-demo,fine-mapping-demo
+
 # Direct run-benchmark.py is for advanced/manual workflow when fleet is already
 # prepared and started by you (Step 1~3), and you only want to execute tasks.
 # Do not run it again immediately after the unified launcher unless you
@@ -181,6 +185,10 @@ COUNT=20 ITERATIONS=3 ./Tasks/clawBio/scripts/run-openclaw-clawbio.sh
 # With custom config
 ./Tasks/clawBio/scripts/run-benchmark.py --instances 4 --config config/tasks.json
 
+# Select exact task IDs when the fleet is already running
+./Tasks/clawBio/scripts/run-benchmark.py --instances 4 \
+  --tasks rnaseq-de-demo,fine-mapping-demo
+
 # Run 5 iterations and print per-iteration status summary
 ./Tasks/clawBio/scripts/run-benchmark.py --instances 4 -n 5
 
@@ -190,7 +198,12 @@ COUNT=20 ITERATIONS=3 ./Tasks/clawBio/scripts/run-openclaw-clawbio.sh
 
 ### Unified Launcher Notes
 
-`run-openclaw-clawbio.sh` is a thin orchestrator that prewarms the cache, generates and patches fleet configs, starts the fleet, and invokes `run-benchmark.py`. Run with `-h` to see all environment variables. Variable precedence: runtime env → `Agents/Openclaw/config/fleet.env` → `config.env` → script defaults.
+`run-openclaw-clawbio.sh` validates explicit task IDs before it builds an
+image, prepares caches, changes fleet configuration, or restarts containers.
+It then prewarms the cache, generates and patches fleet configs, starts the
+fleet, and invokes `run-benchmark.py`. Run with `-h` to see all environment
+variables. Variable precedence: runtime env →
+`Agents/Openclaw/config/fleet.env` → `config.env` → script defaults.
 
 Output layout is described under [Output Structure](#output-structure).
 
@@ -266,11 +279,12 @@ Flags: `--config-base DIR`, `--plugin-name NAME`, `-h/--help`
 Discovers instances from `Agents/Openclaw/.env` and workspace paths from `docker inspect`.
 
 ```
-usage: run-benchmark.py [-h] [--instances N] [--config PATH] [--output-dir DIR] [--skip-preflight] [-n N]
+usage: run-benchmark.py [-h] [--instances N] [--config PATH] [--tasks ID[,ID...]] [--output-dir DIR] [--skip-preflight] [-n N]
 
 Options:
   --instances N       Number of instances to use (default: all discovered)
   --config PATH       Task config file (default: config/tasks.json)
+  --tasks ID[,ID...]  Run only the listed exact task IDs
   --output-dir DIR    Output root (default: results/)
   --skip-preflight    Skip container health checks
   -n N, --iterations N

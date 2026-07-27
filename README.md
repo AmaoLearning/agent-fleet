@@ -86,7 +86,7 @@ for the full format.
 | Flag | Short | Purpose |
 | --- | --- | --- |
 | `--taskset` | `-t` | Taskset to run ([available tasksets](./scripts/README.md#fleet-launch-modes)) |
-| `--task` | — | Exact task name(s) for supported Harbor tasksets, comma-separated or repeated |
+| `--task` | — | Exact task name(s), comma-separated or repeated |
 | `--agent` | `-a` | `claude-code`, `opencode`, or `openclaw` |
 | `--workers` | `-n` | Concurrency |
 | `--prompt` | `-p` | Natural-language run request (AI mode) |

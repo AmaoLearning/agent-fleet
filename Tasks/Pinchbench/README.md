@@ -212,10 +212,14 @@ The runner reads defaults from [`config/pinchbench.env`](./config/pinchbench.env
 ./Tasks/Pinchbench/scripts/run-parallel-workers.py [options]
 
   --instances N   Number of OpenClaw instances/workers (default: COUNT from config/fleet.env)
-  --suite SUITE   Task suite: all, automated-only, core, a manifest category, category+category, or comma-separated task IDs
+  --suite SUITE   Task suite: all, automated-only, core, a manifest category, category+category, or comma-separated exact task IDs
   --core          Run the manifest-defined core task subset
   -n, --iterations N  Number of benchmark iterations (default: 1)
 ```
+
+FleetSpec/`run_fleet.sh` exact selections are checked against the pinned
+checkout before the worker image is built or a result directory is created.
+Any unknown IDs fail together.
 
 ## Output
 
