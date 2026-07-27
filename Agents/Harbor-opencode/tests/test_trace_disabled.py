@@ -178,6 +178,10 @@ class OpenCodeTraceDisabledTests(unittest.TestCase):
             "OC_OPIK_LOGS_DIR",
             agent.agent_commands[-1].get("env", {}),
         )
+        self.assertNotIn(
+            "OPENCODE_FAKE_VCS",
+            agent.agent_commands[-1].get("env", {}),
+        )
 
     def test_run_trace_on_keeps_plugin_registration_and_finalizer(self) -> None:
         agent = self.make_agent("true")

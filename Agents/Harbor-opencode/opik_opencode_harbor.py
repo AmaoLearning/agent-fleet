@@ -535,7 +535,6 @@ class OpikOpenCodeHarbor(OpenCode):
                 if key in env:
                     env[key] = _rewrite_container_opik_url(env[key])
 
-        env["OPENCODE_FAKE_VCS"] = "git"
         if trace_enabled:
             # Harbor only downloads EnvironmentPaths.agent_dir after timeout.
             # Keep the hook runtime backup there so the outer worker can replay
