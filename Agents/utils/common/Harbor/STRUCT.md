@@ -96,6 +96,7 @@ Typical dataset paths:
 | `DATASET_NAME` | Built-in local dataset selector, or Harbor registry dataset id |
 | `DATASET_PATH` | Local dataset directory |
 | `TASK_SOURCE_FILE` | Explicit task list path |
+| `FLEET_TASKS` | Internal normalized exact task selection from `run_fleet.sh`; unsupported with `ROLLOUT=1` |
 | `TOTAL_WORKERS` | Number of zellij workers |
 | `TB_N_CONCURRENT` | Harbor concurrency, normally the same as `TOTAL_WORKERS` |
 | `RUN_ID` | Run name |

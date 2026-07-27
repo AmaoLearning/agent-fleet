@@ -126,7 +126,7 @@ Docker containers are checked by their own deployment/runtime paths.
 ### Fleet launch modes
 
 ```bash
-./scripts/run_fleet.sh --taskset <taskset> [--agent <agent>] [--workers <n>] [--output <file>] [--detach] [--dry-run]
+./scripts/run_fleet.sh --taskset <taskset> [--task <name>[,name...]] [--agent <agent>] [--workers <n>] [--output <file>] [--detach] [--dry-run]
 ./scripts/run_fleet.sh --spec <file|-> [file ...] [--output <file>] [--detach] [--dry-run]
 ./scripts/run_fleet.sh --prompt <text> [--output <file>] [--detach] [--dry-run]
 ```
@@ -134,6 +134,7 @@ Docker containers are checked by their own deployment/runtime paths.
 | Option | Description |
 | --- | --- |
 | `-t, --taskset <value>` | Built-in alias (`seta`, `smith`, `terminalbench21`, `sweverify`), registry ID, explicit local path, `pinchbench`, or `clawbio` |
+| `--task <name>[,name...]` | Run exact task names for supported Harbor tasksets; repeat the flag to append more names, or use `--task=<name>` when an ID begins with `-` |
 | `-a, --agent <name>` | Optional Harbor agent override; `openclaw` is accepted for consistent OpenClaw commands |
 | `-n, --workers <n>` | Harbor workers or OpenClaw fleet instances |
 | `-s, --spec <file|-> [files...]` | Read one or more FleetSpec v1 objects or arrays; multiple runs are detected automatically |
@@ -141,6 +142,11 @@ Docker containers are checked by their own deployment/runtime paths.
 | `-p, --prompt <text>` | Translate, validate, and run a natural-language benchmark request (one or more runs, up to 16) |
 | `-o, --output <file>` | Atomically save the validated FleetSpec object or flattened array before running |
 | `--dry-run` | Print the downstream command and environment without running it |
+
+Repeated `--task` values are appended, split on commas, trimmed, emptied
+segments removed, and deduplicated in first-seen order. Matching is exact.
+Unknown task names fail together before benchmark execution. `--task` always
+requires `--taskset`; the launcher never infers a taskset from a task name.
 
 Before a non-dry run starts, the launcher loads `config.env` and then
 `config.local.env` while preserving explicit caller environment values. It
@@ -152,6 +158,7 @@ Every short flag behaves exactly like its long form, for example:
 
 ```bash
 ./scripts/run_fleet.sh -t terminalbench21 -a claude-code -n 10 -d
+./scripts/run_fleet.sh -t terminalbench21 --task fix-git -n 1
 ./scripts/run_fleet.sh -p "Run terminalbench21 with claude-code and 2 workers"
 ./scripts/run_fleet.sh -s claude.json opencode.json
 ```
@@ -161,6 +168,8 @@ Examples:
 ```bash
 ./scripts/run_fleet.sh --taskset terminal-bench/terminal-bench-2-1 \
   --agent claude-code --workers 10 --detach
+./scripts/run_fleet.sh --taskset terminalbench21 \
+  --task fix-git,break-filter-js-from-html --workers 2
 ./scripts/run_fleet.sh --taskset ./my-taskset --agent opencode --workers 2
 ./scripts/run_fleet.sh --taskset pinchbench --agent openclaw --workers 10
 ./scripts/run_fleet.sh --taskset clawbio --agent openclaw --workers 10
@@ -185,7 +194,8 @@ Create `fleet-spec.json` with any text editor, for example
 ```json
 {
   "schema_version": 1,
-  "taskset": "terminal-bench/terminal-bench-2",
+  "taskset": "terminalbench21",
+  "task": "fix-git,break-filter-js-from-html",
   "agent": "opencode",
   "workers": 4
 }
@@ -195,6 +205,7 @@ Create `fleet-spec.json` with any text editor, for example
 | --- | --- | --- |
 | `schema_version` | Yes | Must be `1` |
 | `taskset` | Yes | Built-in alias (`seta`, `smith`, `terminalbench21`, `sweverify`), registry ID, explicit local path, `pinchbench`, or `clawbio` |
+| `task` | No | Exact task names for supported Harbor tasksets in one comma-separated string |
 | `agent` | No | Agent passed to the selected runner |
 | `workers` | No | Integer from 1 to 4096 |
 
@@ -208,7 +219,7 @@ arguments:
   --output fleet-spec.json --dry-run
 ```
 
-Only explicitly supplied `taskset`, `agent`, and `workers` values are saved.
+Only explicitly supplied `taskset`, `task`, `agent`, and `workers` values are saved.
 Caller environment defaults and invocation controls such as `--detach` and
 `--dry-run` are not FleetSpec fields. The output is written after validation
 and before the selected runner starts, so it remains available if the runner
@@ -249,7 +260,8 @@ To run without creating a file, pass one JSON object or array on standard input:
 JSON
 ```
 
-Spec input cannot be combined with `--taskset`, `--agent`, or `--workers`. It
+Spec input cannot be combined with `--taskset`, `--task`, `--agent`, or
+`--workers`. It
 can be combined with `--output` to write a normalized copy. Multiple JSON
 values in one input, unknown fields, control characters, and invalid values are
 rejected. Standard input (`-`) cannot be combined with file inputs.
@@ -343,11 +355,13 @@ configured. When the shell uses an HTTP proxy for external traffic, add an
 internal model gateway hostname to `NO_PROXY`; Prompt mode preserves the
 caller's proxy policy and does not change it automatically.
 
-Each FleetSpec v1 describes one run and only supports `taskset`, optional
-`agent`, and optional `workers`. A prompt may explicitly request up to 16 runs;
-the translator emits one spec per run without inventing defaults or additional
-combinations. It asks for clarification when a taskset is missing or ambiguous,
-or the prompt contains requirements that FleetSpec v1 cannot represent.
+Each FleetSpec v1 describes one run and supports `taskset`, optional exact
+`task` names, optional `agent`, and optional `workers`. A prompt may explicitly
+request up to 16 runs; the translator emits one spec per run without inventing
+defaults, task names, or additional combinations. It asks for clarification
+when a taskset is missing or ambiguous—including when only task names are
+provided—or the prompt contains requirements that FleetSpec v1 cannot
+represent.
 
 Prompt mode supports `claude-code` and `opencode` for Harbor tasksets and
 `openclaw` for `pinchbench` or `clawbio`. It reports other requested agents as
@@ -377,16 +391,23 @@ responsibilities remain with the selected runner and its existing environment.
 In `--taskset` mode and single-spec `--spec` mode, `run_fleet.sh` only parses
 the input, maps it to the selected runner, and replaces itself with that
 runner. It does not generate run IDs, create output directories, create or
-monitor sessions, filter tasks, run preflight checks, or translate downstream
-errors. Multi-run `--spec` input is the documented exception: it dispatches
-through Batch, which generates per-run `RUN_ID`s, writes launch artifacts and
-logs, and starts detached Harbor sessions as described above.
+monitor sessions, inspect task catalogs, run preflight checks, or translate
+downstream errors. For supported Harbor tasksets, it normalizes task names and
+passes the selection to Harbor, which owns exact catalog validation and
+filtering. Multi-run `--spec` input is the documented exception: it dispatches
+through Batch, which validates every exact task selection before creating
+artifacts or starting children, then generates per-run `RUN_ID`s, writes launch
+artifacts and logs, and starts detached Harbor sessions as described above.
 
 Harbor tasksets call `Agents/utils/common/Harbor/start.sh`. Local tasksets must
 use an explicit path beginning with `./`, `../`, `/`, or `~/`. Harbor owns its
 configuration, taskset and agent validation, scheduling, Zellij lifecycle,
 tracing, run IDs, outputs, and failures. `--detach` is passed directly to
 Harbor's existing Zellij launcher.
+
+When reusing a local Harbor `RUN_ID`, omitting `--task` resumes the task list
+already recorded in `tasks.txt`. A different explicit selection is rejected;
+use `RESET_RUN=1` or a new `RUN_ID` to redefine the task list.
 
 The `pinchbench` taskset calls the existing PinchBench parallel
 runner and maps workers to `--instances`; the OpenClaw fleet must already be
@@ -402,11 +423,17 @@ foreground; `--detach` is ignored with a warning.
 The following requests are rejected or ignored by the current launch
 interfaces:
 
-- FleetSpec accepts only `schema_version`, `taskset`, and optional `agent` and
-  `workers`. Unknown fields and invalid values are rejected. It cannot set a
-  per-run model, task subset, timeout, retry policy, or environment variables;
-  configure those in the caller environment, where they apply to every spec of
-  the invocation and cannot vary between specs.
+- FleetSpec accepts only `schema_version`, `taskset`, and optional `task`,
+  `agent`, and `workers`. Unknown fields and invalid values are rejected.
+  `task` is a normalized comma-separated string; arrays, glob matching,
+  taskset inference, task files, and fuzzy matching are not supported.
+- `--task` supports `seta`, `smith`, `terminalbench21`, `sweverify`, and
+  explicit local dataset paths. OpenClaw tasksets and arbitrary Harbor registry
+  IDs are rejected because this PR does not add their task-selection adapters.
+  `--task` is also rejected with `ROLLOUT=1`.
+- FleetSpec cannot set a per-run model, timeout, retry policy, or environment
+  variables; configure those in the caller environment, where they apply to
+  every spec of the invocation and cannot vary between specs.
 - Each `--spec` input (file or `-`) must contain exactly one JSON value: one
   FleetSpec object or a non-empty array of them. Several files are flattened in
   command-line order; `-` cannot be combined with file inputs. If any input is
@@ -436,7 +463,7 @@ interfaces:
 - `pinchbench` and `clawbio` always use OpenClaw. Prompt mode rejects a
   different agent; Direct mode warns and ignores it.
 - `--prompt` must be the first argument. `--spec` cannot be combined with
-  `--taskset`, `--agent`, or `--workers`.
+  `--taskset`, `--task`, `--agent`, or `--workers`.
 - `--detach` is redundant for multi-run input: Harbor runs always detach there
   (an informational notice is printed), while OpenClaw runners stay in the
   foreground and ignore `--detach` with a warning in every mode.

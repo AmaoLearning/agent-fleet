@@ -61,6 +61,19 @@ if (( OPENCLAW_RUNS > 1 )); then
 fi
 HARBOR_RUNS=$((TOTAL - OPENCLAW_RUNS))
 
+for ((i = 0; i < TOTAL; i++)); do
+  jq -e 'has("task")' <<<"${SPECS[$i]}" >/dev/null || continue
+  task="$(jq -r '.task' <<<"${SPECS[$i]}")"
+  status=0
+  bash "$SCRIPT_DIR/run_fleet.sh" \
+    --taskset "${TASKSETS[$i]}" "--task=$task" --validate-task-selection \
+    || status=$?
+  if (( status != 0 )); then
+    err "task selection preflight failed for spec $((i + 1)): ${TASKSETS[$i]}"
+    exit "$status"
+  fi
+done
+
 BATCH_TIME="$(date +%Y%m%d-%H%M%S)"
 BATCH_KEY="${BATCH_TIME}-$$"
 ARTIFACT_ROOT="${FLEET_BATCH_LOG_DIR:-$PWD/fleet-batch-logs}"

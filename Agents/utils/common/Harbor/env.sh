@@ -75,6 +75,7 @@ OUTPUT_ROOT="${OUTPUT_ROOT:-$REPO_ROOT/runs}"
 OUTPUT_PATH="${OUTPUT_PATH:-${OUTPUT_ROOT}/${RUN_ID}}"
 TASK_SOURCE_FILE="${TASK_SOURCE_FILE:-}"
 TASK_FILE="${TASK_FILE:-${OUTPUT_PATH}/tasks.txt}"
+FLEET_TASKS="${FLEET_TASKS:-}"
 # Per-agent state so toggling AGENT between runs in the same OUTPUT_PATH
 # cannot cross-contaminate queue/wheel/image state. TASK_FILE stays shared.
 QUEUE_DIR="${QUEUE_DIR:-${OUTPUT_PATH}/queue/${AGENT}}"
@@ -421,7 +422,7 @@ RL_COLLECT_ROLLOUT_DETAILS="${RL_COLLECT_ROLLOUT_DETAILS:-true}"
 RL_ENABLE_SUMMARIZE="${RL_ENABLE_SUMMARIZE:-false}"
 
 export SCRIPT_DIR REPO_ROOT AGENTS_DIR TASKS_DIR HARBOR_CLAUDE_CODE_DIR HARBOR_OPENCODE_DIR WORKSPACE_DIR RUN_ID TOTAL_WORKERS N_ATTEMPTS MODEL AGENT MAX_RETRIES
-export HARBOR_ROOT DATASET_PATH DATASET_NAME METRIC_MODE OUTPUT_ROOT OUTPUT_PATH TASK_SOURCE_FILE TASK_FILE QUEUE_DIR RUNTIME_DIR LAYOUT_FILE JOBS_ROOT
+export HARBOR_ROOT DATASET_PATH DATASET_NAME METRIC_MODE OUTPUT_ROOT OUTPUT_PATH TASK_SOURCE_FILE TASK_FILE FLEET_TASKS QUEUE_DIR RUNTIME_DIR LAYOUT_FILE JOBS_ROOT
 export HARBOR_ONLINE_ANALYSIS HARBOR_ONLINE_ANALYSIS_POLL_INTERVAL HARBOR_ONLINE_ANALYSIS_DIR HARBOR_ONLINE_ANALYSIS_PID_FILE HARBOR_ONLINE_ANALYSIS_LOG_FILE HARBOR_EARLY_STOP HARBOR_ZELLIJ_CLOSE_ON_COMPLETE HARBOR_ZELLIJ_KEEP_ON_FAILURE
 export HARBOR_MONITOR_ENABLED HARBOR_MONITOR_DIR HARBOR_MONITOR_PID_FILE HARBOR_MONITOR_LOG_FILE HARBOR_BENCHMARK_PID_FILE HARBOR_BENCHMARK_EXIT_FILE HARBOR_JOB_DIR_FILE HARBOR_MONITOR_RESTART_CMD HARBOR_MONITOR_STOP_CMD HARBOR_MONITOR_INTERVAL HARBOR_MONITOR_STARTUP_GRACE HARBOR_MONITOR_STALL_SECONDS HARBOR_MONITOR_MAX_RETRIES HARBOR_MONITOR_CONFIGURED_TIMEOUT
 export API_KEY BASE_URL HARBOR_ANALYZER_API_KEY HARBOR_ANALYZER_BASE_URL HARBOR_ANALYZER_MODEL HARBOR_ANALYZER_PI_PROVIDER HARBOR_ANALYZER_NO_PROXY HARBOR_ANALYZER_ENABLED HARBOR_ANALYZER_MODE HARBOR_ANALYZER_OUTPUT_DIR HARBOR_ANALYZER_PID_FILE HARBOR_ANALYZER_SUPERVISOR_PID_FILE HARBOR_ANALYZER_SUPERVISOR_ID_FILE HARBOR_ANALYZER_LOG_FILE HARBOR_ANALYZER_POLL_INTERVAL HARBOR_ANALYZER_TIMEOUT HARBOR_ANALYZER_MAX_CONCURRENCY TRACE_TO_OPIK OPIK_URL OPIK_URL_OVERRIDE OPIK_BASE OPIK_MODE OPIK_PROJECT_NAME OPIK_API_KEY OPIK_WORKSPACE CC_OPIK_DEBUG
@@ -685,10 +686,14 @@ harbor_stop_analyzer() {
 }
 
 harbor_generate_task_file() {
-  local source_file
-  source_file="$(harbor_task_source_file || true)"
+  local destination="${1:-$TASK_FILE}" source_file=""
+  # Explicit local paths must be validated against the checkout the user
+  # selected, not a similarly named repository manifest.
+  if [[ -n "$TASK_SOURCE_FILE" || -z "$FLEET_TASKS" || "$DATASET_NAME" != "auto" ]]; then
+    source_file="$(harbor_task_source_file || true)"
+  fi
   if [[ -n "$source_file" ]]; then
-    cp "$source_file" "$TASK_FILE"
+    cp "$source_file" "$destination"
     return 0
   fi
 
@@ -700,7 +705,7 @@ harbor_generate_task_file() {
   # Harbor local datasets are one task per top-level directory.  SWE-smith uses
   # instruction.md, while SETA/Terminal-Bench tasks use task.yaml.  Keep this
   # scan format-neutral so the same zellij runner can handle both datasets.
-  python3 - "$DATASET_PATH" "$TASK_FILE" <<'PY'
+  python3 - "$DATASET_PATH" "$destination" <<'PY'
 import sys
 from pathlib import Path
 
@@ -722,6 +727,54 @@ for task_dir in dataset.iterdir():
         tasks.append(task_dir.name)
 task_file.write_text("\n".join(sorted(tasks)) + ("\n" if tasks else ""))
 PY
+}
+
+harbor_filter_task_file() {
+  local source_file="$1" destination="$2"
+  python3 - "$source_file" "$destination" "$FLEET_TASKS" <<'PY'
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+destination = Path(sys.argv[2])
+raw = sys.argv[3]
+
+requested = []
+seen = set()
+for part in raw.split(","):
+    task = part.strip()
+    if task and task not in seen:
+        requested.append(task)
+        seen.add(task)
+
+available = {
+    line.strip()
+    for line in source.read_text(encoding="utf-8").splitlines()
+    if line.strip()
+}
+missing = [task for task in requested if task not in available]
+if missing:
+    print("[ERROR] unknown task(s): " + ", ".join(missing), file=sys.stderr)
+    raise SystemExit(2)
+
+destination.write_text(
+    "\n".join(requested) + ("\n" if requested else ""),
+    encoding="utf-8",
+)
+PY
+}
+
+harbor_validate_local_task_selection() {
+  [[ -n "$FLEET_TASKS" ]] || return 0
+  local all_tasks selected_tasks
+  all_tasks="$(mktemp "${TMPDIR:-/tmp}/harbor-all-tasks.XXXXXX")"
+  selected_tasks="$(mktemp "${TMPDIR:-/tmp}/harbor-selected-tasks.XXXXXX")"
+  if ! harbor_generate_task_file "$all_tasks" ||
+     ! harbor_filter_task_file "$all_tasks" "$selected_tasks"; then
+    rm -f "$all_tasks" "$selected_tasks"
+    return 2
+  fi
+  rm -f "$all_tasks" "$selected_tasks"
 }
 
 harbor_dataset_name_is_registry_id() {
@@ -819,10 +872,66 @@ harbor_registry_task_name() {
   printf '%s\n' "$task_name"
 }
 
+harbor_prepare_registry_task_selection() {
+  [[ -n "$FLEET_TASKS" ]] || return 0
+  local source_file selected_tasks
+  source_file="$(harbor_task_source_file || true)"
+  if [[ -z "$source_file" || ! -s "$source_file" ]]; then
+    printf '[ERROR] --task is unsupported for Harbor registry taskset: %s\n' "$DATASET_NAME" >&2
+    return 2
+  fi
+  selected_tasks="$(mktemp "${TMPDIR:-/tmp}/harbor-selected-tasks.XXXXXX")"
+  if ! harbor_filter_task_file "$source_file" "$selected_tasks"; then
+    rm -f "$selected_tasks"
+    return 2
+  fi
+  rm -f "$selected_tasks"
+  INCLUDE_TASKS="$FLEET_TASKS"
+  TB_INCLUDE_TASKS="$FLEET_TASKS"
+  export INCLUDE_TASKS TB_INCLUDE_TASKS
+}
+
+harbor_validate_task_selection() {
+  [[ -n "$FLEET_TASKS" ]] || return 0
+  if [[ "$ROLLOUT" == "1" ]]; then
+    printf '[ERROR] --task is unsupported when ROLLOUT=1\n' >&2
+    return 2
+  fi
+  if harbor_uses_registry_dataset; then
+    harbor_prepare_registry_task_selection
+  else
+    harbor_validate_local_task_selection
+  fi
+}
+
 harbor_prepare_task_file() {
   mkdir -p "$(dirname "$TASK_FILE")"
-  if [[ "${RESET_RUN:-0}" == "1" || ! -s "$TASK_FILE" ]]; then
-    harbor_generate_task_file
+  if [[ -z "$FLEET_TASKS" ]]; then
+    if [[ "${RESET_RUN:-0}" == "1" || ! -s "$TASK_FILE" ]]; then
+      harbor_generate_task_file
+    fi
+  else
+    local all_tasks selected_tasks
+    all_tasks="$(mktemp "$(dirname "$TASK_FILE")/.all-tasks.XXXXXX")"
+    selected_tasks="$(mktemp "$(dirname "$TASK_FILE")/.selected-tasks.XXXXXX")"
+    if ! harbor_generate_task_file "$all_tasks" ||
+       ! harbor_filter_task_file "$all_tasks" "$selected_tasks"; then
+      rm -f "$all_tasks" "$selected_tasks"
+      return 2
+    fi
+    rm -f "$all_tasks"
+
+    if [[ "${RESET_RUN:-0}" != "1" && -s "$TASK_FILE" ]]; then
+      if ! cmp -s "$TASK_FILE" "$selected_tasks"; then
+        rm -f "$selected_tasks"
+        printf '[ERROR] task selection does not match existing task file: %s\n' "$TASK_FILE" >&2
+        printf '[ERROR] set RESET_RUN=1 or use a new RUN_ID\n' >&2
+        return 2
+      fi
+      rm -f "$selected_tasks"
+    else
+      mv -f "$selected_tasks" "$TASK_FILE"
+    fi
   fi
   if [[ ! -f "$NEXT_INDEX_FILE" ]]; then
     echo 1 > "$NEXT_INDEX_FILE"

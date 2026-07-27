@@ -74,6 +74,7 @@ printf 'runner=harbor\\n'
 printf 'DATASET_NAME=%s\\n' "${DATASET_NAME-}"
 printf 'AGENT=%s\\n' "${AGENT-}"
 printf 'TOTAL_WORKERS=%s\\n' "${TOTAL_WORKERS-}"
+printf 'FLEET_TASKS=%s\\n' "${FLEET_TASKS-}"
 printf 'args=%s\\n' "$*"
 printf 'stdin_tty=%s\\n' "$([ -t 0 ] && echo yes || echo no)"
 if [[ -n "${STUB_PIDFILE-}" ]]; then
@@ -214,6 +215,36 @@ exit "${STUB_EXIT:-0}"
             },
         )
 
+    def test_prompt_preserves_and_normalizes_explicit_task_names(self):
+        output = self.root / "fleet-spec.json"
+        result = self.run_goal(
+            "--prompt",
+            "Run fix-git and break-filter-js-from-html from terminalbench21",
+            "--output",
+            str(output),
+            response=self.response(
+                spec={
+                    "schema_version": 1,
+                    "taskset": "terminalbench21",
+                    "task": " fix-git,break-filter-js-from-html,fix-git ",
+                }
+            ),
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "FLEET_TASKS=fix-git,break-filter-js-from-html",
+            result.stdout,
+        )
+        self.assertEqual(
+            json.loads(output.read_text(encoding="utf-8")),
+            {
+                "schema_version": 1,
+                "taskset": "terminalbench21",
+                "task": "fix-git,break-filter-js-from-html",
+            },
+        )
+
     def test_prompt_prefers_managed_pi_over_path_shadow(self):
         managed_bin = self.root / "managed-npm-bin"
         managed_bin.mkdir()
@@ -297,6 +328,8 @@ exec {shlex.quote(str(self.bin_dir / "pi"))} "$@"
         self.assertIn("arg=<--no-approve>", captured)
         self.assertIn("Terminus-2", captured)
         self.assertIn("return ready=false", captured)
+        self.assertIn("never infer a taskset", captured)
+        self.assertIn("OpenClaw tasksets", captured)
         self.assertIn('"specs"', captured)
         self.assertIn('"maxItems": 16', captured)
 

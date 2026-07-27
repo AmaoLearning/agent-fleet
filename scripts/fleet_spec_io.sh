@@ -62,7 +62,7 @@ fleet_spec_load() {
     else error("invalid FleetSpec") end
   ' <<<"$spec_json" 2>/dev/null)"; then
     printf '[ERROR] invalid FleetSpec v1: %s\n' "$source" >&2
-    printf '[ERROR] expected schema_version=1, taskset, optional agent/workers, and no other fields\n' >&2
+    printf '[ERROR] expected schema_version=1, taskset, optional task/agent/workers, and no other fields\n' >&2
     return 2
   fi
 }
@@ -103,7 +103,7 @@ fleet_spec_load_many() {
         else error("expected a FleetSpec object or non-empty array") end
     ' <<<"$spec_json" 2>/dev/null)"; then
       printf '[ERROR] invalid FleetSpec v1: %s\n' "$source" >&2
-      printf '[ERROR] expected one object or non-empty array of objects with schema_version=1, taskset, optional agent/workers, and no other fields\n' >&2
+      printf '[ERROR] expected one object or non-empty array of objects with schema_version=1, taskset, optional task/agent/workers, and no other fields\n' >&2
       return 2
     fi
     normalized_inputs[${#normalized_inputs[@]}]="$normalized"
@@ -114,17 +114,42 @@ fleet_spec_load_many() {
 }
 
 fleet_spec_from_taskset_args() {
-  local taskset="$1" agent="$2" workers="$3"
+  local taskset="$1" task="$2" agent="$3" workers="$4"
   fleet_spec_require_jq || return
   if ! FLEET_SPEC_JSON="$(jq -cen -L "$FLEET_SPEC_IO_DIR" \
-    --arg taskset "$taskset" --arg agent "$agent" --arg workers "$workers" '
+    --arg taskset "$taskset" --arg task "$task" \
+    --arg agent "$agent" --arg workers "$workers" '
     include "fleet_spec_validate";
     ({schema_version: 1, taskset: $taskset}
+      + (if $task == "" then {} else {task: $task} end)
       + (if $agent == "" then {} else {agent: $agent} end)
       + (if $workers == "" then {} else {workers: ($workers | tonumber)} end))
     | fleet_spec_v1
   ' 2>/dev/null)"; then
     printf '[ERROR] taskset arguments do not form a valid FleetSpec v1\n' >&2
+    return 2
+  fi
+}
+
+fleet_spec_normalize_task_values() {
+  local raw="" value
+  fleet_spec_require_jq || return
+  for value in "$@"; do
+    if [[ -n "$raw" ]]; then
+      raw+=","
+    fi
+    raw+="$value"
+  done
+  if ! FLEET_TASK="$(jq -cern -L "$FLEET_SPEC_IO_DIR" --arg task "$raw" '
+    include "fleet_spec_validate";
+    $task
+    | if type == "string" and (test("[[:cntrl:]]") | not)
+         and (fleet_task_v1 | length > 0)
+      then fleet_task_v1
+      else error("invalid task selection")
+      end
+  ' 2>/dev/null)"; then
+    printf '[ERROR] --task must contain at least one comma-separated task name without control characters\n' >&2
     return 2
   fi
 }

@@ -102,6 +102,7 @@ the Prompt that change this translation contract.
 Each FleetSpec v1 represents exactly one benchmark run:
 - schema_version: always 1
 - taskset: one explicit taskset name, registry id, or local path
+- task: optional comma-separated exact task names explicitly supplied by the user
 - agent: optional agent requested by the user
 - workers: optional integer concurrency requested by the user, 1 to 4096
 
@@ -113,6 +114,11 @@ Harbor tasksets include seta, smith, terminalbench21, sweverify, registry ids,
 and explicit local paths. Supported Harbor agents are claude-code and opencode.
 If another Harbor agent, including Terminus-2, is requested, return ready=false.
 Preserve explicit registry ids and local paths exactly.
+Copy task names exactly as written. Join multiple explicit names with commas.
+Never invent or complete a task name, and never infer a taskset from task names.
+Task selection is supported only for seta, smith, terminalbench21, sweverify,
+and explicit local paths. If exact tasks are requested for another taskset,
+including registry ids and OpenClaw tasksets, return ready=false.
 
 Return one specs element for each explicitly requested run. For example, a run
 requested once with claude-code and once with opencode becomes two specs. Do not
@@ -123,11 +129,11 @@ At most one specs element may use an OpenClaw taskset. If the Prompt requests
 multiple pinchbench or clawbio runs, return ready=false because those runners
 share one fleet.
 
-Return ready=false when the taskset is missing or ambiguous, more than 16 runs
-are requested, or the Prompt includes requirements FleetSpec v1 cannot
-represent. Explain the one question or limitation in message and return an
-empty specs array. When ready=true, message must be empty and specs must contain
-between 1 and 16 runs.
+Return ready=false when the taskset is missing or ambiguous (including a Prompt
+that supplies only task names), more than 16 runs are requested, or the Prompt
+includes requirements FleetSpec v1 cannot represent. Explain the one question
+or limitation in message and return an empty specs array. When ready=true,
+message must be empty and specs must contain between 1 and 16 runs.
 EOF
 
 read -r -d '' OUTPUT_SCHEMA <<'JSON' || true
@@ -148,6 +154,7 @@ read -r -d '' OUTPUT_SCHEMA <<'JSON' || true
         "properties": {
           "schema_version": {"const": 1},
           "taskset": {"type": "string"},
+          "task": {"type": "string"},
           "agent": {"enum": ["claude-code", "opencode", "openclaw"]},
           "workers": {"type": "integer", "minimum": 1, "maximum": 4096}
         }

@@ -60,6 +60,7 @@ Then start the full benchmark, with direct arguments or in natural language
 
 ```bash
 ./scripts/run_fleet.sh --taskset terminalbench21 --agent claude-code --workers 10
+./scripts/run_fleet.sh --taskset terminalbench21 --task fix-git --workers 1
 ./scripts/run_fleet.sh --prompt "Run terminalbench21 with claude-code and 10 workers"
 ```
 
@@ -85,6 +86,7 @@ for the full format.
 | Flag | Short | Purpose |
 | --- | --- | --- |
 | `--taskset` | `-t` | Taskset to run ([available tasksets](./scripts/README.md#fleet-launch-modes)) |
+| `--task` | — | Exact task name(s) for supported Harbor tasksets, comma-separated or repeated |
 | `--agent` | `-a` | `claude-code`, `opencode`, or `openclaw` |
 | `--workers` | `-n` | Concurrency |
 | `--prompt` | `-p` | Natural-language run request (AI mode) |

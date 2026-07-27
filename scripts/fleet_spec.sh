@@ -29,8 +29,8 @@ while [[ $# -gt 0 ]]; do
       ;;
     -d|--detach) DETACH=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
-    -t|--taskset|-a|--agent|-n|--workers)
-      err "--spec cannot be combined with --taskset, --agent, or --workers"
+    -t|--taskset|--task|-a|--agent|-n|--workers)
+      err "--spec cannot be combined with --taskset, --task, --agent, or --workers"
       exit 2
       ;;
     -h|--help) exec bash "$SCRIPT_DIR/run_fleet.sh" --help ;;
@@ -71,6 +71,9 @@ fi
 FLEET_SPEC_JSON="$(jq -c '.[0]' <<<"$FLEET_SPECS_JSON")"
 TASKSET="$(jq -r '.taskset' <<<"$FLEET_SPEC_JSON")"
 run_args=(--taskset "$TASKSET")
+if jq -e 'has("task")' <<<"$FLEET_SPEC_JSON" >/dev/null; then
+  run_args+=("--task=$(jq -r '.task' <<<"$FLEET_SPEC_JSON")")
+fi
 if jq -e 'has("agent")' <<<"$FLEET_SPEC_JSON" >/dev/null; then
   run_args+=(--agent "$(jq -r '.agent' <<<"$FLEET_SPEC_JSON")")
 fi
