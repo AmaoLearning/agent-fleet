@@ -21,6 +21,7 @@ from Agents.utils.common.Harbor.scripts.analyzer_subagent import (
     _load_follow_state,
     _pending_handovers,
     _record_follow_failure,
+    analyzer_drain_budget_seconds,
 )
 from Agents.utils.common.Harbor.scripts.harbor_analyzer import runner as analyzer_runner
 from Agents.utils.common.Harbor.scripts.harbor_analyzer.pi import (
@@ -334,6 +335,90 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
                     now=999999.0,
                 ),
                 [],
+            )
+
+    def test_analyzer_drain_budget_includes_follow_retry_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            handoff_dir = root_path / "handoffs"
+            state_path = root_path / "state.json"
+            latest_path = root_path / "latest.json"
+            handoff_dir.mkdir()
+            latest_path.write_text(
+                json.dumps(
+                    {
+                        "handover_id": HANDOVER_ID,
+                        "generated_at": "2026-07-20T00:00:00+00:00",
+                        "tasks": [task()],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                analyzer_drain_budget_seconds(
+                    latest_path=latest_path,
+                    handoff_dir=handoff_dir,
+                    state_path=state_path,
+                    timeout_seconds=900,
+                    max_concurrency=1,
+                    poll_interval_seconds=5.0,
+                    now=0.0,
+                ),
+                8115,
+            )
+
+    def test_analyzer_drain_budget_includes_follow_retry_backoff(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            handoff_dir = root_path / "handoffs"
+            state_path = root_path / "state.json"
+            latest_path = root_path / "latest.json"
+            handoff_dir.mkdir()
+            latest_path.write_text(
+                json.dumps(
+                    {
+                        "handover_id": HANDOVER_ID,
+                        "generated_at": "2026-07-20T00:00:00+00:00",
+                        "tasks": [task()],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            follow_key = _pending_handovers(
+                latest_path=latest_path,
+                handoff_dir=handoff_dir,
+                processed=set(),
+                failed={},
+                now=0.0,
+            )[0][2]
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "attempted_handover_keys": [],
+                        "failed_handover_retries": {
+                            follow_key: {
+                                "attempt_count": 1,
+                                "next_retry_at": 5.0,
+                                "retry_exhausted": False,
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                analyzer_drain_budget_seconds(
+                    latest_path=latest_path,
+                    handoff_dir=handoff_dir,
+                    state_path=state_path,
+                    timeout_seconds=900,
+                    max_concurrency=1,
+                    poll_interval_seconds=5.0,
+                    now=0.0,
+                ),
+                5415,
             )
 
     def test_run_handover_keeps_task_evidence_paths_per_publication(self) -> None:

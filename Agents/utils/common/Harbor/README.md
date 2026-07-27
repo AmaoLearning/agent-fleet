@@ -177,9 +177,11 @@ ROLLOUT=1 bash start.sh
 
 ## Harbor Monitor
 
-`start.sh` automatically starts one monitor for each Harbor benchmark run.
-Set `HARBOR_MONITOR_ENABLED=0` to disable it. The monitor reads Fleet queue
-artifacts for local datasets and Harbor job/trial results for registry datasets.
+`start.sh` automatically starts one monitor for each Harbor benchmark run,
+including detached zellij runs and command-mode runs such as
+`bash start.sh ./harboropik.sh`. Set `HARBOR_MONITOR_ENABLED=0` to disable it.
+The monitor reads Fleet queue artifacts for local datasets and Harbor job/trial
+results for registry datasets.
 
 Equivalent queue monitor command:
 
@@ -223,6 +225,30 @@ All files are refreshed on each sample. The actual action is
 | Every task has a terminal queue record | `stop` |
 
 Automatic restart is only used when tasks remain and no worker is alive.
+
+## Harbor Analyzer
+
+`start.sh` starts the Pi-backed analyzer under the same Harbor run lifecycle by
+default when the monitor is enabled. Set `HARBOR_ANALYZER_ENABLED=0` to disable it:
+
+```bash
+HARBOR_ANALYZER_ENABLED=0 ./start.sh --detach
+```
+
+For a foreground run without zellij, pass the Harbor command to `start.sh`:
+
+```bash
+bash start.sh ./harboropik.sh
+```
+
+The analyzer depends on the monitor. It follows
+`monitor/analyzer-handover-latest.json` and `monitor/analyzer-handoffs/`, writes
+reports under `$OUTPUT_PATH/analyzer`, and does not restart, stop, or otherwise
+control the benchmark run. Before using the default analyzer path, configure
+`BASE_URL`, `API_KEY`, and `MODEL`, or set the analyzer-specific
+`HARBOR_ANALYZER_BASE_URL`, `HARBOR_ANALYZER_API_KEY`, and
+`HARBOR_ANALYZER_MODEL` overrides. If no analyzer model gateway should be used
+for a run, set `HARBOR_ANALYZER_ENABLED=0`.
 
 ## More Details
 
