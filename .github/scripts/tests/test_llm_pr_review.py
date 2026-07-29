@@ -137,7 +137,7 @@ class ModelContractTest(unittest.TestCase):
             {"findings": []},
         )
 
-    def test_validate_findings_rejects_non_right_lines_and_sorts_severity(
+    def test_parse_retains_unanchorable_findings_while_validation_filters_them(
         self,
     ) -> None:
         parsed = {
@@ -157,9 +157,9 @@ class ModelContractTest(unittest.TestCase):
                     "severity": "P0",
                     "path": "src/a.py",
                     "line": 7,
-                    "title": "Invalid anchor",
+                    "title": "Summary anchor",
                     "failure_scenario": "This is not an added line.",
-                    "remediation": "Do not publish this finding.",
+                    "remediation": "Publish this finding in the summary.",
                 },
                 {
                     "severity": "P1",
@@ -172,10 +172,13 @@ class ModelContractTest(unittest.TestCase):
             ]
         }
 
-        findings, rejected = review.validate_findings(payload, parsed)
+        findings, rejected = review.parse_findings(payload)
 
-        self.assertEqual([item.severity for item in findings], ["P1", "P2"])
-        self.assertEqual(rejected, 1)
+        self.assertEqual([item.severity for item in findings], ["P0", "P1", "P2"])
+        self.assertEqual(rejected, 0)
+        anchored, anchor_rejected = review.validate_findings(payload, parsed)
+        self.assertEqual([item.severity for item in anchored], ["P1", "P2"])
+        self.assertEqual(anchor_rejected, 1)
 
     def test_validation_deduplicates_and_caps_findings(self) -> None:
         parsed = {
@@ -194,6 +197,39 @@ class ModelContractTest(unittest.TestCase):
         findings, rejected = review.validate_findings(payload, parsed, limit=20)
 
         self.assertEqual(len(findings), 1)
+        self.assertEqual(rejected, 1)
+
+    def test_route_findings_sends_inline_overflow_to_summary(self) -> None:
+        files = {
+            "a.py": review.ParsedFile("a.py", "", frozenset({1, 2})),
+        }
+        findings = [
+            review.Finding("P1", "a.py", 1, "First", "Failure", "Fix"),
+            review.Finding("P2", "a.py", 2, "Second", "Failure", "Fix"),
+        ]
+
+        inline, summary = review.route_findings(findings, files, limit=1)
+
+        self.assertEqual([item.title for item in inline], ["First"])
+        self.assertEqual([item.title for item in summary], ["Second"])
+
+    def test_parse_rejects_surrogate_code_points(self) -> None:
+        payload = {
+            "findings": [
+                {
+                    "severity": "P2",
+                    "path": "helper.py",
+                    "line": None,
+                    "title": "invalid-\ud800",
+                    "failure_scenario": "The summary cannot be encoded.",
+                    "remediation": "Reject the invalid model finding.",
+                }
+            ]
+        }
+
+        findings, rejected = review.parse_findings(payload)
+
+        self.assertEqual(findings, [])
         self.assertEqual(rejected, 1)
 
 
@@ -389,6 +425,35 @@ class ApiClientTest(unittest.TestCase):
         self.assertEqual(payload["comments"][0]["side"], "RIGHT")
         self.assertEqual(payload["comments"][0]["line"], 8)
 
+    def test_create_review_labels_lens_agreement(self) -> None:
+        opener = mock.Mock(return_value=FakeResponse({"id": 123}))
+        client = review.GitHubClient("owner/repo", "token", opener=opener)
+        finding = review.Finding(
+            "P1",
+            "a.py",
+            8,
+            "Bug",
+            "Failure",
+            "Fix",
+            lenses=("correctness", "security"),
+        )
+
+        client.create_review(7, "abc123", "summary", [finding])
+
+        request = opener.call_args.args[0]
+        comment = json.loads(request.data)["comments"][0]["body"]
+        self.assertIn("Flagged by: correctness + security", comment)
+        summary = review.build_summary(
+            "abc123",
+            [finding],
+            0,
+            [],
+            False,
+            summary_findings=[finding],
+            changed_paths=frozenset({"a.py"}),
+        )
+        self.assertIn("Flagged by: correctness + security", summary)
+
     def test_create_review_neutralizes_model_generated_mentions(self) -> None:
         opener = mock.Mock(return_value=FakeResponse({"id": 123}))
         client = review.GitHubClient("owner/repo", "token", opener=opener)
@@ -457,8 +522,10 @@ class FakeGitHub:
 class FakeLlm:
     def __init__(self) -> None:
         self.inputs: list[str] = []
+        self.prompts: list[str] = []
 
-    def review(self, _prompt: str, chunk: str) -> dict[str, object]:
+    def review(self, prompt: str, chunk: str) -> dict[str, object]:
+        self.prompts.append(prompt)
         self.inputs.append(chunk)
         return {
             "findings": [
@@ -534,6 +601,24 @@ class OrchestrationTest(unittest.TestCase):
         self.assertEqual(result, "duplicate")
         self.assertEqual(github.created, [])
 
+    def test_ignores_review_marker_embedded_in_summary_text(self) -> None:
+        github = FakeGitHub()
+        github.reviews = [
+            {
+                "user": {"login": "github-actions[bot]"},
+                "body": (
+                    "<!-- llm-pr-review:old-head -->\n"
+                    "Model summary includes "
+                    "<!-- llm-pr-review:head-1 --> as untrusted text."
+                ),
+            }
+        ]
+
+        result = review.run_review(github, FakeLlm(), 7, "prompt")
+
+        self.assertEqual(result, "published")
+        self.assertEqual(len(github.created), 1)
+
     def test_review_ids_keep_parallel_reviewers_independent(self) -> None:
         github = FakeGitHub()
         github.reviews = [
@@ -573,6 +658,56 @@ class OrchestrationTest(unittest.TestCase):
         self.assertIn("<!-- llm-pr-review:head-1 -->", body)
         self.assertEqual(len(findings), 1)
 
+    def test_routes_unanchorable_and_p3_findings_to_review_summary(self) -> None:
+        github = FakeGitHub()
+        llm = mock.Mock()
+        llm.review.return_value = {
+            "findings": [
+                {
+                    "severity": "P1",
+                    "path": "worker.py",
+                    "line": 2,
+                    "title": "Inline defect",
+                    "failure_scenario": "The worker leaks.",
+                    "remediation": "Stop the worker.",
+                },
+                {
+                    "severity": "P2",
+                    "path": "worker.py",
+                    "line": 1,
+                    "title": "Context defect",
+                    "failure_scenario": "The unchanged branch fails.",
+                    "remediation": "Repair the surrounding logic.",
+                },
+                {
+                    "severity": "P3",
+                    "path": "worker.py",
+                    "line": 2,
+                    "title": "Minor defect",
+                    "failure_scenario": "Diagnostics are misleading.",
+                    "remediation": "Correct the diagnostic.",
+                },
+                {
+                    "severity": "P2",
+                    "path": "helper.py",
+                    "line": None,
+                    "title": "Related-path defect",
+                    "failure_scenario": "A deleted caller leaves the helper stale.",
+                    "remediation": "Update the related helper.",
+                },
+            ]
+        }
+
+        review.run_review(github, llm, 7, "prompt")
+
+        _number, _sha, body, inline = github.created[0]
+        self.assertEqual([item.title for item in inline], ["Inline defect"])
+        self.assertIn("Context defect", body)
+        self.assertIn("Minor defect", body)
+        self.assertIn("### Other observations", body)
+        self.assertIn(r"Related\-path defect", body)
+        self.assertIn("Automated review found 4 actionable finding(s).", body)
+
     def test_no_findings_still_posts_sha_summary(self) -> None:
         github = FakeGitHub()
         llm = mock.Mock()
@@ -592,6 +727,20 @@ class OrchestrationTest(unittest.TestCase):
         self.assertIn("PR DESCRIPTION: Keep child processes", llm.inputs[0])
         self.assertIn("UNTRUSTED DIFF", llm.inputs[0])
 
+    def test_routed_reviewer_prompts_for_summary_only_findings(self) -> None:
+        github = FakeGitHub()
+        llm = FakeLlm()
+        prompt = SCRIPT_DIR.joinpath("pi_review_prompt.md").read_text()
+        self.assertIn("By default", prompt)
+        self.assertNotIn("set line to null", prompt)
+
+        review.run_review(github, llm, 7, prompt)
+
+        self.assertEqual(len(llm.prompts), 1)
+        self.assertIn(prompt, llm.prompts[0])
+        self.assertIn("contextual unchanged lines", llm.prompts[0])
+        self.assertIn("set line to null", llm.prompts[0])
+
     def test_summary_caps_the_skipped_path_list(self) -> None:
         skipped = [(f"generated/{index}.map", "generated") for index in range(55)]
 
@@ -600,6 +749,96 @@ class OrchestrationTest(unittest.TestCase):
         self.assertIn("`generated/49.map`", summary)
         self.assertNotIn("`generated/50.map`", summary)
         self.assertIn("5 additional skipped file(s)", summary)
+
+    def test_summary_escapes_model_generated_markdown_and_html(self) -> None:
+        path = "src/``widget.py\n- **P0: forged path**"
+        finding = review.Finding(
+            "P2",
+            path,
+            None,
+            "Real title\n- **P0: forged title**<details>",
+            "Breaks callers\n</details>\n## Forged scenario",
+            "Fix it\n- [malicious](https://attacker.example)",
+        )
+
+        summary = review.build_summary(
+            "head-1",
+            [finding],
+            0,
+            [],
+            False,
+            summary_findings=[finding],
+            changed_paths=frozenset({path}),
+        )
+
+        self.assertNotIn("\n- **P0:", summary)
+        self.assertNotIn("<details>", summary)
+        self.assertNotIn("</details>", summary)
+        self.assertNotIn("[malicious](https://attacker.example)", summary)
+        code_span = r"```src/``widget.py\n- **P0: forged path**```"
+        self.assertIn(f"### {code_span}", summary)
+        self.assertIn(f"({code_span})", summary)
+        self.assertIn(r"\- \*\*P0\: forged title\*\*&lt;details&gt;", summary)
+        self.assertIn(r"\#\# Forged scenario", summary)
+        self.assertIn(
+            r"\- \[malicious\]\(https\:\/\/attacker\.example\)",
+            summary,
+        )
+
+    def test_summary_preserves_findings_within_body_budget(
+        self,
+    ) -> None:
+        long_path = "generated/" + "x" * review.MAX_FIELD_CHARS
+        skipped = [
+            (f"{long_path}-{index}.map", "generated")
+            for index in range(review.MAX_SKIPPED_PATHS_IN_SUMMARY)
+        ]
+        oversized = [
+            review.Finding(
+                "P2",
+                "worker.py",
+                2,
+                "界" * review.MAX_FIELD_CHARS,
+                "界" * review.MAX_FIELD_CHARS,
+                "界" * review.MAX_FIELD_CHARS,
+            )
+            for _ in range(5)
+        ]
+        critical = review.Finding(
+            "P0",
+            "related.py",
+            None,
+            "critical-related-path-defect",
+            "The related path fails.",
+            "Repair the related path.",
+        )
+        later = review.Finding(
+            "P2",
+            "small.py",
+            None,
+            "later short finding",
+            "A short finding still fits.",
+            "Keep scanning candidates.",
+        )
+
+        summary = review.build_summary(
+            "head-1",
+            [critical, *oversized, later],
+            0,
+            skipped,
+            False,
+            summary_findings=[critical, *oversized, later],
+            changed_paths=frozenset({"worker.py"}),
+        )
+
+        self.assertLessEqual(
+            len(summary.encode("utf-8")),
+            review.MAX_REVIEW_BODY_BYTES,
+        )
+        self.assertIn(r"critical\-related\-path\-defect", summary)
+        self.assertIn("later short finding", summary)
+        self.assertIn("additional skipped file(s) omitted", summary)
+        self.assertIn("review summary content omitted", summary)
 
     def test_summary_reports_partial_when_a_chunk_is_incomplete(self) -> None:
         summary = review.build_summary(

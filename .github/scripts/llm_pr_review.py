@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import re
@@ -33,7 +34,22 @@ REQUEST_TIMEOUT_SECONDS = 600
 RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 MAX_PR_METADATA_CHARS = 4_000
 MAX_SKIPPED_PATHS_IN_SUMMARY = 50
+MAX_SKIPPED_SUMMARY_BYTES = 15_000
+MAX_REVIEW_BODY_BYTES = 60_000
 DEFAULT_REVIEW_ID = "llm-pr-review"
+SUMMARY_ROUTING_INSTRUCTION = (
+    "Additional routing instruction: report concrete defects caused by the "
+    "change even when the best evidence is on contextual unchanged lines or "
+    "a related path. Use the exact relevant path and an integer line when "
+    "available; set line to null only when no precise line exists. These "
+    "findings will be published in the review summary."
+)
+SUMMARY_OMISSION_NOTICE = (
+    "- Additional review summary content omitted to fit GitHub's body limit."
+)
+SUMMARY_MARKDOWN_ESCAPE_TABLE = str.maketrans(
+    {character: f"\\{character}" for character in r"\`*_{}[]()#+-.!|~:/?="}
+)
 
 
 @dataclass(frozen=True)
@@ -47,10 +63,11 @@ class ParsedFile:
 class Finding:
     severity: str
     path: str
-    line: int
+    line: int | None
     title: str
     failure_scenario: str
     remediation: str
+    lenses: tuple[str, ...] = ()
 
 
 class ModelResponseError(ValueError):
@@ -156,7 +173,11 @@ def _bounded_text(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
     text = value.strip()
-    if not text or len(text) > MAX_FIELD_CHARS:
+    if (
+        not text
+        or len(text) > MAX_FIELD_CHARS
+        or any(0xD800 <= ord(char) <= 0xDFFF for char in text)
+    ):
         return None
     return text
 
@@ -165,18 +186,46 @@ def _neutralize_mentions(text: str) -> str:
     return text.replace("@", "@\u200b")
 
 
-def validate_findings(
-    payload: dict[str, Any],
-    files: dict[str, ParsedFile],
-    *,
-    limit: int = MAX_COMMENTS,
-) -> tuple[list[Finding], int]:
+def _safe_summary_prose(text: str) -> str:
+    escaped = _neutralize_mentions(text).translate(SUMMARY_MARKDOWN_ESCAPE_TABLE)
+    return html.escape(escaped)
+
+
+def _summary_code_span(text: str, *, trusted_suffix: str = "") -> str:
+    longest_run = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    delimiter = "`" * (longest_run + 1)
+    single_line = text.replace("\r", r"\r").replace("\n", r"\n")
+    return f"{delimiter}{single_line}{trusted_suffix}{delimiter}"
+
+
+def _skipped_summary_lines(skipped: list[tuple[str, str]]) -> list[str]:
+    lines: list[str] = []
+    for path, reason in skipped[:MAX_SKIPPED_PATHS_IN_SUMMARY]:
+        line = f"- {_summary_code_span(path)} ({reason})"
+        if len("\n".join([*lines, line]).encode("utf-8")) > MAX_SKIPPED_SUMMARY_BYTES:
+            break
+        lines.append(line)
+    omitted = len(skipped) - len(lines)
+    if omitted:
+        notice = f"- {omitted} additional skipped file(s) omitted."
+        while lines and (
+            len("\n".join([*lines, notice]).encode("utf-8"))
+            > MAX_SKIPPED_SUMMARY_BYTES
+        ):
+            lines.pop()
+            omitted += 1
+            notice = f"- {omitted} additional skipped file(s) omitted."
+        lines.append(notice)
+    return lines
+
+
+def parse_findings(payload: dict[str, Any]) -> tuple[list[Finding], int]:
     raw_findings = payload.get("findings")
     if not isinstance(raw_findings, list):
         raise ModelResponseError("findings must be an array")
 
     valid: list[Finding] = []
-    seen: set[tuple[str, int, str, str]] = set()
+    seen: set[tuple[str, int | None, str, str]] = set()
     rejected = 0
     for raw in raw_findings:
         if not isinstance(raw, dict):
@@ -188,12 +237,10 @@ def validate_findings(
         title = _bounded_text(raw.get("title"))
         scenario = _bounded_text(raw.get("failure_scenario"))
         remediation = _bounded_text(raw.get("remediation"))
-        parsed = files.get(path) if path else None
         if (
             severity not in SEVERITY_ORDER
-            or parsed is None
-            or type(line) is not int
-            or line not in parsed.right_lines
+            or path is None
+            or (line is not None and (type(line) is not int or line < 1))
             or title is None
             or scenario is None
             or remediation is None
@@ -207,9 +254,56 @@ def validate_findings(
         seen.add(key)
         valid.append(Finding(severity, path, line, title, scenario, remediation))
 
-    valid.sort(key=lambda item: (SEVERITY_ORDER[item.severity], item.path, item.line))
-    rejected += max(0, len(valid) - limit)
-    return valid[:limit], rejected
+    valid.sort(
+        key=lambda item: (
+            SEVERITY_ORDER[item.severity],
+            item.path,
+            item.line is None,
+            item.line or 0,
+        )
+    )
+    return valid, rejected
+
+
+def validate_findings(
+    payload: dict[str, Any],
+    files: dict[str, ParsedFile],
+    *,
+    limit: int = MAX_COMMENTS,
+) -> tuple[list[Finding], int]:
+    findings, rejected = parse_findings(payload)
+    anchored = [
+        finding
+        for finding in findings
+        if (parsed := files.get(finding.path)) is not None
+        and type(finding.line) is int
+        and finding.line in parsed.right_lines
+    ]
+    rejected += len(findings) - len(anchored)
+    rejected += max(0, len(anchored) - limit)
+    return anchored[:limit], rejected
+
+
+def route_findings(
+    findings: list[Finding],
+    files: dict[str, ParsedFile],
+    *,
+    limit: int = MAX_COMMENTS,
+) -> tuple[list[Finding], list[Finding]]:
+    inline: list[Finding] = []
+    summary: list[Finding] = []
+    for finding in findings:
+        parsed = files.get(finding.path)
+        can_inline = (
+            finding.severity != "P3"
+            and parsed is not None
+            and finding.line in parsed.right_lines
+        )
+        if can_inline and len(inline) < limit:
+            inline.append(finding)
+        else:
+            summary.append(finding)
+    return inline, summary
 
 
 def _json_request(
@@ -352,6 +446,11 @@ class GitHubClient:
                     f"{_neutralize_mentions(item.failure_scenario)}\n\n"
                     "Suggested remediation: "
                     f"{_neutralize_mentions(item.remediation)}"
+                    + (
+                        f"\n\nFlagged by: {' + '.join(item.lenses)}"
+                        if item.lenses
+                        else ""
+                    )
                 ),
             }
             for item in findings
@@ -414,7 +513,7 @@ def has_existing_review(
     marker = review_marker(head_sha, review_id, base_sha)
     return any(
         (item.get("user") or {}).get("login") == "github-actions[bot]"
-        and marker in (item.get("body") or "")
+        and (item.get("body") or "").splitlines()[:1] == [marker]
         for item in reviews
     )
 
@@ -428,6 +527,8 @@ def build_summary(
     incomplete_chunks: int = 0,
     review_id: str = DEFAULT_REVIEW_ID,
     base_sha: str | None = None,
+    summary_findings: list[Finding] | None = None,
+    changed_paths: frozenset[str] = frozenset(),
 ) -> str:
     coverage = (
         "Partial" if skipped or truncated or incomplete_chunks else "Complete"
@@ -447,13 +548,7 @@ def build_summary(
     ]
     if skipped:
         lines.extend(["", "Skipped files:"])
-        lines.extend(
-            f"- `{_neutralize_mentions(path)}` ({reason})"
-            for path, reason in skipped[:MAX_SKIPPED_PATHS_IN_SUMMARY]
-        )
-        omitted = len(skipped) - MAX_SKIPPED_PATHS_IN_SUMMARY
-        if omitted > 0:
-            lines.append(f"- {omitted} additional skipped file(s) omitted.")
+        lines.extend(_skipped_summary_lines(skipped))
     if truncated:
         lines.extend(
             ["", "- Additional diff content exceeded the total review budget."]
@@ -468,7 +563,87 @@ def build_summary(
                 ),
             ]
         )
-    return "\n".join(lines)
+    if summary_findings:
+        summary_lines = _summary_lines(summary_findings, changed_paths)
+        complete = "\n".join([*lines, *summary_lines])
+        if len(complete.encode("utf-8")) <= MAX_REVIEW_BODY_BYTES:
+            lines.extend(summary_lines)
+        else:
+            prioritized = sorted(
+                summary_findings,
+                key=lambda item: SEVERITY_ORDER[item.severity],
+            )
+            selected: list[Finding] = []
+            for finding in prioritized:
+                candidate = [*selected, finding]
+                candidate_body = "\n".join(
+                    [
+                        *lines,
+                        *_summary_lines(candidate, changed_paths),
+                        "",
+                        SUMMARY_OMISSION_NOTICE,
+                    ]
+                )
+                if len(candidate_body.encode("utf-8")) > MAX_REVIEW_BODY_BYTES:
+                    continue
+                selected.append(finding)
+            lines.extend(_summary_lines(selected, changed_paths))
+            lines.extend(["", SUMMARY_OMISSION_NOTICE])
+    return _cap_review_body("\n".join(lines))
+
+
+def _summary_lines(
+    findings: list[Finding],
+    changed_paths: frozenset[str],
+) -> list[str]:
+    if not findings:
+        return []
+    changed = [
+        item
+        for item in findings
+        if item.severity != "P3" and item.path in changed_paths
+    ]
+    minor = [item for item in findings if item.severity == "P3"]
+    other = [
+        item
+        for item in findings
+        if item.severity != "P3" and item.path not in changed_paths
+    ]
+    lines = ["", "## Summary findings"]
+    for path in dict.fromkeys(item.path for item in changed):
+        lines.extend(["", f"### {_summary_code_span(path)}"])
+        lines.extend(_summary_finding(item) for item in changed if item.path == path)
+    if other:
+        lines.extend(["", "### Other observations"])
+        lines.extend(_summary_finding(item) for item in other)
+    if minor:
+        lines.extend(["", "### Minor"])
+        lines.extend(_summary_finding(item) for item in minor)
+    return lines
+
+
+def _cap_review_body(body: str) -> str:
+    encoded = body.encode("utf-8")
+    if len(encoded) <= MAX_REVIEW_BODY_BYTES:
+        return body
+    suffix = f"\n\n{SUMMARY_OMISSION_NOTICE}"
+    budget = MAX_REVIEW_BODY_BYTES - len(suffix.encode("utf-8"))
+    prefix = encoded[:budget].decode("utf-8", errors="ignore")
+    prefix = prefix.rsplit("\n", 1)[0].rstrip()
+    return f"{prefix}{suffix}"
+
+
+def _summary_finding(finding: Finding) -> str:
+    suffix = f":{finding.line}" if finding.line is not None else ""
+    location = f" ({_summary_code_span(finding.path, trusted_suffix=suffix)})"
+    rendered = (
+        f"- **{finding.severity}: {_safe_summary_prose(finding.title)}**"
+        f"{location} — {_safe_summary_prose(finding.failure_scenario)} "
+        f"Suggested remediation: {_safe_summary_prose(finding.remediation)}"
+    )
+    if finding.lenses:
+        rendered += f" Flagged by: {' + '.join(finding.lenses)}"
+    return rendered
 
 
 def run_review(
@@ -502,19 +677,20 @@ def run_review(
     files, skipped = collect_files(github.list_files(pull_number))
     by_path = {item.path: item for item in files}
     chunks, truncated = build_chunks(files)
+    review_prompt = f"{prompt}\n{SUMMARY_ROUTING_INSTRUCTION}"
     findings: list[Finding] = []
     rejected = 0
     incomplete_chunks = 0
     for chunk in chunks:
-        payload = llm.review(prompt, build_model_input(pull, chunk))
+        payload = llm.review(review_prompt, build_model_input(pull, chunk))
         if payload.get("incomplete"):
             incomplete_chunks += 1
-        chunk_findings, chunk_rejected = validate_findings(payload, by_path)
+        chunk_findings, chunk_rejected = parse_findings(payload)
         findings.extend(chunk_findings)
         rejected += chunk_rejected
 
     aggregate_payload = {"findings": [item.__dict__ for item in findings]}
-    findings, aggregate_rejected = validate_findings(aggregate_payload, by_path)
+    findings, aggregate_rejected = parse_findings(aggregate_payload)
     rejected += aggregate_rejected
 
     current = github.get_pull(pull_number)
@@ -524,6 +700,7 @@ def run_review(
     ):
         return "stale"
 
+    inline_findings, summary_findings = route_findings(findings, by_path)
     summary = build_summary(
         head_sha,
         findings,
@@ -533,8 +710,10 @@ def run_review(
         incomplete_chunks=incomplete_chunks,
         review_id=review_id,
         base_sha=expected_base_sha,
+        summary_findings=summary_findings,
+        changed_paths=frozenset(by_path),
     )
-    github.create_review(pull_number, head_sha, summary, findings)
+    github.create_review(pull_number, head_sha, summary, inline_findings)
     return "published"
 
 
