@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import dataclass
 from pathlib import Path
 from unittest import mock
 
@@ -30,7 +31,7 @@ def _stub_pi_script(
         f"""#!/usr/bin/env bash
 set -euo pipefail
 stub_dir="$(cd "$(dirname "$0")" && pwd)"
-prompt="${{@: -1}}"
+prompt="$(cat)"
 {{
   printf 'home=%s\\n' "${{HOME:-}}"
   printf 'pi_dir=%s\\n' "${{PI_CODING_AGENT_DIR:-}}"
@@ -58,6 +59,23 @@ exit {exit_code}
     return pi
 
 
+def _make_text_response(text: str, *, stop_reason: str = "stop") -> str:
+    assistant = {
+        "role": "assistant",
+        "content": [{"type": "text", "text": text}],
+        "stopReason": stop_reason,
+    }
+    events = [
+        {"type": "session", "id": "session-1"},
+        {"type": "agent_start"},
+        {"type": "turn_start"},
+        {"type": "message_end", "message": assistant},
+        {"type": "turn_end", "message": assistant},
+        {"type": "agent_end"},
+    ]
+    return "\n".join(json.dumps(e) for e in events)
+
+
 def _make_findings_response(
     findings: list[dict] | None = None,
     *,
@@ -76,20 +94,16 @@ def _make_findings_response(
             }
         ]
     text = json.dumps({"findings": findings}, separators=(",", ":"))
-    assistant = {
-        "role": "assistant",
-        "content": [{"type": "text", "text": text}],
-        "stopReason": stop_reason,
-    }
-    events = [
-        {"type": "session", "id": "session-1"},
-        {"type": "agent_start"},
-        {"type": "turn_start"},
-        {"type": "message_end", "message": assistant},
-        {"type": "turn_end", "message": assistant},
-        {"type": "agent_end"},
+    return _make_text_response(text, stop_reason=stop_reason)
+
+
+def _with_tool_calls(response: str, *tool_names: str) -> str:
+    events = [json.loads(line) for line in response.splitlines()]
+    events[3:3] = [
+        {"type": "tool_execution_start", "toolName": name}
+        for name in tool_names
     ]
-    return "\n".join(json.dumps(e) for e in events)
+    return "\n".join(json.dumps(event) for event in events)
 
 
 # -- URL normalisation ----------------------------------------------------
@@ -189,6 +203,13 @@ class StreamValidationTest(unittest.TestCase):
         )
         self.assertEqual(result["findings"], [])
 
+    def test_counts_tool_calls_in_valid_stream(self) -> None:
+        result = pi_review._validate_pi_stream(
+            _with_tool_calls(_make_findings_response([]), "grep", "read")
+        )
+
+        self.assertEqual(result["_pi_tool_calls"], 2)
+
     def test_missing_session_raises(self) -> None:
         events = [
             {"type": "agent_start"},
@@ -263,7 +284,14 @@ class StreamValidationTest(unittest.TestCase):
         ]
         raw = "\n".join(json.dumps(e) for e in events)
         result = pi_review._validate_pi_stream(raw)
-        self.assertEqual(result, {"findings": [], "incomplete": True})
+        self.assertEqual(
+            result,
+            {
+                "findings": [],
+                "incomplete": True,
+                "_pi_tool_calls": 0,
+            },
+        )
 
     def test_no_final_assistant_message_raises(self) -> None:
         events = [
@@ -307,7 +335,7 @@ class PiClientTest(unittest.TestCase):
         kwargs.update(overrides)
         return pi_review.PiClient(**kwargs)
 
-    def test_passes_system_prompt_and_diff_chunk_to_pi(self) -> None:
+    def test_passes_system_prompt_and_model_input_to_pi(self) -> None:
         _stub_pi_script(self.bin_dir, stdout=_make_findings_response())
         client = self._make_client()
 
@@ -318,6 +346,7 @@ class PiClientTest(unittest.TestCase):
         self.assertIn("arg=<--system-prompt>", captured)
         self.assertIn("arg=<You are a reviewer.>", captured)
         self.assertNotIn("arg=<--tools>", captured)
+        self.assertNotIn("arg=<--no-tools>", captured)
         self.assertNotIn("arg=<--no-extensions>", captured)
         self.assertNotIn("arg=<--no-skills>", captured)
         self.assertNotIn("arg=<--no-context-files>", captured)
@@ -325,6 +354,26 @@ class PiClientTest(unittest.TestCase):
         self.assertIn("arg=<--no-session>", captured)
         self.assertIn("offline=1", captured)
         self.assertIn(f"cwd={self.repository_root.resolve()}", captured)
+
+    def test_sends_large_diff_through_stdin_not_argv(self) -> None:
+        client = self._make_client()
+        model_input = "x" * 200_000
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=_make_findings_response([]),
+            stderr="",
+        )
+
+        with mock.patch(
+            "subprocess.run",
+            return_value=completed,
+        ) as run_mock:
+            client.review("prompt", model_input)
+
+        command = run_mock.call_args.args[0]
+        self.assertLess(max(map(len, command)), 10_000)
+        self.assertEqual(run_mock.call_args.kwargs["input"], model_input)
 
     def test_mode_json_and_print_are_set(self) -> None:
         _stub_pi_script(self.bin_dir, stdout=_make_findings_response())
@@ -399,6 +448,103 @@ class PiClientTest(unittest.TestCase):
             client.review("prompt", "diff")
         self.assertIn("invalid jsonl", str(ctx.exception).lower())
 
+    def test_retries_one_malformed_model_response(self) -> None:
+        client = self._make_client()
+        malformed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=_with_tool_calls(_make_text_response("not JSON"), "read"),
+            stderr="",
+        )
+        valid = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=_with_tool_calls(
+                _make_findings_response([]),
+                "grep",
+                "read",
+            ),
+            stderr="",
+        )
+
+        with mock.patch(
+            "subprocess.run",
+            side_effect=[malformed, valid],
+        ) as run_mock:
+            result = client.review(
+                "prompt",
+                "diff",
+                retry_malformed=True,
+            )
+
+        self.assertEqual(result, {"findings": [], "_pi_tool_calls": 3})
+        self.assertEqual(run_mock.call_count, 2)
+
+    def test_retries_one_schema_invalid_model_response(self) -> None:
+        client = self._make_client()
+        invalid = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=_with_tool_calls(
+                _make_text_response('{"findings": {}}'),
+                "read",
+            ),
+            stderr="",
+        )
+        valid = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=_with_tool_calls(
+                _make_findings_response([]),
+                "grep",
+                "read",
+            ),
+            stderr="",
+        )
+
+        def validate(payload: dict) -> None:
+            if not isinstance(payload.get("findings"), list):
+                raise pi_review._review.ModelResponseError(
+                    "findings must be an array"
+                )
+
+        with mock.patch(
+            "subprocess.run",
+            side_effect=[invalid, valid],
+        ) as run_mock:
+            result = client.review(
+                "prompt",
+                "diff",
+                retry_malformed=True,
+                response_validator=validate,
+            )
+
+        self.assertEqual(result, {"findings": [], "_pi_tool_calls": 3})
+        self.assertEqual(run_mock.call_count, 2)
+
+    def test_does_not_retry_malformed_model_response_by_default(self) -> None:
+        client = self._make_client()
+        malformed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=_make_text_response("not JSON"),
+            stderr="",
+        )
+        valid = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=_make_findings_response([]),
+            stderr="",
+        )
+
+        with mock.patch(
+            "subprocess.run",
+            side_effect=[malformed, valid],
+        ) as run_mock, self.assertRaises(pi_review.PiResponseFormatError):
+            client.review("prompt", "diff")
+
+        self.assertEqual(run_mock.call_count, 1)
+
 
 # -- orchestration tests --------------------------------------------------
 
@@ -450,13 +596,573 @@ class FakePiClient:
             ]
         self.findings = findings
         self.inputs: list[str] = []
+        self.prompts: list[str] = []
+        self.retry_malformed: list[bool] = []
+        self.response_validators: list[object] = []
 
-    def review(self, _prompt: str, chunk: str) -> dict:
-        self.inputs.append(chunk)
-        return {"findings": list(self.findings)}
+    def review(
+        self,
+        prompt: str,
+        model_input: str,
+        *,
+        retry_malformed: bool = False,
+        response_validator: object = None,
+    ) -> dict:
+        self.prompts.append(prompt)
+        self.inputs.append(model_input)
+        self.retry_malformed.append(retry_malformed)
+        self.response_validators.append(response_validator)
+        payload = {"findings": list(self.findings)}
+        if callable(response_validator):
+            response_validator(payload)
+        return payload
 
 
 class OrchestrationTest(unittest.TestCase):
+    def test_fans_out_three_lenses_over_the_whole_diff(self) -> None:
+        github = FakeGitHub()
+        github.files.append(
+            {
+                "filename": "tests/test_worker.py",
+                "patch": "@@ -0,0 +1 @@\n+test_stop()",
+            }
+        )
+        pi_client = FakePiClient([])
+
+        pi_review.run_review(github, pi_client, 7, "base prompt")
+
+        self.assertEqual(len(pi_client.inputs), 3)
+        for model_input in pi_client.inputs:
+            self.assertIn("FILE worker.py", model_input)
+            self.assertIn("FILE tests/test_worker.py", model_input)
+        self.assertEqual(len(set(pi_client.prompts)), 3)
+        self.assertTrue(all("base prompt" in prompt for prompt in pi_client.prompts))
+        self.assertEqual(pi_client.retry_malformed, [True] * 3)
+        self.assertTrue(all(callable(item) for item in pi_client.response_validators))
+
+    def test_whole_diff_input_includes_all_files(self) -> None:
+        sentinel = "SECOND_FILE_SENTINEL"
+        github = FakeGitHub()
+        github.files = [
+            {
+                "filename": f"large_{index}.py",
+                "patch": (
+                    "@@ -0,0 +1 @@\n+"
+                    + (sentinel if index == 1 else f"file_{index}_")
+                    + ("x" * 49_000)
+                ),
+            }
+            for index in range(2)
+        ]
+        pi_client = FakePiClient([])
+
+        pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+
+        self.assertEqual(len(pi_client.inputs), 3)
+        self.assertTrue(
+            all(sentinel in model_input for model_input in pi_client.inputs)
+        )
+
+    def test_limits_token_dense_whole_diff_input(self) -> None:
+        github = FakeGitHub()
+        github.files = [
+            {
+                "filename": "dense.py",
+                "patch": "@@ -0,0 +1 @@\n+" + ("🧪" * 50_000),
+            }
+        ]
+        pi_client = FakePiClient([])
+
+        pi_review.run_review(github, pi_client, 7, "base prompt")
+
+        self.assertTrue(
+            all(
+                len(model_input.encode("utf-8")) <= 120_000
+                for model_input in pi_client.inputs
+            )
+        )
+        self.assertIn("Coverage: Partial", github.created[0][2])
+
+    def test_one_lens_failure_publishes_partial_results(self) -> None:
+        github = FakeGitHub()
+        pi_client = mock.Mock()
+
+        def review_lens(
+            prompt: str, _model_input: str, **_kwargs: object
+        ) -> dict:
+            if "trust boundaries" in prompt:
+                raise pi_review.PiReviewError("provider detail must stay private")
+            return {"findings": []}
+
+        pi_client.review.side_effect = review_lens
+
+        result = pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+
+        self.assertEqual(result, "published")
+        body = github.created[0][2]
+        self.assertIn("Coverage: Partial", body)
+        self.assertIn("Failed lenses: security", body)
+        self.assertNotIn("provider detail", body)
+
+    def test_partial_review_is_terminal_for_revision(self) -> None:
+        github = FakeGitHub()
+        pi_client = mock.Mock()
+
+        def fail_security(
+            prompt: str,
+            _model_input: str,
+            **_kwargs: object,
+        ) -> dict:
+            if "trust boundaries" in prompt:
+                raise pi_review.PiReviewError("failed")
+            return {"findings": []}
+
+        pi_client.review.side_effect = fail_security
+        first = pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+        partial_body = github.created[0][2]
+        github.reviews = [
+            {
+                "user": {"login": "github-actions[bot]"},
+                "body": partial_body,
+            }
+        ]
+        pi_client.reset_mock()
+
+        second = pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+
+        self.assertEqual((first, second), ("published", "duplicate"))
+        self.assertIn("<!-- pi-pr-review:head-1 -->", partial_body)
+        self.assertEqual(len(github.created), 1)
+        pi_client.review.assert_not_called()
+
+    def test_fallback_prompt_requests_only_inline_findings(self) -> None:
+        github = FakeGitHub()
+        pi_client = FakePiClient([])
+
+        with mock.patch.object(
+            pi_review,
+            "_shared_routing_available",
+            return_value=False,
+        ):
+            pi_review.run_review(
+                github,
+                pi_client,
+                7,
+                "base prompt",
+            )
+
+        self.assertTrue(
+            all("added RIGHT-side line" in prompt for prompt in pi_client.prompts)
+        )
+        self.assertTrue(
+            all("set line to null" not in prompt for prompt in pi_client.prompts)
+        )
+
+    def test_shared_router_prompt_requests_unanchorable_findings(self) -> None:
+        github = FakeGitHub()
+        pi_client = FakePiClient([])
+
+        with (
+            mock.patch.object(
+                pi_review._review,
+                "parse_findings",
+                side_effect=lambda _payload: ([], 0),
+                create=True,
+            ),
+            mock.patch.object(
+                pi_review._review,
+                "route_findings",
+                side_effect=lambda _findings, _files: ([], []),
+                create=True,
+            ),
+            mock.patch.object(
+                pi_review._review,
+                "build_summary",
+                return_value="summary",
+            ),
+        ):
+            pi_review.run_review(
+                github,
+                pi_client,
+                7,
+                "base prompt",
+            )
+
+        self.assertTrue(
+            all("set line to null" in prompt for prompt in pi_client.prompts)
+        )
+        self.assertTrue(
+            all("contextual unchanged lines" in prompt for prompt in pi_client.prompts)
+        )
+        self.assertTrue(
+            all(
+                "overrides the prompt's default" in prompt
+                for prompt in pi_client.prompts
+            )
+        )
+
+    def test_two_lens_failures_publish_the_remaining_result(self) -> None:
+        github = FakeGitHub()
+        pi_client = mock.Mock()
+
+        def review_lens(
+            prompt: str, _model_input: str, **_kwargs: object
+        ) -> dict:
+            if "runtime correctness" in prompt:
+                return {"findings": []}
+            raise pi_review.PiReviewError("failed")
+
+        pi_client.review.side_effect = review_lens
+
+        result = pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+
+        self.assertEqual(result, "published")
+        body = github.created[0][2]
+        self.assertIn("Failed lenses: security, tests/regression", body)
+
+    def test_reports_tool_calls_by_lens(self) -> None:
+        github = FakeGitHub()
+        pi_client = mock.Mock()
+
+        def review_lens(
+            prompt: str, _model_input: str, **_kwargs: object
+        ) -> dict:
+            if "runtime correctness" in prompt:
+                count = 1
+            elif "trust boundaries" in prompt:
+                count = 2
+            else:
+                count = 3
+            return {"findings": [], "_pi_tool_calls": count}
+
+        pi_client.review.side_effect = review_lens
+
+        pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+
+        body = github.created[0][2]
+        self.assertIn(
+            "Tool calls by lens: correctness=1, security=2, "
+            "tests/regression=3",
+            body,
+        )
+
+    def test_all_lens_failures_fail_without_publishing(self) -> None:
+        github = FakeGitHub()
+        pi_client = mock.Mock()
+        pi_client.review.side_effect = pi_review.PiReviewError("failed")
+
+        with self.assertRaisesRegex(
+            pi_review.PiReviewError,
+            "all review lenses failed",
+        ):
+            pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+
+        self.assertEqual(github.created, [])
+
+    def test_merges_overlapping_findings_at_the_highest_severity(self) -> None:
+        github = FakeGitHub()
+        pi_client = mock.Mock()
+
+        def review_lens(
+            prompt: str, _model_input: str, **_kwargs: object
+        ) -> dict:
+            if "runtime correctness" in prompt:
+                severity = "P2"
+                title = "Cancellation cleanup missing"
+            elif "trust boundaries" in prompt:
+                severity = "P1"
+                title = "Cancellation cleanup missing"
+            else:
+                severity = "P2"
+                title = "Missing cancellation cleanup"
+            return {
+                "findings": [
+                    {
+                        "severity": severity,
+                        "path": "worker.py",
+                        "line": 2,
+                        "title": title,
+                        "failure_scenario": "Worker survives wrapper.",
+                        "remediation": "Terminate the process group.",
+                    }
+                ]
+            }
+
+        pi_client.review.side_effect = review_lens
+
+        pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+
+        findings = github.created[0][3]
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].severity, "P1")
+
+    def test_merged_finding_retains_all_lens_attribution(self) -> None:
+        @dataclass(frozen=True)
+        class AttributedFinding:
+            severity: str
+            path: str
+            line: int
+            title: str
+            failure_scenario: str
+            remediation: str
+            lenses: tuple[str, ...] = ()
+
+        github = FakeGitHub()
+
+        with mock.patch.object(
+            pi_review._review,
+            "Finding",
+            AttributedFinding,
+        ):
+            pi_review.run_review(github, FakePiClient(), 7, "{{LENS}}")
+
+        findings = github.created[0][3]
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(
+            findings[0].lenses,
+            ("correctness", "security", "tests/regression"),
+        )
+
+    def test_distinct_findings_on_one_line_remain_separate(self) -> None:
+        findings = [
+            pi_review._review.Finding(
+                "P2",
+                "worker.py",
+                2,
+                title,
+                "Failure",
+                "Fix",
+            )
+            for title in (
+                "Cancellation leak",
+                "Credential exposure",
+                "Missing regression coverage",
+            )
+        ]
+
+        merged = pi_review.merge_lens_findings(findings)
+
+        self.assertEqual(len(merged), 3)
+
+    def test_generic_title_overlap_does_not_merge_distinct_failures(self) -> None:
+        findings = [
+            pi_review._review.Finding(
+                "P1",
+                "worker.py",
+                2,
+                "Missing authorization check",
+                "An unauthenticated caller can delete another user's job.",
+                "Require ownership before deletion.",
+            ),
+            pi_review._review.Finding(
+                "P2",
+                "worker.py",
+                2,
+                "Missing null check",
+                "An absent worker result raises AttributeError during cleanup.",
+                "Handle the absent result before dereferencing it.",
+            ),
+        ]
+
+        merged = pi_review.merge_lens_findings(findings)
+
+        self.assertEqual(len(merged), 2)
+
+    def test_generic_wording_does_not_merge_distinct_subjects(self) -> None:
+        findings = [
+            pi_review._review.Finding(
+                "P1",
+                "worker.py",
+                2,
+                "Reject missing owner check",
+                "A request missing owner deletes the job.",
+                "Require ownership before deletion.",
+            ),
+            pi_review._review.Finding(
+                "P1",
+                "worker.py",
+                2,
+                "Reject missing payload check",
+                "A request missing payload crashes the job.",
+                "Validate the payload before use.",
+            ),
+        ]
+
+        merged = pi_review.merge_lens_findings(findings)
+
+        self.assertEqual(len(merged), 2)
+
+    def test_filler_words_do_not_prevent_equivalent_findings_from_merging(
+        self,
+    ) -> None:
+        findings = [
+            pi_review._review.Finding(
+                "P2",
+                "worker.py",
+                2,
+                title,
+                "Worker survives wrapper.",
+                "Terminate the process group.",
+            )
+            for title in (
+                "Missing cancellation cleanup",
+                "Cancellation cleanup is missing",
+            )
+        ]
+
+        merged = pi_review.merge_lens_findings(findings)
+
+        self.assertEqual(len(merged), 1)
+
+    def test_caps_merged_inline_findings_across_lenses(self) -> None:
+        github = FakeGitHub()
+        pi_client = mock.Mock()
+
+        def review_lens(
+            prompt: str, _model_input: str, **_kwargs: object
+        ) -> dict:
+            if "runtime correctness" in prompt:
+                prefix = "correctness"
+            elif "trust boundaries" in prompt:
+                prefix = "security"
+            else:
+                prefix = "regression"
+            return {
+                "findings": [
+                    {
+                        "severity": "P2",
+                        "path": "worker.py",
+                        "line": 2,
+                        "title": f"{prefix}{index}",
+                        "failure_scenario": f"{prefix}{index} fails.",
+                        "remediation": f"Fix {prefix}{index}.",
+                    }
+                    for index in range(10)
+                ]
+            }
+
+        pi_client.review.side_effect = review_lens
+
+        pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+
+        self.assertEqual(len(github.created[0][3]), pi_review._review.MAX_COMMENTS)
+        body = github.created[0][2]
+        if pi_review._shared_routing_available():
+            self.assertIn("Rejected model findings: 0", body)
+            self.assertIn("security0", body)
+        else:
+            self.assertIn(
+                "Automated review found 20 actionable finding(s).",
+                body,
+            )
+            self.assertIn("Rejected model findings: 10", body)
+
+    def test_applies_inline_cap_after_deduplicating_each_lens(self) -> None:
+        github = FakeGitHub()
+        pi_client = mock.Mock()
+        overlapping = [
+            {
+                "severity": "P2",
+                "path": "worker.py",
+                "line": 2,
+                "title": title,
+                "failure_scenario": "Worker survives wrapper.",
+                "remediation": "Terminate the process group.",
+            }
+            for title in (
+                "Cancellation cleanup missing",
+                "Missing cancellation cleanup",
+            )
+        ]
+        distinct = [
+            {
+                "severity": "P2",
+                "path": "worker.py",
+                "line": 2,
+                "title": f"defect{index}",
+                "failure_scenario": f"scenario{index}",
+                "remediation": f"fix{index}",
+            }
+            for index in range(2, 20)
+        ]
+        sentinel = {
+            "severity": "P2",
+            "path": "worker.py",
+            "line": 2,
+            "title": "overflow-sentinel",
+            "failure_scenario": "sentinel-scenario",
+            "remediation": "sentinel-fix",
+        }
+
+        def review_lens(
+            prompt: str, _model_input: str, **_kwargs: object
+        ) -> dict:
+            if "runtime correctness" in prompt:
+                return {"findings": overlapping + distinct + [sentinel]}
+            return {"findings": []}
+
+        pi_client.review.side_effect = review_lens
+
+        with mock.patch.object(
+            pi_review,
+            "_shared_routing_available",
+            return_value=False,
+        ):
+            pi_review.run_review(github, pi_client, 7, "base prompt")
+
+        findings = github.created[0][3]
+        self.assertEqual(len(findings), pi_review._review.MAX_COMMENTS)
+        self.assertIn("overflow-sentinel", [item.title for item in findings])
+
+    def test_uses_shared_routing_contract_when_available(self) -> None:
+        github = FakeGitHub()
+        pi_client = FakePiClient([])
+        findings = [
+            pi_review._review.Finding(
+                "P1", "worker.py", 2, "Inline", "Failure", "Fix"
+            ),
+            pi_review._review.Finding(
+                "P3", "worker.py", 2, "Minor", "Failure", "Fix"
+            ),
+            pi_review._review.Finding(
+                "P2", "helper.py", None, "Other", "Failure", "Fix"
+            ),
+        ]
+
+        def route(items: list, _files: dict) -> tuple[list, list]:
+            return [items[0]], items[1:]
+
+        with (
+            mock.patch.object(
+                pi_review._review,
+                "parse_findings",
+                return_value=(findings, 0),
+                create=True,
+            ),
+            mock.patch.object(
+                pi_review._review,
+                "route_findings",
+                side_effect=route,
+                create=True,
+            ),
+            mock.patch.object(
+                pi_review._review,
+                "build_summary",
+                return_value="routed summary",
+            ) as build_summary,
+        ):
+            pi_review.run_review(github, pi_client, 7, "{{LENS}}")
+
+        self.assertEqual(
+            [item.title for item in github.created[0][3]],
+            ["Inline"],
+        )
+        summary_findings = build_summary.call_args.kwargs["summary_findings"]
+        self.assertEqual(
+            [item.title for item in summary_findings],
+            ["Other", "Minor"],
+        )
+
     def test_publishes_review_with_findings(self) -> None:
         github = FakeGitHub()
         pi_client = FakePiClient()
@@ -606,7 +1312,7 @@ class OrchestrationTest(unittest.TestCase):
         self.assertIn("Change worker cancellation", pi_client.inputs[0])
         self.assertIn("UNTRUSTED DIFF", pi_client.inputs[0])
 
-    def test_incomplete_chunk_is_reported(self) -> None:
+    def test_incomplete_lens_is_reported(self) -> None:
         github = FakeGitHub()
         pi_client = mock.Mock()
         pi_client.review.return_value = {
@@ -619,6 +1325,7 @@ class OrchestrationTest(unittest.TestCase):
         body = github.created[0][2]
         self.assertIn("Coverage: Partial", body)
         self.assertIn("empty model response", body)
+        self.assertIn("review lens(es)", body)
 
     def test_custom_review_id_is_used(self) -> None:
         github = FakeGitHub()
@@ -634,7 +1341,7 @@ class OrchestrationTest(unittest.TestCase):
         body = github.created[0][2]
         self.assertIn("<!-- custom-review-id:head-1 -->", body)
 
-    def test_invalid_findings_raise_pi_review_error(self) -> None:
+    def test_all_invalid_lens_payloads_fail_the_review(self) -> None:
         github = FakeGitHub()
         pi_client = mock.Mock()
         pi_client.review.return_value = {"findings": "invalid"}
@@ -642,7 +1349,7 @@ class OrchestrationTest(unittest.TestCase):
         with self.assertRaises(pi_review.PiReviewError) as ctx:
             pi_review.run_review(github, pi_client, 7, "prompt")
 
-        self.assertIn("findings must be an array", str(ctx.exception))
+        self.assertIn("all review lenses failed", str(ctx.exception))
 
 
 # -- workflow contract tests -----------------------------------------------
@@ -659,13 +1366,21 @@ class PiWorkflowContractTest(unittest.TestCase):
     def test_script_imports_shared_components(self) -> None:
         self.assertIsNotNone(pi_review._review.GitHubClient)
         self.assertIsNotNone(pi_review._review.validate_findings)
-        self.assertIsNotNone(pi_review._review.build_chunks)
 
     def test_pi_timeout_is_longer_than_raw_api(self) -> None:
         self.assertGreater(
             pi_review.PI_TIMEOUT_SECONDS, 600,
             "agent review should allow more time than direct API calls",
         )
+
+    def test_prompt_defaults_to_inline_routing_without_placeholders(self) -> None:
+        prompt = " ".join(
+            SCRIPT_DIR.joinpath("pi_review_prompt.md").read_text().split()
+        )
+
+        self.assertIn("added RIGHT-side line", prompt)
+        self.assertNotIn("{{ROUTING}}", prompt)
+        self.assertNotIn("{{LENS}}", prompt)
 
     def test_main_binds_review_to_event_revisions(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
