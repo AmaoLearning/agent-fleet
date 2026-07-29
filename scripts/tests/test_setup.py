@@ -80,6 +80,24 @@ echo '9.9.9'
             "git",
             """#!/usr/bin/env bash
 printf '%s\n' "$*" >>"$SETUP_TEST_STATE/git.log"
+if [[ "${1:-}" == "-C" && "${3:-}" == "rev-parse" && "${4:-}" == "--git-dir" ]]; then
+  if [[ -n "${SETUP_TEST_GIT_REV_PARSE_ERROR:-}" ]]; then
+    printf '%s\n' "$SETUP_TEST_GIT_REV_PARSE_ERROR" >&2
+    exit "${SETUP_TEST_GIT_REV_PARSE_STATUS:-128}"
+  fi
+  printf '.git\n'
+fi
+if [[ "${1:-}" == "clone" ]]; then
+  destination="${@: -1}"
+  mkdir -p "$destination/.git"
+  for skill in \
+    harbor-benchmark-runner \
+    openclaw-fleet-operations \
+    openclaw-benchmark-runners; do
+    mkdir -p "$destination/skills/$skill"
+    printf '# fixture\n' >"$destination/skills/$skill/SKILL.md"
+  done
+fi
 """,
         )
         for command in ("curl", "jq"):
@@ -243,6 +261,7 @@ exit 0
         self.assertFalse((self.state / "shadow-pi.log").exists())
         self.assertNotIn("anthropic-ai", npm_log)
         git_log = (self.state / "git.log").read_text(encoding="utf-8")
+        self.assertNotIn("clone", git_log)
         self.assertIn("submodule sync --recursive", git_log)
         self.assertIn("submodule update --init --recursive", git_log)
 
@@ -414,6 +433,103 @@ exit 0
         gitignore = SETUP.parents[1] / ".gitignore"
         patterns = gitignore.read_text(encoding="utf-8").splitlines()
         self.assertIn("*.local.env.bak.agent-fleet", patterns)
+
+    def test_setup_reports_git_failure_for_existing_checkout_without_cloning(self):
+        env = self.setup_env()
+        env.update(
+            {
+                "BASE_URL": "https://gateway.example.invalid",
+                "API_KEY": "fake-setup-secret",
+                "MODEL": "test-model",
+                "TRACE_TO_OPIK": "false",
+                "SETUP_TEST_GIT_REV_PARSE_ERROR": (
+                    "fatal: detected dubious ownership in repository"
+                ),
+            }
+        )
+
+        result = subprocess.run(
+            [str(SETUP)],
+            cwd=self.repo,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cannot inspect existing repository", result.stderr.lower())
+        self.assertIn("fatal: detected dubious ownership", result.stderr)
+        git_log = (self.state / "git.log").read_text(encoding="utf-8")
+        self.assertNotIn("clone", git_log)
+        self.assertNotIn("submodule", git_log)
+
+    def test_setup_refuses_nonempty_non_repository_without_cloning(self):
+        (self.repo / ".git").rmdir()
+        env = self.setup_env()
+        env.update(
+            {
+                "BASE_URL": "https://gateway.example.invalid",
+                "API_KEY": "fake-setup-secret",
+                "MODEL": "test-model",
+                "TRACE_TO_OPIK": "false",
+                "SETUP_TEST_GIT_REV_PARSE_ERROR": (
+                    "fatal: not a git repository (or any parent directories): .git"
+                ),
+            }
+        )
+
+        result = subprocess.run(
+            [str(SETUP)],
+            cwd=self.repo,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("destination is not empty", result.stderr.lower())
+        self.assertIn("fatal: not a git repository", result.stderr)
+        git_log = (self.state / "git.log").read_text(encoding="utf-8")
+        self.assertNotIn("clone", git_log)
+        self.assertNotIn("submodule", git_log)
+
+    def test_setup_clones_into_empty_destination_after_expected_probe_failure(self):
+        empty_repo = self.root / "empty-repo"
+        empty_repo.mkdir()
+        env = self.setup_env()
+        env.update(
+            {
+                "REPO_DIR": str(empty_repo),
+                "BASE_URL": "https://gateway.example.invalid",
+                "API_KEY": "fake-setup-secret",
+                "MODEL": "test-model",
+                "TRACE_TO_OPIK": "false",
+                "SETUP_TEST_GIT_REV_PARSE_ERROR": (
+                    "fatal: not a git repository (or any parent directories): .git"
+                ),
+            }
+        )
+
+        result = subprocess.run(
+            [str(SETUP)],
+            cwd=self.repo,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        git_log = (self.state / "git.log").read_text(encoding="utf-8")
+        self.assertIn(
+            f"clone --recurse-submodules "
+            f"https://github.com/sii-system/agent-fleet.git {empty_repo}",
+            git_log,
+        )
+        self.assertIn("submodule sync --recursive", git_log)
+        self.assertTrue((empty_repo / "config.local.env").is_file())
 
 
 if __name__ == "__main__":

@@ -355,7 +355,7 @@ if [[ "$DIND_USER" != "root" ]]; then
   if [[ "$current_uid" != "$DIND_USER_UID" || "$current_gid" != "$DIND_USER_GID" ]]; then
     docker exec "$DIND_NAME" usermod -o -u "$DIND_USER_UID" -g "$DIND_USER_GID" "$DIND_USER"
   fi
-  docker exec "$DIND_NAME" chown -R "$DIND_USER" "$DIND_HOME_DIR"
+  docker exec "$DIND_NAME" chown -R "$DIND_USER_UID:$DIND_USER_GID" "$DIND_HOME_DIR"
 fi
 
 declare -a exec_base=(exec --user "$DIND_USER")
@@ -393,10 +393,6 @@ docker_exec_env() {
   docker_exec env "${run_env[@]}" "$@"
 }
 
-docker_exec_root_env() {
-  docker exec "$DIND_NAME" env "${run_env[@]}" "$@"
-}
-
 run_setup=0
 case "$DIND_BOOTSTRAP" in
   always)
@@ -420,10 +416,7 @@ esac
 
 if [[ "$run_setup" == "1" ]]; then
   info "running scripts/setup.sh inside DinD"
-  docker_exec_root_env ./scripts/setup.sh
-  if [[ "$DIND_USER" != "root" ]]; then
-    docker exec "$DIND_NAME" chown -R "$DIND_USER" "$DIND_HOME_DIR"
-  fi
+  docker_exec_env ./scripts/setup.sh
 fi
 
 info "running scripts/run_fleet.sh ${fleet_args[*]} inside DinD"

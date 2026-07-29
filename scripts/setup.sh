@@ -430,12 +430,48 @@ if [[ -n "${CLAUDE_TGZ_SOURCE:-}" && -n "${CLAUDE_WHEEL_DIR_SOURCE:-}" ]]; then
 fi
 
 # ---- 7. Clone repo ----
-if git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+repo_destination_has_entries() (
+  local entries=()
+  shopt -s dotglob nullglob
+  entries=("$1"/*)
+  (( ${#entries[@]} > 0 ))
+)
+
+git_probe_output=""
+if git_probe_output="$(git -C "$REPO_DIR" rev-parse --git-dir 2>&1)"; then
   ok "Repo already exists: $REPO_DIR (skip clone)"
 else
-  info "Cloning repo to $REPO_DIR..."
-  git clone --recurse-submodules "$REPO_URL" "$REPO_DIR"
-  ok "Repo cloned"
+  git_probe_status=$?
+  if [[ -e "$REPO_DIR/.git" || -L "$REPO_DIR/.git" ]]; then
+    err "Cannot inspect existing repository at $REPO_DIR; refusing to clone over it."
+  elif [[ -e "$REPO_DIR" || -L "$REPO_DIR" ]]; then
+    if [[ ! -d "$REPO_DIR" ]]; then
+      err "Repository destination exists and is not a directory: $REPO_DIR"
+    elif [[ ! -r "$REPO_DIR" || ! -x "$REPO_DIR" ]]; then
+      err "Cannot inspect repository destination: $REPO_DIR"
+    elif repo_destination_has_entries "$REPO_DIR"; then
+      err "Git repository probe failed and destination is not empty: $REPO_DIR"
+    else
+      info "Cloning repo to $REPO_DIR..."
+      git clone --recurse-submodules "$REPO_URL" "$REPO_DIR"
+      ok "Repo cloned"
+      git_probe_status=0
+    fi
+  else
+    info "Cloning repo to $REPO_DIR..."
+    git clone --recurse-submodules "$REPO_URL" "$REPO_DIR"
+    ok "Repo cloned"
+    git_probe_status=0
+  fi
+
+  if [[ "$git_probe_status" != "0" ]]; then
+    if [[ -n "$git_probe_output" ]]; then
+      printf '%s\n' "$git_probe_output" >&2
+    else
+      err "git rev-parse failed with status $git_probe_status"
+    fi
+    exit "$git_probe_status"
+  fi
 fi
 info "Syncing submodules..."
 if ! git -C "$REPO_DIR" submodule sync --recursive ||

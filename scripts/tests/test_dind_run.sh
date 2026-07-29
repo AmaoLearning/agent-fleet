@@ -11,6 +11,10 @@ mkdir -p \
   "$PROJECT_DIR/Agents/utils/common/Harbor" \
   "$TMP_DIR/bin"
 cp "$REPO_ROOT/scripts/dind-run.sh" "$PROJECT_DIR/scripts/dind-run.sh"
+if grep -q -- 'docker_exec_root_env' "$PROJECT_DIR/scripts/dind-run.sh"; then
+  echo "dind-run.sh still defines or uses the root setup helper" >&2
+  exit 1
+fi
 # First-occurrence rewrite via python: GNU sed's -i and 0,/re/ addressing
 # are unavailable in the BSD sed shipped on macOS.
 python3 - "$PROJECT_DIR/scripts/dind-run.sh" <<'PY'
@@ -86,6 +90,8 @@ chmod +x "$TMP_DIR/bin/docker"
 
 PATH="$TMP_DIR/bin:$PATH" \
 DIND_BOOTSTRAP=always \
+DIND_USER_UID=1234 \
+DIND_USER_GID=5678 \
 HTTP_PROXY=http://proxy.invalid:8080 \
 HTTPS_PROXY=http://proxy.invalid:8443 \
 NO_PROXY=existing.example \
@@ -122,6 +128,19 @@ if grep -q -- '<sh> <-lc>.*apk add' "$LOG"; then
   exit 1
 fi
 grep -q -- '<./scripts/setup.sh>' "$LOG"
+grep -q -- '^docker <exec> <--user> <agent> <agent-fleet-dind> <env> .* <./scripts/setup.sh>$' "$LOG"
+if grep -q -- '^docker <exec> <agent-fleet-dind> <env> .* <./scripts/setup.sh>$' "$LOG"; then
+  echo "dind-run.sh ran setup as container root" >&2
+  exit 1
+fi
+home_chown_count="$(
+  grep -c -- '^docker <exec> <agent-fleet-dind> <chown> <-R> <1234:5678> </home/agent>$' "$LOG" ||
+    true
+)"
+if [[ "$home_chown_count" != "1" ]]; then
+  echo "dind-run.sh should prepare the home volume once before non-root setup" >&2
+  exit 1
+fi
 grep -q -- '<./scripts/run_fleet.sh> <--taskset> <terminalbench21> <--agent> <claude-code> <--workers> <1>' "$LOG"
 
 mkdir -p "$TMP_DIR/existing-bin"
@@ -192,7 +211,7 @@ DIND_TEST_ASSUME_HOST=0 \
 "$PROJECT_DIR/scripts/dind-run.sh" --taskset terminalbench21 --agent claude-code --workers 1 --dry-run > "$FALLBACK_LOG" 2>&1
 
 grep -q -- '\[WARN\] dind-run.sh cannot start DinD inside a container; running scripts/run_fleet.sh directly' "$FALLBACK_LOG"
-grep -q -- 'Command: env DATASET_NAME=terminalbench21 AGENT=claude-code TB_AGENT=claude-code TOTAL_WORKERS=1 TB_N_CONCURRENT=1 bash' "$FALLBACK_LOG"
+grep -q -- 'Command: env DATASET_NAME=terminalbench21 AGENT=claude-code TB_AGENT=claude-code TOTAL_WORKERS=1 TB_N_CONCURRENT=1 FLEET_TASKS= bash' "$FALLBACK_LOG"
 if grep -q '^docker' "$FALLBACK_LOG"; then
   echo "dind-run.sh invoked Docker after detecting a container" >&2
   exit 1
