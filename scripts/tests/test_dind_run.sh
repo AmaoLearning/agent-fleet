@@ -84,6 +84,20 @@ fi
 if [[ "${1:-}" == "exec" && "$*" == *"docker info"* ]]; then
   exit 0
 fi
+if [[ "${1:-}" == "exec" && "$*" == *"command -v pi"* ]]; then
+  case "${MOCK_CONTAINER_PATHS_SOURCE:-}" in
+    AGENT_FLEET_PATHS_FILE)
+      [[ "$*" == *'${AGENT_FLEET_PATHS_FILE:-'* ]] || exit 1
+      ;;
+    XDG_CONFIG_HOME)
+      [[ "$*" == *'${XDG_CONFIG_HOME:-$4/.config}'* ]] || exit 1
+      ;;
+  esac
+  if [[ "${MOCK_PATHS_ENV_MISSING:-0}" == "1" &&
+        "$*" == *"agent-fleet/paths.env"* ]]; then
+    exit 1
+  fi
+fi
 exit 0
 MOCK
 chmod +x "$TMP_DIR/bin/docker"
@@ -189,10 +203,10 @@ DIND_BOOTSTRAP=missing \
 PI_VERSION=0.81.1 \
 "$PROJECT_DIR/scripts/dind-run.sh" --taskset terminalbench21 --agent claude-code --workers 1 > "$LOG"
 
-grep -qF -- '<sh> <-c> <command -v pi >/dev/null 2>&1 && [ "$(pi --version 2>/dev/null | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -n 1)" = "$3" ] && test -f "$1" && test -d "$2">' "$LOG"
+grep -qF -- '<sh> <-c> <paths_file="${AGENT_FLEET_PATHS_FILE:-${XDG_CONFIG_HOME:-$4/.config}/agent-fleet/paths.env}"; command -v pi >/dev/null 2>&1 && [ "$(pi --version 2>/dev/null | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -n 1)" = "$3" ] && test -f "$1" && test -d "$2" && test -f "$paths_file">' "$LOG"
 grep -q -- '</home/agent/.pi/agent/models.json>' "$LOG"
 grep -q -- '</home/agent/.pi/agent/skills/harbor-benchmark-runner>' "$LOG"
-grep -q -- '<0.81.1>' "$LOG"
+grep -q -- '<0.81.1> </home/agent>' "$LOG"
 grep -q -- '<PI_VERSION=0.81.1>' "$LOG"
 if grep -q -- 'command -v claude' "$LOG"; then
   echo "dind-run.sh still checks the controller for Claude Code" >&2
@@ -203,6 +217,35 @@ if grep -q -- '<./scripts/setup.sh>' "$LOG"; then
   exit 1
 fi
 grep -q -- '<./scripts/run_fleet.sh> <--taskset> <terminalbench21> <--agent> <claude-code> <--workers> <1>' "$LOG"
+
+MISSING_PATHS_LOG="$TMP_DIR/missing-paths.log"
+PATH="$TMP_DIR/bin:$PATH" \
+MOCK_PATHS_ENV_MISSING=1 \
+DIND_BOOTSTRAP=missing \
+PI_VERSION=0.81.1 \
+"$PROJECT_DIR/scripts/dind-run.sh" \
+  --taskset terminalbench21 --agent claude-code --workers 1 \
+  > "$MISSING_PATHS_LOG"
+
+grep -q -- 'AGENT_FLEET_PATHS_FILE' "$MISSING_PATHS_LOG"
+grep -q -- '<./scripts/setup.sh>' "$MISSING_PATHS_LOG"
+grep -q -- '<./scripts/run_fleet.sh> <--taskset> <terminalbench21> <--agent> <claude-code> <--workers> <1>' "$MISSING_PATHS_LOG"
+
+for paths_source in AGENT_FLEET_PATHS_FILE XDG_CONFIG_HOME; do
+  CONFIGURED_PATHS_LOG="$TMP_DIR/configured-paths-${paths_source}.log"
+  PATH="$TMP_DIR/bin:$PATH" \
+  MOCK_CONTAINER_PATHS_SOURCE="$paths_source" \
+  DIND_BOOTSTRAP=missing \
+  PI_VERSION=0.81.1 \
+  "$PROJECT_DIR/scripts/dind-run.sh" \
+    --taskset terminalbench21 --agent claude-code --workers 1 \
+    > "$CONFIGURED_PATHS_LOG"
+
+  if grep -q -- '<./scripts/setup.sh>' "$CONFIGURED_PATHS_LOG"; then
+    echo "dind-run.sh ignored the container's configured paths-file source: $paths_source" >&2
+    exit 1
+  fi
+done
 
 FALLBACK_LOG="$TMP_DIR/fallback.log"
 PATH="$TMP_DIR/bin:$PATH" \

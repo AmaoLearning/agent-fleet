@@ -402,10 +402,11 @@ case "$DIND_BOOTSTRAP" in
     # Extract the version number instead of matching the whole output line:
     # setup.sh does the same, and an exact-line match would re-run setup on
     # every invocation if `pi --version` ever prints more than the bare version.
-    if ! docker_exec sh -c 'command -v pi >/dev/null 2>&1 && [ "$(pi --version 2>/dev/null | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -n 1)" = "$3" ] && test -f "$1" && test -d "$2"' \
+    if ! docker_exec sh -c 'paths_file="${AGENT_FLEET_PATHS_FILE:-${XDG_CONFIG_HOME:-$4/.config}/agent-fleet/paths.env}"; command -v pi >/dev/null 2>&1 && [ "$(pi --version 2>/dev/null | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -n 1)" = "$3" ] && test -f "$1" && test -d "$2" && test -f "$paths_file"' \
       sh "$DIND_HOME_DIR/.pi/agent/models.json" \
       "$DIND_HOME_DIR/.pi/agent/skills/harbor-benchmark-runner" \
-      "${PI_VERSION:-0.81.1}"; then
+      "${PI_VERSION:-0.81.1}" \
+      "$DIND_HOME_DIR"; then
       run_setup=1
     fi
     ;;
