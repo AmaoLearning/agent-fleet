@@ -73,6 +73,349 @@ class SummaryContractTest(unittest.TestCase):
                 }
             )
 
+    def test_quotes_generated_flowchart_labels(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Adds a manual canary."],
+                "diagram": (
+                    "flowchart TD\n"
+                    "  A[pull_request_target] --> R{Resolve review target}\n"
+                    "  R --> API[GET /repos/{owner}/{repo}/pulls/{n}]"
+                ),
+                "assessment": "The canary reuses the existing review path.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            "flowchart TD\n"
+            '  A["pull_request_target"] --> R{"Resolve review target"}\n'
+            '  R --> API["GET /repos/{owner}/{repo}/pulls/{n}"]',
+        )
+
+    def test_preserves_delimiters_inside_quoted_node_text(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes an indexed lookup."],
+                "diagram": 'flowchart TD\n  A["Read items[0]"] --> B["Done"]',
+                "assessment": "The flow is direct.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            'flowchart TD\n  A["Read items[0]"] --> B["Done"]',
+        )
+
+    def test_quotes_node_text_for_numeric_ids(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes an API lookup."],
+                "diagram": "flowchart TD\n  1[GET /repos/{owner}/{repo}]",
+                "assessment": "The flow is direct.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            'flowchart TD\n  1["GET /repos/{owner}/{repo}"]',
+        )
+
+    def test_does_not_rewrite_edge_text(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes an edge lookup."],
+                "diagram": (
+                    'flowchart TD\n  A["Start"] -->|"lookup key[x]"| B["Done"]'
+                ),
+                "assessment": "The flow is direct.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            'flowchart TD\n  A["Start"] -->|"lookup key[x]"| B["Done"]',
+        )
+
+    def test_quotes_rectangular_text_with_braces_once(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes a configuration lookup."],
+                "diagram": "flowchart TD\n  A[config{mode}]",
+                "assessment": "The flow is direct.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            'flowchart TD\n  A["config{mode}"]',
+        )
+
+    def test_quotes_nodes_after_multi_node_connectors(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes parallel targets."],
+                "diagram": (
+                    "flowchart TD\n"
+                    "  A[Start] --> B[One] & C[GET /repos/{owner}]"
+                ),
+                "assessment": "The flow fans out.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            "flowchart TD\n"
+            '  A["Start"] --> B["One"] & C["GET /repos/{owner}"]',
+        )
+
+    def test_quotes_targets_after_circle_and_cross_links(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes alternate outcomes."],
+                "diagram": (
+                    "flowchart TD\n"
+                    "  A[Start] --x B[GET /repos/{owner}]\n"
+                    "  A --o C[GET /repos/{repo}]"
+                ),
+                "assessment": "The flow has two terminal outcomes.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            "flowchart TD\n"
+            '  A["Start"] --x B["GET /repos/{owner}"]\n'
+            '  A --o C["GET /repos/{repo}"]',
+        )
+
+    def test_ignores_node_syntax_in_mermaid_comments(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes the active flow."],
+                "diagram": (
+                    "flowchart TD\n"
+                    "  %% old syntax: A --> C[unfinished\n"
+                    "  A[Start] --> B[Done]"
+                ),
+                "assessment": "The commented syntax is inactive.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            "flowchart TD\n"
+            "  %% old syntax: A --> C[unfinished\n"
+            '  A["Start"] --> B["Done"]',
+        )
+
+    def test_quotes_rectangular_text_starting_with_a_brace(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes a route parameter."],
+                "diagram": "flowchart TD\n  A[{owner}]",
+                "assessment": "The flow contains one route parameter.",
+            }
+        )
+
+        self.assertEqual(result.diagram, 'flowchart TD\n  A["{owner}"]')
+
+    def test_quotes_targets_after_dotted_links(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes dotted transitions."],
+                "diagram": (
+                    "flowchart TD\n"
+                    "  A[Start] -. yes .-> B[GET /repos/{owner}]\n"
+                    "  B -.- C[GET /repos/{repo}]"
+                ),
+                "assessment": "The flow uses two dotted link forms.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            "flowchart TD\n"
+            '  A["Start"] -. yes .-> B["GET /repos/{owner}"]\n'
+            '  B -.- C["GET /repos/{repo}"]',
+        )
+
+    def test_quotes_targets_after_lengthened_dotted_open_links(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes a lengthened dotted transition."],
+                "diagram": (
+                    "flowchart TD\n"
+                    "  A[Start] -..- B[GET /repos/{owner}]"
+                ),
+                "assessment": "The flow uses one lengthened dotted link.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            "flowchart TD\n"
+            '  A["Start"] -..- B["GET /repos/{owner}"]',
+        )
+
+    def test_does_not_treat_pipes_inside_node_labels_as_edge_text(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes piped input."],
+                "diagram": (
+                    "flowchart TD\n"
+                    "  A[Input | output] --> B[GET /repos/{owner}]"
+                ),
+                "assessment": "The flow has two nodes.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            "flowchart TD\n"
+            '  A["Input | output"] --> B["GET /repos/{owner}"]',
+        )
+
+    def test_quotes_nodes_after_statement_separators(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes compact Mermaid."],
+                "diagram": (
+                    "flowchart TD; A[GET /repos/{owner}]; "
+                    "B[GET /repos/{repo}]"
+                ),
+                "assessment": "The flow uses compact statements.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            "flowchart TD; A[\"GET /repos/{owner}\"]; "
+            'B["GET /repos/{repo}"]',
+        )
+
+    def test_preserves_multiline_quoted_node_labels(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes multiline text."],
+                "diagram": (
+                    'flowchart TD\n  A["`First line\nSecond line`"] --> B[Done]'
+                ),
+                "assessment": "The first node has a Markdown label.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            'flowchart TD\n  A["`First line\nSecond line`"] --> B["Done"]',
+        )
+
+    def test_quotes_targets_after_thick_open_links(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes thick transitions."],
+                "diagram": (
+                    "flowchart TD\n"
+                    "  A[Start] === B[GET /repos/{owner}]\n"
+                    "  B == yes === C[GET /repos/{repo}]"
+                ),
+                "assessment": "The flow uses two thick open links.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            "flowchart TD\n"
+            '  A["Start"] === B["GET /repos/{owner}"]\n'
+            '  B == yes === C["GET /repos/{repo}"]',
+        )
+
+    def test_quotes_explicit_subgraph_titles(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes an API subgraph."],
+                "diagram": (
+                    "flowchart TD\n"
+                    "  subgraph API [GET /repos/{owner}]\n"
+                    "    A[Start]\n"
+                    "  end"
+                ),
+                "assessment": "The flow groups one API node.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            "flowchart TD\n"
+            '  subgraph API ["GET /repos/{owner}"]\n'
+            '    A["Start"]\n'
+            "  end",
+        )
+
+    def test_quotes_targets_after_spaced_edge_labels(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes a labeled transition."],
+                "diagram": (
+                    "flowchart TD\n"
+                    "  A[Start] --> |yes| B[GET /repos/{owner}]"
+                ),
+                "assessment": "The flow has one labeled transition.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            "flowchart TD\n"
+            '  A["Start"] --> |yes| B["GET /repos/{owner}"]',
+        )
+
+    def test_ignores_unmatched_punctuation_inside_node_labels(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes raw input."],
+                "diagram": (
+                    "flowchart TD\n"
+                    "  A[Input (raw] --> B[GET /repos/{owner}]"
+                ),
+                "assessment": "The flow has two nodes.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            "flowchart TD\n"
+            '  A["Input (raw"] --> B["GET /repos/{owner}"]',
+        )
+
+    def test_encodes_quotes_inside_quoted_node_labels(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes a quoted status."],
+                "diagram": 'flowchart TD\n  A["Return "ready" status"]',
+                "assessment": "The flow has one status node.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            'flowchart TD\n  A["Return #quot;ready#quot; status"]',
+        )
+
+    def test_quotes_balanced_braces_inside_diamond_text(self) -> None:
+        result = summary.validate_summary(
+            {
+                "description": ["Describes a configuration decision."],
+                "diagram": "flowchart TD\n  R{Check config{mode}}",
+                "assessment": "The flow branches on configuration.",
+            }
+        )
+
+        self.assertEqual(
+            result.diagram,
+            'flowchart TD\n  R{"Check config{mode}"}',
+        )
+
 
 class SummaryRenderingTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -95,6 +438,14 @@ class SummaryRenderingTest(unittest.TestCase):
         self.assertIn("<summary>High-Level Assessment</summary>", body)
         self.assertIn("@\u200bmaintainers", body)
         self.assertIn("&lt;deployment&gt;", body)
+        self.assertLess(
+            body.index("<summary>High-Level Assessment</summary>"),
+            body.index("<summary>AI Description</summary>"),
+        )
+        self.assertLess(
+            body.index("<summary>AI Description</summary>"),
+            body.index("<summary>Diagram</summary>"),
+        )
 
     def test_omits_empty_diagram_section(self) -> None:
         value = summary.Summary(

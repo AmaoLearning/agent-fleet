@@ -30,6 +30,23 @@ MARKDOWN_ESCAPE_TABLE = str.maketrans(
     {character: f"\\{character}" for character in r"\`*_{}[]()#+-.!|~:/?="}
 )
 MERMAID_IMAGE_NODE_RE = re.compile(r"@\{\s*img\s*:", re.IGNORECASE)
+FLOWCHART_NODE_START_RE = re.compile(
+    r"""
+    (?P<prefix>
+        ^[ \t]*(?:subgraph[ \t]+)?
+        |
+        (?:(?:--+[xo]|--+>|==+>|==+|-\.\->|\.\->|-\.+-|---|~~~)(?:[ \t]*\|[^|\n]*\|)?|[&;])[ \t]*
+    )
+    (?P<node>[A-Za-z0-9_]+)
+    [ \t]*
+    (?P<opening>
+        \[(?![\[(/>\\])
+        |
+        \{(?!\{)
+    )
+    """,
+    re.MULTILINE | re.VERBOSE,
+)
 
 
 class PiSummaryError(RuntimeError):
@@ -69,7 +86,97 @@ def _validate_diagram(value: Any) -> str | None:
         raise PiSummaryError("diagram contains unsupported content")
     if MERMAID_IMAGE_NODE_RE.search(diagram):
         raise PiSummaryError("diagram contains unsupported image node")
+    if first_line.startswith(("flowchart ", "graph ")):
+        diagram = _quote_flowchart_labels(diagram)
     return diagram
+
+
+def _quote_flowchart_labels(diagram: str) -> str:
+    def ignored_context(index: int) -> bool:
+        quoted = False
+        edge_text = False
+        commented = False
+        delimiters: list[str] = []
+        closing_for = {"[": "]", "{": "}", "(": ")"}
+        prefix = diagram[:index]
+        for offset, character in enumerate(prefix):
+            if character == "\n":
+                commented = False
+                if not quoted:
+                    edge_text = False
+                continue
+            if commented:
+                continue
+            if (
+                character == "%"
+                and prefix[offset : offset + 2] == "%%"
+                and not quoted
+                and not edge_text
+                and not delimiters
+            ):
+                commented = True
+                continue
+            if character == '"':
+                quoted = not quoted
+            elif not quoted:
+                if edge_text:
+                    if character == "|":
+                        edge_text = False
+                elif delimiters:
+                    active = delimiters[-1]
+                    if character == active:
+                        delimiters.append(character)
+                    elif character == closing_for[active]:
+                        delimiters.pop()
+                elif character in closing_for:
+                    delimiters.append(character)
+                elif character == "|":
+                    edge_text = True
+        return quoted or edge_text or commented or bool(delimiters)
+
+    def node_end(start: int, opening: str) -> int | None:
+        closing = "]" if opening == "[" else "}"
+        depth = 1
+        quoted = False
+        for index in range(start, len(diagram)):
+            character = diagram[index]
+            if character == "\n" and not quoted:
+                return None
+            if character == '"':
+                quoted = not quoted
+            elif not quoted:
+                if character == opening:
+                    depth += 1
+                elif character == closing:
+                    depth -= 1
+                    if depth == 0:
+                        return index
+        return None
+
+    parts: list[str] = []
+    cursor = 0
+    search_from = 0
+    while match := FLOWCHART_NODE_START_RE.search(diagram, search_from):
+        if ignored_context(match.start()):
+            search_from = match.start() + 1
+            continue
+        opening = match.group("opening")
+        end = node_end(match.end(), opening)
+        if end is None:
+            raise PiSummaryError("diagram contains an unterminated node")
+        label = diagram[match.end() : end]
+        parts.append(diagram[cursor : match.end()])
+        if label.startswith('"') and label.endswith('"'):
+            inner_label = label[1:-1].replace('"', "#quot;")
+            parts.append(f'"{inner_label}"')
+        else:
+            label = label.replace('"', "#quot;")
+            parts.append(f'"{label}"')
+        parts.append(diagram[end])
+        cursor = end + 1
+        search_from = cursor
+    parts.append(diagram[cursor:])
+    return "".join(parts)
 
 
 def validate_summary(payload: dict[str, Any]) -> Summary:
@@ -106,6 +213,13 @@ def render_summary(title: str, summary: Summary) -> str:
         _safe_prose(title),
         "",
         "<details>",
+        "<summary>High-Level Assessment</summary>",
+        "",
+        _safe_prose(summary.assessment),
+        "",
+        "</details>",
+        "",
+        "<details>",
         "<summary>AI Description</summary>",
         "",
     ]
@@ -125,17 +239,6 @@ def render_summary(title: str, summary: Summary) -> str:
                 "</details>",
             ]
         )
-    lines.extend(
-        [
-            "",
-            "<details>",
-            "<summary>High-Level Assessment</summary>",
-            "",
-            _safe_prose(summary.assessment),
-            "",
-            "</details>",
-        ]
-    )
     return "\n".join(lines)
 
 
