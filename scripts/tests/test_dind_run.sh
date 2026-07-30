@@ -221,6 +221,8 @@ HTTP_PROXY=http://proxy.invalid:8080 \
 HTTPS_PROXY=http://proxy.invalid:8443 \
 NO_PROXY=existing.example \
 TRACE_TO_OPIK=false \
+MIN_TEST=1 \
+MIN_TEST_INCLUDE_TASK=custom-canary \
 "$PROJECT_DIR/scripts/dind-run.sh" --taskset terminalbench21 --agent claude-code --workers 1 > "$LOG"
 
 grep -q -- '--registry-mirror=https://docker.m.daocloud.io' "$LOG"
@@ -272,6 +274,8 @@ for expected_env in \
   "HTTP_PROXY=http://proxy.invalid:8080" \
   "HTTPS_PROXY=http://proxy.invalid:8443" \
   "TRACE_TO_OPIK=false" \
+  "MIN_TEST=1" \
+  "MIN_TEST_INCLUDE_TASK=custom-canary" \
   "OPIK_API_KEY=opik-local" \
   "PIP_INDEX_URL=https://packages.example.com/simple" \
   "NPM_CONFIG_REGISTRY=https://npm.example.com"; do
