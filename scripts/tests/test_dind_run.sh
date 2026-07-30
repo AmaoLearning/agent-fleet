@@ -30,6 +30,7 @@ if old not in text:
 path.write_text(text.replace(old, new, 1), encoding="utf-8")
 PY
 cp "$REPO_ROOT/scripts/dind/dockerd-entrypoint.sh" "$PROJECT_DIR/scripts/dind/dockerd-entrypoint.sh"
+cp "$REPO_ROOT/scripts/dind/prepare-cgroup-v2.sh" "$PROJECT_DIR/scripts/dind/prepare-cgroup-v2.sh"
 cp "$REPO_ROOT/scripts/run_fleet.sh" "$PROJECT_DIR/scripts/run_fleet.sh"
 cp "$REPO_ROOT/scripts/prerequisites.sh" "$PROJECT_DIR/scripts/prerequisites.sh"
 cp "$REPO_ROOT/scripts/fleet_spec_io.sh" "$PROJECT_DIR/scripts/fleet_spec_io.sh"

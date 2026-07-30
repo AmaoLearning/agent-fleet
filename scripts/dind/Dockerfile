@@ -139,6 +139,7 @@ RUN set -eux; \
 
 COPY --from=uv /uv /uvx /usr/local/bin/
 COPY scripts/dind/dockerd-entrypoint.sh /usr/local/bin/dockerd-entrypoint.sh
+COPY scripts/dind/prepare-cgroup-v2.sh /usr/local/bin/prepare-cgroup-v2.sh
 COPY Agents/utils/common/Harbor/runner-requirements.txt /opt/harbor-runner-requirements.txt
 
 ENV PATH="/opt/harbor-runner/bin:${PATH}" \

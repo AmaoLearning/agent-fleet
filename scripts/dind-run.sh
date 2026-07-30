@@ -98,9 +98,11 @@ DIND_BASE_IMAGE="${DIND_BASE_IMAGE:-m.daocloud.io/docker.io/library/debian:bookw
 DIND_UV_IMAGE="${DIND_UV_IMAGE:-m.daocloud.io/ghcr.io/astral-sh/uv:0.11.28}"
 DIND_RUNNER_REQUIREMENTS_FILE="$REPO_ROOT/Agents/utils/common/Harbor/runner-requirements.txt"
 DIND_DOCKERD_ENTRYPOINT_FILE="$REPO_ROOT/scripts/dind/dockerd-entrypoint.sh"
+DIND_CGROUP_V2_HELPER_FILE="$REPO_ROOT/scripts/dind/prepare-cgroup-v2.sh"
 for image_input in \
   "$DIND_IMAGE_DOCKERFILE" \
   "$DIND_DOCKERD_ENTRYPOINT_FILE" \
+  "$DIND_CGROUP_V2_HELPER_FILE" \
   "$DIND_RUNNER_REQUIREMENTS_FILE"; do
   if [[ ! -f "$image_input" ]]; then
     err "DinD image input not found: $image_input"
@@ -109,7 +111,11 @@ for image_input in \
 done
 DIND_IMAGE_FINGERPRINT="$({
   printf '%s\n' "$DIND_BASE_IMAGE" "$DIND_UV_IMAGE"
-  cat "$DIND_IMAGE_DOCKERFILE" "$DIND_DOCKERD_ENTRYPOINT_FILE" "$DIND_RUNNER_REQUIREMENTS_FILE"
+  cat \
+    "$DIND_IMAGE_DOCKERFILE" \
+    "$DIND_DOCKERD_ENTRYPOINT_FILE" \
+    "$DIND_CGROUP_V2_HELPER_FILE" \
+    "$DIND_RUNNER_REQUIREMENTS_FILE"
 } | sha256sum | cut -c1-12)"
 DIND_DEFAULT_IMAGE="agent-fleet-dind:28-$DIND_IMAGE_FINGERPRINT"
 DIND_IMAGE="${DIND_IMAGE:-$DIND_DEFAULT_IMAGE}"
