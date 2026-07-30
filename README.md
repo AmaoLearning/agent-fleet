@@ -25,17 +25,17 @@ cd agent-fleet
 ### 3. Configure and set up
 
 Run the commands below, replacing the example values with your model gateway
-credentials. Setup asks whether to enable Opik tracing and defaults to no; it
-persists the choice in `config.local.env`:
+credentials. Setup then asks for an optional `OPIK_URL`: enter the endpoint to
+use Opik, or press Enter to continue without it. The resulting configuration
+is persisted in `config.local.env`:
 
 ```bash
 export BASE_URL=https://your-model-gateway.example.com  # Do not include /v1
 export API_KEY=your-api-key
 export MODEL=your-model-id
 
-# Optional automation override; omit it to answer the setup prompt.
-export TRACE_TO_OPIK=false
-# To enable tracing instead, set TRACE_TO_OPIK=true and OPIK_URL.
+# Optional: pre-fill this or enter it when setup prompts.
+# export OPIK_URL=https://your-opik-host/api
 
 ./scripts/setup.sh
 ```

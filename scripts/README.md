@@ -18,13 +18,14 @@ For the end-to-end quick start, see the [root README](../README.md#quick-start).
 
 ```bash
 ./scripts/setup.sh
-# Interactive prompts for BASE_URL / API_KEY / MODEL and optional Opik tracing
+# Interactive prompts for BASE_URL / API_KEY / MODEL and an optional OPIK_URL
 ```
 
 Run setup from a complete cloned checkout. `setup.sh` sources neighboring
 repository scripts and is not a standalone download-and-run installer.
-Press Enter at the Opik prompt to keep tracing disabled. If tracing is enabled,
-setup also requires an `OPIK_URL`.
+Enter an `OPIK_URL` to use Opik, or press Enter at that prompt to continue
+without it. Setup derives and persists the internal fleet-wide tracing switch
+from that choice.
 
 Or pre-fill via env vars (suitable for automation):
 
@@ -32,9 +33,13 @@ Or pre-fill via env vars (suitable for automation):
 BASE_URL=https://your-model-gateway.example.com \
 API_KEY=your-token \
 MODEL=your-model-id \
-TRACE_TO_OPIK=false \
+OPIK_URL=https://your-opik-host/api \
 ./scripts/setup.sh
 ```
+
+For an advanced or temporary override, set `TRACE_TO_OPIK=false` to disable
+Opik while retaining a saved endpoint, or set `TRACE_TO_OPIK=true` together
+with `OPIK_URL` to force it on.
 
 **System prerequisites**: Install Docker with Compose v2, Python >=3.9,
 `git`, `curl`, `jq`, `openssl`, Linux `util-linux`, and `procps`. Commands must
@@ -49,7 +54,7 @@ dependency and is prepared separately by the runner.
 
 1. Check system dependencies and provision managed Zellij + uv
 2. Reuse existing local config, gather missing model endpoint values, and
-   persist an explicit Opik tracing choice (default: disabled)
+   gather an optional Opik endpoint while persisting the derived tracing state
 3. Install Node.js via nvm (if missing or < 22.19)
 4. Install Pi (pinned to 0.81.1)
 5. Merge the `sii-gateway` Pi provider and default model
@@ -474,16 +479,24 @@ interfaces:
 - `--detach` is redundant for multi-run input: Harbor runs always detach there
   (an informational notice is printed), while OpenClaw runners stay in the
   foreground and ignore `--detach` with a warning in every mode.
-- Opik tracing is on by default, and the benchmark runtime then requires
-  `OPIK_URL`. `TRACE_TO_OPIK` is the single tracing switch for every runner
-  (Harbor, worker, rollout, DinD, ClawBio, PinchBench), and only the literal
-  values `false` or `0` disable it — any other spelling keeps tracing on.
+- If `TRACE_TO_OPIK` is absent, benchmark runners retain their historical
+  tracing-on default and require `OPIK_URL`. Interactive setup avoids that
+  ambiguity by always persisting an explicit state: a supplied `OPIK_URL`
+  derives `TRACE_TO_OPIK=true`, while an empty optional URL derives
+  `TRACE_TO_OPIK=false`.
+- `TRACE_TO_OPIK` remains the advanced fleet-wide switch for Harbor, workers,
+  rollouts, DinD, ClawBio, and PinchBench. A caller-supplied switch takes
+  precedence over a caller-supplied URL, which in turn takes precedence over
+  saved setup state. Setup accepts common boolean spellings and normalizes
+  them, while runtime consumers treat only `false` or `0` as off.
 - With `TRACE_TO_OPIK=false` there are no traces and no dashboard, Opik
   settings are not exposed to task containers, and the Claude realtime hook
   stays off even if `TB_CC_OPIK_ENABLE_HOOK=1` is set. `TRACE_TO_OPIK=false`
   is authoritative in ClawBio: it forces `OPIK_PLUGIN=disabled` even over an
   explicit `OPIK_PLUGIN=enabled`; with tracing on, an explicit `OPIK_PLUGIN`
-  wins and `OPIK_PLUGIN=enabled` requires `OPIK_URL`.
+  wins and `OPIK_PLUGIN=enabled` requires `OPIK_URL`. Setup retains an existing
+  endpoint and credentials when tracing is disabled so they can be re-enabled
+  without re-entry.
 - PinchBench refuses a `TRACE_TO_OPIK=false` run while the OpenClaw gateway
   configs still enable the Opik tracer plugin; regenerate the fleet with
   `TRACE_TO_OPIK=false ./Agents/Openclaw/scripts/setup.sh <n>` first.

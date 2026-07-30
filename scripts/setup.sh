@@ -106,55 +106,73 @@ normalize_trace_to_opik() {
   esac
 }
 
-prompt_trace_to_opik() {
-  local reply
+configure_opik() {
+  if (( SETUP_CALLER_HAS_OPIK_URL )); then
+    OPIK_URL="$(trim_setup_config_value "${OPIK_URL:-}")"
+  fi
+
+  if (( SETUP_CALLER_HAS_TRACE_TO_OPIK )) &&
+     [[ -n "${TRACE_TO_OPIK:-}" ]]; then
+    # Keep the caller's explicit switch as the highest-priority input.
+    :
+  elif (( SETUP_CALLER_HAS_OPIK_URL )) &&
+       [[ -n "${OPIK_URL:-}" ]]; then
+    # A URL supplied for this setup run enables Opik even if an earlier
+    # no-Opik run persisted TRACE_TO_OPIK=false in config.local.env.
+    TRACE_TO_OPIK=true
+  fi
+
   if [[ -n "${TRACE_TO_OPIK:-}" ]]; then
     if ! normalize_trace_to_opik "$TRACE_TO_OPIK"; then
       err "TRACE_TO_OPIK must be true or false (also accepts yes/no and 1/0)."
       return 1
     fi
+  elif [[ -n "${OPIK_URL:-}" ]]; then
+    # Preserve the historical/default traced behavior for existing configs
+    # that predate the explicit fleet-wide switch.
+    TRACE_TO_OPIK=true
   else
-    while true; do
-      reply=""
-      if ! read -rp "Enable Opik tracing? [y/N]: " reply; then
-        echo
-      fi
-      case "${reply,,}" in
-        ""|n|no)
-          TRACE_TO_OPIK=false
-          break
-          ;;
-        y|yes)
-          TRACE_TO_OPIK=true
-          break
-          ;;
-        *)
-          warn "Please answer yes or no."
-          ;;
-      esac
-    done
+    if ! read -rp "OPIK_URL (optional; press Enter to disable Opik): " OPIK_URL; then
+      echo
+      OPIK_URL=""
+    fi
+    OPIK_URL="$(trim_setup_config_value "${OPIK_URL:-}")"
+    if [[ -n "$OPIK_URL" ]]; then
+      TRACE_TO_OPIK=true
+    else
+      TRACE_TO_OPIK=false
+    fi
   fi
 
   if [[ "$TRACE_TO_OPIK" == "true" ]]; then
     if [[ -z "${OPIK_URL:-}" ]]; then
-      if ! read -rp "OPIK_URL (remote Opik API endpoint, usually ending in /api): " OPIK_URL; then
+      if ! read -rp "OPIK_URL (required because TRACE_TO_OPIK=true; usually ending in /api): " OPIK_URL; then
         echo
         OPIK_URL=""
       fi
     fi
+    OPIK_URL="$(trim_setup_config_value "${OPIK_URL:-}")"
     if [[ -z "${OPIK_URL:-}" ]]; then
-      err "Opik tracing was enabled but OPIK_URL is empty."
+      err "Opik is enabled but OPIK_URL is empty."
       return 1
     fi
     OPIK_WORKSPACE="${OPIK_WORKSPACE:-default}"
-    ok "Opik tracing enabled"
+    ok "Opik enabled"
   else
-    ok "Opik tracing disabled"
+    ok "Opik disabled"
   fi
 }
 
 # Credentials come from the caller environment first, then the existing
 # checkout config. Prompt only for values that are still missing.
+SETUP_CALLER_HAS_TRACE_TO_OPIK=0
+SETUP_CALLER_HAS_OPIK_URL=0
+if declare -p TRACE_TO_OPIK >/dev/null 2>&1; then
+  SETUP_CALLER_HAS_TRACE_TO_OPIK=1
+fi
+if declare -p OPIK_URL >/dev/null 2>&1; then
+  SETUP_CALLER_HAS_OPIK_URL=1
+fi
 load_existing_setup_config
 info "Gathering model endpoint config..."
 [[ -z "${BASE_URL:-}" ]]   && read -rp "BASE_URL (model gateway, WITHOUT /v1): " BASE_URL
@@ -165,7 +183,7 @@ if [[ -z "${AUTH_TOKEN:-}" ]]; then
   echo
 fi
 [[ -z "${MODEL:-}" ]]      && read -rp "MODEL (model id): " MODEL
-prompt_trace_to_opik
+configure_opik
 
 for v in BASE_URL AUTH_TOKEN MODEL; do
   if [[ -z "${!v:-}" ]]; then
