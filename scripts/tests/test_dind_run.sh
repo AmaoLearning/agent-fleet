@@ -60,21 +60,83 @@ cat > "$PROJECT_DIR/config.local.env" <<'EOF'
 BASE_URL=https://local.example.com
 API_KEY=sk-local
 MODEL=local-model
+OPIK_API_KEY=opik-local
+PIP_INDEX_URL=https://packages.example.com/simple
+NPM_CONFIG_REGISTRY=https://npm.example.com
 DIND_REGISTRY_MIRRORS="https://docker.m.daocloud.io, https://mirror.ccs.tencentyun.com"
 DIND_DEFAULT_ADDRESS_POOLS="base=10.200.0.0/13,size=21;base=172.16.0.0/12,size=20"
 EOF
 
 LOG="$TMP_DIR/docker.log"
 DOCKER_ACTION_LOG="$TMP_DIR/docker-actions.log"
-export DOCKER_ACTION_LOG
+DOCKER_ENV_CAPTURE_LOG="$TMP_DIR/docker-env-capture.log"
+DOCKER_SIGNAL_LOG="$TMP_DIR/docker-signal.log"
+DOCKER_SIGNAL_HELPER_LOG="$TMP_DIR/docker-signal-helper.log"
+DOCKER_SIGNAL_TARGET_PID_FILE="$TMP_DIR/docker-signal-target.pid"
+DOCKER_ACTIVE_ENV_FILE_PATH_FILE="$TMP_DIR/docker-active-env-file-path"
+export \
+  DOCKER_ACTION_LOG \
+  DOCKER_ENV_CAPTURE_LOG \
+  DOCKER_SIGNAL_LOG \
+  DOCKER_SIGNAL_HELPER_LOG \
+  DOCKER_SIGNAL_TARGET_PID_FILE \
+  DOCKER_ACTIVE_ENV_FILE_PATH_FILE
 cat > "$TMP_DIR/bin/docker" <<'MOCK'
 #!/usr/bin/env bash
+set -euo pipefail
+
 printf '%s\n' "$*" >> "$DOCKER_ACTION_LOG"
 printf 'docker'
 for arg in "$@"; do
   printf ' <%s>' "$arg"
 done
 printf '\n'
+
+if [[ "${1:-}" == "exec" ]]; then
+  env_file=""
+  previous=""
+  for arg in "$@"; do
+    if [[ "$previous" == "--env-file" ]]; then
+      env_file="$arg"
+      break
+    fi
+    previous="$arg"
+  done
+  if [[ -n "$env_file" ]]; then
+    if [[ ! -f "$env_file" ]]; then
+      echo "docker exec env file does not exist: $env_file" >&2
+      exit 1
+    fi
+    if mode="$(stat -c '%a' "$env_file" 2>/dev/null)"; then
+      :
+    else
+      mode="$(stat -f '%Lp' "$env_file")"
+    fi
+    {
+      printf 'BEGIN %s\n' "$*"
+      printf 'ENV_FILE %s\n' "$env_file"
+      printf 'MODE %s\n' "$mode"
+      while IFS= read -r entry || [[ -n "$entry" ]]; do
+        printf 'ENV %s\n' "$entry"
+      done < "$env_file"
+      printf 'END\n'
+    } >> "$DOCKER_ENV_CAPTURE_LOG"
+    printf '%s\n' "$env_file" > "$DOCKER_ACTIVE_ENV_FILE_PATH_FILE"
+  fi
+fi
+
+if [[ "${1:-}" == "exec" &&
+      "$*" == *"agent-fleet-dind-exec-signal"* ]]; then
+  signal="${!#}"
+  active_env_file="$(cat "$DOCKER_ACTIVE_ENV_FILE_PATH_FILE")"
+  state="present"
+  [[ ! -e "$active_env_file" ]] && state="removed"
+  printf '%s env_file=%s\n' \
+    "$signal" "$state" > "$DOCKER_SIGNAL_HELPER_LOG"
+  target_pid="$(cat "$DOCKER_SIGNAL_TARGET_PID_FILE")"
+  kill "-$signal" "$target_pid"
+  exit 0
+fi
 
 if [[ "${1:-}" == "ps" ]]; then
   exit 0
@@ -99,10 +161,58 @@ if [[ "${1:-}" == "exec" && "$*" == *"command -v pi"* ]]; then
     exit 1
   fi
 fi
+if [[ "${1:-}" == "exec" && "${MOCK_FAIL_RUN_FLEET:-0}" == "1" &&
+      "$*" == *"./scripts/run_fleet.sh"* ]]; then
+  exit 42
+fi
+if [[ "${1:-}" == "exec" && -n "${MOCK_SIGNAL_RUN_FLEET:-}" &&
+      "$*" == *"./scripts/run_fleet.sh"* ]]; then
+  signal="$MOCK_SIGNAL_RUN_FLEET"
+  case "$signal" in
+    INT|TERM)
+      ;;
+    *)
+      echo "unsupported mock signal: $signal" >&2
+      exit 1
+      ;;
+  esac
+  printf '%s\n' "$$" > "$DOCKER_SIGNAL_TARGET_PID_FILE"
+  record_signal_state() {
+    local state="present"
+    [[ ! -e "$env_file" ]] && state="removed"
+    printf '%s env_file=%s\n' "$signal" "$state" > "$DOCKER_SIGNAL_LOG"
+    exit 0
+  }
+  trap record_signal_state "$signal"
+  kill "-$signal" "$PPID"
+  sleep 1
+  state="present"
+  [[ ! -e "$env_file" ]] && state="removed"
+  printf 'natural-after-%s env_file=%s\n' \
+    "$signal" "$state" > "$DOCKER_SIGNAL_LOG"
+  exit 0
+fi
 exit 0
 MOCK
 chmod +x "$TMP_DIR/bin/docker"
 
+assert_env_files_removed() {
+  local context="$1" env_file leaked=0
+  while IFS= read -r env_file; do
+    if [[ "$env_file" == "$PROJECT_DIR" || "$env_file" == "$PROJECT_DIR/"* ]]; then
+      echo "$context used an env file inside the repository: $env_file" >&2
+      leaked=1
+    fi
+    if [[ -e "$env_file" ]]; then
+      echo "$context left its env file behind: $env_file" >&2
+      rm -f -- "$env_file"
+      leaked=1
+    fi
+  done < <(sed -n 's/^ENV_FILE //p' "$DOCKER_ENV_CAPTURE_LOG")
+  [[ "$leaked" == "0" ]]
+}
+
+: > "$DOCKER_ENV_CAPTURE_LOG"
 PATH="$TMP_DIR/bin:$PATH" \
 DIND_BOOTSTRAP=always \
 DIND_USER_UID=1234 \
@@ -135,16 +245,48 @@ grep -q -- '<--build-arg> <UV_IMAGE=m.daocloud.io/ghcr.io/astral-sh/uv:0.11.28>'
 grep -q -- "<-f> <$PROJECT_DIR/scripts/dind/Dockerfile> <-t> <$RUNNER_IMAGE> <$PROJECT_DIR>" "$LOG"
 grep -q -- "<--label> <agent-fleet.runner-image=$RUNNER_IMAGE>" "$LOG"
 grep -q -- "^docker <run> .* <-w> <$PROJECT_DIR> <$RUNNER_IMAGE> " "$LOG"
-grep -q -- '<env> <REPO_DIR='"$PROJECT_DIR"'> <BASE_URL=https://local.example.com> <API_KEY=sk-local> <MODEL=local-model>' "$LOG"
-# The documented no-Opik escape must survive the DinD env handoff.
-grep -q -- '<TRACE_TO_OPIK=false>' "$LOG"
+for secret in sk-local opik-local; do
+  if grep -Fq -- "$secret" "$LOG" || grep -Fq -- "$secret" "$DOCKER_ACTION_LOG"; then
+    echo "dind-run.sh exposed a fake credential in Docker argv: $secret" >&2
+    exit 1
+  fi
+done
+grep -Eq -- '^docker <exec> <--user> <agent> <--env-file> </tmp/agent-fleet-dind-env\.[^>]+> <agent-fleet-dind> <sh> <-c> <pid_file=\$1;.*> <agent-fleet-dind-exec> </home/agent/\.agent-fleet-dind-exec\.[^>]+\.pid> <./scripts/setup.sh>$' "$LOG"
+grep -Eq -- '^docker <exec> <--user> <agent> <--env-file> </tmp/agent-fleet-dind-env\.[^>]+> <agent-fleet-dind> <sh> <-c> <pid_file=\$1;.*> <agent-fleet-dind-exec> </home/agent/\.agent-fleet-dind-exec\.[^>]+\.pid> <./scripts/run_fleet.sh> <--taskset> <terminalbench21> <--agent> <claude-code> <--workers> <1>$' "$LOG"
+if grep -Eq -- '^docker <exec> <--user> <agent> .* <env> .*<./scripts/(setup|run_fleet).sh>' "$LOG"; then
+  echo "dind-run.sh still passes execution variables through an in-container env argv" >&2
+  exit 1
+fi
+env_capture_count="$(grep -c '^BEGIN ' "$DOCKER_ENV_CAPTURE_LOG" || true)"
+secure_mode_count="$(grep -c '^MODE 600$' "$DOCKER_ENV_CAPTURE_LOG" || true)"
+if [[ "$env_capture_count" != "2" || "$secure_mode_count" != "2" ]]; then
+  echo "setup and benchmark must each receive the same mode-0600 env file" >&2
+  exit 1
+fi
+for expected_env in \
+  "REPO_DIR=$PROJECT_DIR" \
+  "BASE_URL=https://local.example.com" \
+  "API_KEY=sk-local" \
+  "MODEL=local-model" \
+  "HOME=/home/agent" \
+  "HTTP_PROXY=http://proxy.invalid:8080" \
+  "HTTPS_PROXY=http://proxy.invalid:8443" \
+  "TRACE_TO_OPIK=false" \
+  "OPIK_API_KEY=opik-local" \
+  "PIP_INDEX_URL=https://packages.example.com/simple" \
+  "NPM_CONFIG_REGISTRY=https://npm.example.com"; do
+  if [[ "$(grep -Fxc -- "ENV $expected_env" "$DOCKER_ENV_CAPTURE_LOG" || true)" != "2" ]]; then
+    echo "setup and benchmark did not both receive: ${expected_env%%=*}" >&2
+    exit 1
+  fi
+done
+assert_env_files_removed "successful DinD run"
 if grep -q -- '<sh> <-lc>.*apk add' "$LOG"; then
   echo "dind-run.sh installed dependencies inside the running DinD container" >&2
   exit 1
 fi
 grep -q -- '<./scripts/setup.sh>' "$LOG"
-grep -q -- '^docker <exec> <--user> <agent> <agent-fleet-dind> <env> .* <./scripts/setup.sh>$' "$LOG"
-if grep -q -- '^docker <exec> <agent-fleet-dind> <env> .* <./scripts/setup.sh>$' "$LOG"; then
+if grep -q -- '^docker <exec> <agent-fleet-dind> .* <./scripts/setup.sh>$' "$LOG"; then
   echo "dind-run.sh ran setup as container root" >&2
   exit 1
 fi
@@ -157,6 +299,61 @@ if [[ "$home_chown_count" != "1" ]]; then
   exit 1
 fi
 grep -q -- '<./scripts/run_fleet.sh> <--taskset> <terminalbench21> <--agent> <claude-code> <--workers> <1>' "$LOG"
+
+: > "$DOCKER_ENV_CAPTURE_LOG"
+FAILURE_LOG="$TMP_DIR/failure.log"
+if PATH="$TMP_DIR/bin:$PATH" \
+  MOCK_FAIL_RUN_FLEET=1 \
+  DIND_BOOTSTRAP=always \
+  TRACE_TO_OPIK=false \
+  "$PROJECT_DIR/scripts/dind-run.sh" \
+    --taskset terminalbench21 --agent claude-code --workers 1 \
+    > "$FAILURE_LOG" 2>&1; then
+  echo "dind-run.sh ignored a benchmark docker exec failure" >&2
+  exit 1
+fi
+assert_env_files_removed "failed DinD run"
+for secret in sk-local opik-local; do
+  if grep -Fq -- "$secret" "$FAILURE_LOG" || grep -Fq -- "$secret" "$DOCKER_ACTION_LOG"; then
+    echo "failed DinD run exposed a fake credential in Docker argv: $secret" >&2
+    exit 1
+  fi
+done
+
+run_signal_test() {
+  local signal="$1" expected_status="$2"
+  local signal_log="$TMP_DIR/signal-${signal}.log"
+  local signal_status=0
+
+  : > "$DOCKER_ENV_CAPTURE_LOG"
+  : > "$DOCKER_SIGNAL_LOG"
+  : > "$DOCKER_SIGNAL_HELPER_LOG"
+  PATH="$TMP_DIR/bin:$PATH" \
+  MOCK_SIGNAL_RUN_FLEET="$signal" \
+  DIND_BOOTSTRAP=always \
+  TRACE_TO_OPIK=false \
+  "$PROJECT_DIR/scripts/dind-run.sh" \
+    --taskset terminalbench21 --agent claude-code --workers 1 \
+    > "$signal_log" 2>&1 ||
+    signal_status=$?
+  if [[ "$signal_status" != "$expected_status" ]]; then
+    echo "dind-run.sh did not preserve the $signal exit status: $signal_status" >&2
+    exit 1
+  fi
+  if ! grep -Fxq -- "$signal env_file=removed" "$DOCKER_SIGNAL_LOG"; then
+    echo "dind-run.sh did not remove the env file before forwarding $signal" >&2
+    exit 1
+  fi
+  if ! grep -Fxq -- \
+    "$signal env_file=removed" "$DOCKER_SIGNAL_HELPER_LOG"; then
+    echo "dind-run.sh did not signal the container process after env cleanup" >&2
+    exit 1
+  fi
+  assert_env_files_removed "$signal-signaled DinD run"
+}
+
+run_signal_test TERM 143
+run_signal_test INT 130
 
 mkdir -p "$TMP_DIR/existing-bin"
 cat > "$TMP_DIR/existing-bin/docker" <<'MOCK'
@@ -208,7 +405,7 @@ grep -qF -- '<sh> <-c> <paths_file="${AGENT_FLEET_PATHS_FILE:-${XDG_CONFIG_HOME:
 grep -q -- '</home/agent/.pi/agent/models.json>' "$LOG"
 grep -q -- '</home/agent/.pi/agent/skills/harbor-benchmark-runner>' "$LOG"
 grep -q -- '<0.81.1> </home/agent>' "$LOG"
-grep -q -- '<PI_VERSION=0.81.1>' "$LOG"
+grep -q -- '^ENV PI_VERSION=0.81.1$' "$DOCKER_ENV_CAPTURE_LOG"
 if grep -q -- 'command -v claude' "$LOG"; then
   echo "dind-run.sh still checks the controller for Claude Code" >&2
   exit 1
