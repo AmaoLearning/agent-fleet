@@ -16,29 +16,37 @@ if str(TEST_DIR) not in sys.path:
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from fixer_test_support import (  # noqa: E402
+from fixer_test_support import (
     FixerTestCase,
     write_analyzer_fixture,
+    write_fixture_pi,
     write_json,
 )
-from harbor_fixer.analyzer_inputs import build_task_inputs  # noqa: E402
-from harbor_fixer.planning_context import (
-    collect_planning_context,  # noqa: E402
-    workspace_evidence,  # noqa: E402
+from harbor_fixer.agent_invocation import (
+    PiAgentInvoker,
+    PiInvocationConfig,
 )
-from harbor_fixer.planning_context.runtime_inventory import (  # noqa: E402
+from harbor_fixer.analyzer_inputs import build_task_inputs
+from harbor_fixer.planning_context import (
+    collect_planning_context,
+    workspace_evidence,
+)
+from harbor_fixer.planning_context.runtime_inventory import (
     collect_runtime_inventory,
 )
-from harbor_fixer.planning_context.safe_paths import inspect_path  # noqa: E402
-from harbor_fixer.planning_context.workspace_evidence import (  # noqa: E402
+from harbor_fixer.planning_context.safe_paths import inspect_path
+from harbor_fixer.planning_context.workspace_evidence import (
     collect_workspace_evidence,
 )
-from harbor_fixer.validation import ValidationError, task_key  # noqa: E402
+from harbor_fixer.validation import ValidationError, task_key
 
 
 class HarborFixerRuntimeContextTest(FixerTestCase):
     def test_analyzer_artifacts_build_task_inputs(self) -> None:
-        analyzer = write_analyzer_fixture(self.root)
+        analyzer = write_analyzer_fixture(
+            self.root,
+            handover_task_indexes=((1,), (1, 2)),
+        )
         write_json(
             analyzer / "env-infra-tasks" / "handover-1" / "publication-zzzz.json",
             {"stale": True},
@@ -46,19 +54,43 @@ class HarborFixerRuntimeContextTest(FixerTestCase):
         inputs, source = build_task_inputs(analyzer)
 
         self.assertEqual(source["run_id"], "run-1")
+        self.assertEqual(
+            [item["handover_id"] for item in source["publications"]],
+            ["handover-1", "handover-2"],
+        )
         self.assertEqual(source["publications"][0]["publication_id"], "publication-current")
-        self.assertEqual(inputs[0]["task"]["task_index"], "1")
-        self.assertEqual(inputs[0]["source"]["handover_id"], "handover-1")
-        self.assertEqual(inputs[0]["source"]["publication_id"], "publication-current")
+        self.assertEqual(
+            [
+                (item["task"]["task_index"], item["source"]["handover_id"])
+                for item in inputs
+            ],
+            [("1", "handover-2"), ("2", "handover-2")],
+        )
+        self.assertEqual(inputs[0]["source"]["publication_id"], "publication-current-2")
         self.assertEqual(inputs[0]["evidence"][0]["path"], "/logs/task-1.log")
         self.assertNotIn("reasoning_summary", inputs[0]["analyzer_result"])
         self.assertNotIn("analyzer_report_path", inputs[0]["source"])
         self.assertNotIn("/stale-copy/", json.dumps(inputs))
 
-        selected_env = Path(source["publications"][0]["env_infra_tasks_path"])
-        selected_inputs, selected_source = build_task_inputs(selected_env)
-        self.assertEqual(selected_inputs, inputs)
-        self.assertEqual(selected_source, source)
+    def test_pi_invoker_requires_explicit_model(self) -> None:
+        invoker = PiAgentInvoker(
+            self.root / "out",
+            PiInvocationConfig(
+                pi_bin=str(write_fixture_pi(self.root / "fixture_pi.py")),
+                base_url="https://example.test/v1",
+                api_key_env="FIXTURE_PI_API_KEY",
+            ),
+        )
+        with (
+            mock.patch.dict("os.environ", {"FIXTURE_PI_API_KEY": "fixture"}),
+            self.assertRaisesRegex(RuntimeError, "pi_model_not_configured"),
+        ):
+            invoker.invoke(
+                "Return JSON only.",
+                {"kind": "fixture"},
+                attempt=1,
+                label="fixture",
+            )
 
     def test_empty_analyzer_output_is_valid_planning_context(self) -> None:
         analyzer = write_analyzer_fixture(self.root, count=0)
@@ -145,7 +177,10 @@ class HarborFixerRuntimeContextTest(FixerTestCase):
         analyzer = write_analyzer_fixture(self.root, count=0)
         workspace.mkdir()
         (workspace / "pyproject.toml").write_text(
-            '[project]\nname = "fixture"\npassword = "manifest-secret"\n',
+            '[project]\nname = "fixture"\npassword = "manifest-secret"\n'
+            'AWS_SECRET_ACCESS_KEY = "aws-secret-value"\n'
+            'client_secret_key = "client secret value"\n'
+            'DATABASE_PASSWORD_FILE_CONTENT = "database-secret-value"\n',
             encoding="utf-8",
         )
         evidence = self.root / "evidence.log"
@@ -182,9 +217,15 @@ class HarborFixerRuntimeContextTest(FixerTestCase):
         ]
 
         first = collect_workspace_evidence(workspace, analyzer, task_inputs)
-        self.assertEqual(first, collect_workspace_evidence(workspace, analyzer, task_inputs))
+        self.assertEqual(
+            first,
+            collect_workspace_evidence(workspace, analyzer, task_inputs),
+        )
         serialized = json.dumps(first)
         self.assertNotIn("manifest-secret", serialized)
+        self.assertNotIn("aws-secret-value", serialized)
+        self.assertNotIn("client secret value", serialized)
+        self.assertNotIn("database-secret-value", serialized)
         self.assertNotIn("super-secret-value", serialized)
         self.assertNotIn("user:password", serialized)
         self.assertNotIn("sk-proj-fixture0123456789abcdefghijklmnop", serialized)
@@ -195,6 +236,26 @@ class HarborFixerRuntimeContextTest(FixerTestCase):
             [item["task"]["task_index"] for item in first["evidence_excerpts"]],
             ["1", "1", "2"],
         )
+
+    def test_target_context_aggregate_limit(self) -> None:
+        analyzer = write_analyzer_fixture(self.root, count=0)
+        workspace = self.root / "workspace"
+        workspace.mkdir()
+        (workspace / "Dockerfile").write_text("x" * 20_000, encoding="utf-8")
+
+        with mock.patch.object(
+            workspace_evidence,
+            "MAX_TARGET_CONTEXT_CHARS",
+            8_000,
+        ):
+            context = collect_workspace_evidence(workspace, analyzer, [])
+
+        self.assertLessEqual(
+            len(json.dumps(context, ensure_ascii=False, separators=(",", ":"))),
+            8_000,
+        )
+        self.assertEqual(context["workspace"]["project_manifests"], [])
+        self.assertTrue(context["workspace"]["project_manifests_truncated"])
 
     def test_workspace_scan_counts_directories_toward_limit(self) -> None:
         analyzer = write_analyzer_fixture(self.root, count=0)

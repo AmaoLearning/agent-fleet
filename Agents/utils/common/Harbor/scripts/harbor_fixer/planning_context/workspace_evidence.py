@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import fnmatch
+import json
 import os
 import re
 from pathlib import Path
 from typing import Any
 
 from ..analyzer_inputs import resolve_analyzer_paths
-from ..validation import task_key
+from ..validation import ValidationError, task_key
 from .safe_paths import inspect_path
 
 MAX_TOP_LEVEL_ENTRIES = 200
@@ -19,6 +20,7 @@ MAX_EVIDENCE_EXCERPTS = 100
 MAX_EVIDENCE_LINES = 80
 MAX_FILE_BYTES = 32 * 1024 * 1024
 MAX_OUTPUT_CHARS = 24_000
+MAX_TARGET_CONTEXT_CHARS = 400_000
 MAX_PROJECT_DEPTH = 4
 MAX_SCAN_ENTRIES = 10_000
 EXCLUDED_DIRECTORIES = {
@@ -71,7 +73,7 @@ SECRET_PATTERNS = (
     re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s\"']+"),
     re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=-]{12,}"),
     re.compile(
-        r"""(?i)(["']?(?:api[_-]?key|access[_-]?token|base[_-]?url|password|secret|token)["']?\s*[=:]\s*["']?)[^"'\s,}]+"""
+        r"""(?i)(["']?(?:[A-Za-z0-9]+[_-])*(?:api[_-]?key|access[_-]?token|base[_-]?url|password|secret|token)(?:[_-][A-Za-z0-9]+)*["']?\s*[=:]\s*)(?:"[^"]*"|'[^']*'|[^\s,}]+)"""
     ),
     re.compile(r"(?<![A-Za-z0-9])(?:sk[-_]|gh[pousr]_)[A-Za-z0-9_-]{12,}"),
 )
@@ -131,6 +133,36 @@ def _bounded(text: str) -> str:
     if len(redacted) <= MAX_OUTPUT_CHARS:
         return redacted
     return redacted[:MAX_OUTPUT_CHARS] + "\n<TRUNCATED>"
+
+
+def _json_chars(value: Any) -> int:
+    return len(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+
+
+def _bound_target_context(context: dict[str, Any]) -> dict[str, Any]:
+    context_chars = _json_chars(context)
+    for items, owner, truncated_key in (
+        (
+            context["workspace"]["project_manifests"],
+            context["workspace"],
+            "project_manifests_truncated",
+        ),
+        (context["evidence_excerpts"], context, "evidence_excerpts_truncated"),
+    ):
+        while items and context_chars > MAX_TARGET_CONTEXT_CHARS:
+            removed_chars = _json_chars(items.pop())
+            context_chars -= removed_chars + (1 if items else 0)
+            owner[truncated_key] = True
+    if _json_chars(context) > MAX_TARGET_CONTEXT_CHARS:
+        raise ValidationError("target context metadata exceeds size limit")
+    return context
 
 
 def _path_state(path: Path) -> dict[str, Any]:
@@ -290,7 +322,7 @@ def collect_workspace_evidence(
             for publication in resolved_analyzer["publications"]
         ],
     }
-    return {
+    context = {
         "schema_version": 1,
         "kind": "harbor_fixer_target_context",
         "workspace": {
@@ -310,5 +342,7 @@ def collect_workspace_evidence(
             "max_evidence_excerpts": MAX_EVIDENCE_EXCERPTS,
             "max_evidence_lines": MAX_EVIDENCE_LINES,
             "max_file_bytes": MAX_FILE_BYTES,
+            "max_target_context_chars": MAX_TARGET_CONTEXT_CHARS,
         },
     }
+    return _bound_target_context(context)

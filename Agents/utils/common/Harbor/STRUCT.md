@@ -31,10 +31,14 @@ Agents/utils/common/Harbor/
     │   ├── evaluator.py        # Compose one monitor sample
     │   ├── contracts.py        # User, analyzer, and runner output contracts
     │   └── runner.py           # Control commands, retries, and follow loop
+    ├── fixer.py                # Fix Plan Generation CLI
     ├── harbor_fixer/
+    │   ├── agent_invocation.py # Fixer prompt assembly and Pi adapter
     │   ├── analyzer_inputs.py  # Analyzer artifact to task-input translation
     │   ├── artifact_io.py      # JSON, JSONL, and text artifact I/O
+    │   ├── plan_generation.py  # Task summary and plan generation flow
     │   ├── planning_context/   # Runtime inventory and workspace evidence
+    │   ├── prompts.py          # Task and plan agent contracts
     │   └── validation.py       # Analyzer, task-summary, and Fix Plan validation
     ├── online_rule_analyzer.py # Optional console-only online analysis
     └── write_harbor_registry_summary.py # Native registry summary writer
@@ -49,26 +53,21 @@ JSON-event validation, final JSON extraction, and provenance shared by Harbor
 Pi callers. Analyzer-specific tool access, path gating, prompts, artifact
 locations, and error compatibility remain in `harbor_analyzer/pi.py`.
 
-## Harbor Fixer Planning Context
+## Harbor Fixer Plan Generation
 
 The Fixer foundation validates Analyzer handoff artifacts and builds a bounded,
 redacted planning context without invoking an agent. It records runtime
 inventory and selected workspace evidence for later plan generation. Analyzer
 inputs are selected through `analyzer-artifacts-latest.json`; Fixer reads the
-current env/infra and evidence snapshot for each handover without depending on
-the deprecated flat latest-report files.
+current env/infra and evidence snapshot for every selected handover without
+depending on the deprecated flat latest-report files.
 
-```text
-Agents/utils/rl/
-├── RL-env.sh                         # RL rollout defaults
-├── rollout_remote_harbor.py          # Miles/Polar-compatible HTTP listener
-├── run_rl_rollout_server.sh          # Listener lifecycle wrapper
-├── ensure_rl_job_zellij.sh           # Per-submission zellij launcher
-├── gen_rl_rollout_zellij_layout.sh   # Per-submission zellij layout generator
-├── monitor_rl_rollout.sh             # RL job monitor pane
-├── run_rl_rollout_worker.sh          # Queue worker that reuses harboropik.sh
-└── rl_dataset_worklist.py            # Dataset-to-task-list helper
-```
+Plan generation is independently usable and produces
+`target-environment.json`, `target-context.json`, `main-agent-input.json`, and
+`fix-plan-latest.json`. It performs bounded deterministic inspection before
+dispatching isolated no-tool Pi agents. Tests are split between
+`test_harbor_fixer_plan.py` and `test_harbor_fixer_runtime_context.py`, with
+shared fixtures in the non-discovered `fixer_test_support.py`.
 
 ## Path Resolution
 
@@ -150,6 +149,20 @@ Typical dataset paths:
 | `HARBOR_ANALYZER_POLL_INTERVAL` | Analyzer handover polling interval in seconds, default `5` |
 | `HARBOR_ANALYZER_TIMEOUT` | Per-task analyzer Pi timeout in seconds, default `900` |
 | `HARBOR_ANALYZER_MAX_CONCURRENCY` | Maximum concurrent per-task analyzer Pi subprocesses, default `1` |
+
+## RL Rollout Files
+
+```text
+Agents/utils/rl/
+├── RL-env.sh                         # RL rollout defaults
+├── rollout_remote_harbor.py          # Miles/Polar-compatible HTTP listener
+├── run_rl_rollout_server.sh          # Listener lifecycle wrapper
+├── ensure_rl_job_zellij.sh           # Per-submission zellij launcher
+├── gen_rl_rollout_zellij_layout.sh   # Per-submission zellij layout generator
+├── monitor_rl_rollout.sh             # RL job monitor pane
+├── run_rl_rollout_worker.sh          # Queue worker that reuses harboropik.sh
+└── rl_dataset_worklist.py            # Dataset-to-task-list helper
+```
 
 ## RL Rollout Variables
 
