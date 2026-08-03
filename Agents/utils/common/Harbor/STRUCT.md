@@ -37,9 +37,11 @@ Agents/utils/common/Harbor/
     │   ├── agent_invocation.py # Fixer prompt assembly and Pi adapter
     │   ├── analyzer_inputs.py  # Analyzer artifact to task-input translation
     │   ├── artifact_io.py      # JSON, JSONL, and text artifact I/O
+    │   ├── builtin_policy.py   # Fixed T1 allow and deny rules
     │   ├── plan_generation.py  # Task summary and plan generation flow
     │   ├── planning_context/   # Runtime inventory and workspace evidence
-    │   ├── prompts.py          # Task and plan agent contracts
+    │   ├── policy.py           # Policy routing, validation, and preflight
+    │   ├── prompts.py          # Task, plan, and policy-agent contracts
     │   └── validation.py       # Analyzer, task-summary, and Fix Plan validation
     ├── online_rule_analyzer.py # Optional console-only online analysis
     └── write_harbor_registry_summary.py # Native registry summary writer
@@ -53,22 +55,6 @@ in the environment as `HARBOR_ANALYZER_*` variables.
 JSON-event validation, final JSON extraction, and provenance shared by Harbor
 Pi callers. Analyzer-specific tool access, path gating, prompts, artifact
 locations, and error compatibility remain in `harbor_analyzer/pi.py`.
-
-## Harbor Fixer Plan Generation
-
-The Fixer foundation validates Analyzer handoff artifacts and builds a bounded,
-redacted planning context without invoking an agent. It records runtime
-inventory and selected workspace evidence for later plan generation. Analyzer
-inputs are selected through `analyzer-artifacts-latest.json`; Fixer reads the
-current env/infra and evidence snapshot for every selected handover without
-depending on the deprecated flat latest-report files.
-
-Plan generation is independently usable and produces
-`target-environment.json`, `target-context.json`, `main-agent-input.json`, and
-`fix-plan-latest.json`. It performs bounded deterministic inspection before
-dispatching isolated no-tool Pi agents. Tests are split between
-`test_harbor_fixer_plan.py` and `test_harbor_fixer_runtime_context.py`, with
-shared fixtures in the non-discovered `fixer_test_support.py`.
 
 ## Path Resolution
 

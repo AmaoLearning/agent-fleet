@@ -186,6 +186,27 @@ class SequenceInvoker:
         return self.outputs[index]
 
 
+class PolicyInvoker:
+    def __init__(self) -> None:
+        self.records: list[tuple[str, dict, int, str]] = []
+
+    def invoke(self, prompt: str, payload: dict, *, attempt: int, label: str) -> str:
+        self.records.append((prompt, payload, attempt, label))
+        return json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "harbor_fixer_policy_agent_decision",
+                "tier": payload["tier"],
+                "plan_id": payload["plan_id"],
+                "command_id": payload["command"]["command_id"],
+                "decision": "allow",
+                "risk_level": "medium",
+                "reason_code": "fixture_allow",
+                "reason": "Fixture policy decision: allow.",
+            }
+        )
+
+
 class SummaryInvoker:
     def invoke(self, prompt: str, payload: dict, *, attempt: int, label: str) -> str:
         return json.dumps(task_summary_for(payload))
