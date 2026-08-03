@@ -24,6 +24,28 @@ ACTION_TYPES = {"command", "file_edit"}
 
 EXEC_STATUSES = {"success", "partial_failed", "failed"}
 EXEC_COMMAND_STATUSES = {"success", "failed", "skipped"}
+MONITOR_POLICIES = {"auto", "on", "off"}
+VERIFICATION_STATUSES = {
+    "fixed",
+    "partially_fixed",
+    "not_fixed",
+    "inconclusive",
+    "exec_failed",
+}
+TASK_VERIFICATION_STATUSES = {
+    "fixed",
+    "not_fixed",
+    "unknown",
+    "not_complete",
+    "not_sampled",
+    "exec_failed",
+}
+TASK_COMPLETE_STATUSES = {
+    "complete_success",
+    "complete_failed",
+    "complete_unknown",
+    "not_complete",
+}
 
 
 def require_dict(value: Any, name: str) -> dict[str, Any]:
@@ -197,16 +219,6 @@ def _check_kind(payload: dict[str, Any], *, version: int, kind: str, name: str) 
         raise ValidationError(f"{name} schema_version must be {version}")
     if payload.get("kind") != kind:
         raise ValidationError(f"{name} kind must be {kind}")
-
-
-def _check_kind_versions(payload: dict[str, Any], *, versions: set[int], kind: str, name: str) -> int:
-    require_dict(payload, name)
-    version = payload.get("schema_version")
-    if version not in versions:
-        raise ValidationError(f"{name} schema_version must be one of: {', '.join(str(item) for item in sorted(versions))}")
-    if payload.get("kind") != kind:
-        raise ValidationError(f"{name} kind must be {kind}")
-    return int(version)
 
 
 def validate_analyzer_manifest(payload: dict[str, Any]) -> None:
@@ -588,3 +600,113 @@ def validate_exec_result(payload: dict[str, Any]) -> None:
         expected = "partial_failed"
     if status != expected:
         raise ValidationError(f"status must be {expected}")
+
+
+def validate_verification_input(payload: dict[str, Any]) -> None:
+    _check_kind(
+        payload,
+        version=2,
+        kind="harbor_fixer_verification_input",
+        name="verification input",
+    )
+    for key in (
+        "fix_plan_path",
+        "exec_result_path",
+        "verification_run_dir",
+        "output_dir",
+    ):
+        require_string(payload.get(key), key)
+    require_enum(payload.get("monitor_policy"), "monitor_policy", MONITOR_POLICIES)
+    if payload.get("verification_mode") != "smoke_test":
+        raise ValidationError("verification_mode must be smoke_test")
+    limit = payload.get("verification_task_limit_per_plan")
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+        raise ValidationError(
+            "verification_task_limit_per_plan must be a positive integer"
+        )
+    fix_plan = require_dict(payload.get("fix_plan"), "fix_plan")
+    exec_result = require_dict(payload.get("exec_result"), "exec_result")
+    validate_fix_plan_set(fix_plan)
+    validate_exec_result(exec_result)
+    fix_plan_ids = {str(plan["plan_id"]) for plan in fix_plan["plans"]}
+    exec_plan_ids = [
+        require_string(plan.get("plan_id"), f"exec_result.plans[{index}].plan_id")
+        for index, plan in enumerate(exec_result["plans"])
+    ]
+    if len(exec_plan_ids) != len(set(exec_plan_ids)):
+        raise ValidationError("exec_result contains duplicate plan_id")
+    if set(exec_plan_ids) != fix_plan_ids:
+        raise ValidationError("exec_result plan_ids must match fix_plan")
+
+
+def _validate_run_record(payload: dict[str, Any], name: str) -> None:
+    require_string(payload.get("task_index"), f"{name}.task_index")
+    require_enum(
+        payload.get("task_complete_status"),
+        f"{name}.task_complete_status",
+        TASK_COMPLETE_STATUSES,
+    )
+
+
+def validate_verification_result(payload: dict[str, Any]) -> None:
+    _check_kind(
+        payload,
+        version=2,
+        kind="harbor_fixer_verification_result",
+        name="verification result",
+    )
+    require_enum(payload.get("status"), "status", VERIFICATION_STATUSES)
+    require_dict(payload.get("source"), "source")
+    require_dict(payload.get("rerun"), "rerun")
+    require_dict(payload.get("new_run_summary"), "new_run_summary")
+    if payload.get("verification_mode") != "smoke_test":
+        raise ValidationError("verification_mode must be smoke_test")
+    require_dict(payload.get("sampling"), "sampling")
+    for index, plan in enumerate(
+        require_list(payload.get("plan_results"), "plan_results")
+    ):
+        plan_obj = require_dict(plan, f"plan_results[{index}]")
+        require_string(plan_obj.get("plan_id"), f"plan_results[{index}].plan_id")
+        require_enum(
+            plan_obj.get("status"),
+            f"plan_results[{index}].status",
+            VERIFICATION_STATUSES,
+        )
+    for index, task in enumerate(
+        require_list(payload.get("task_results"), "task_results")
+    ):
+        task_obj = require_dict(task, f"task_results[{index}]")
+        task_identity = require_dict(
+            task_obj.get("task"),
+            f"task_results[{index}].task",
+        )
+        _validate_task_identity(
+            task_identity,
+            f"task_results[{index}].task",
+        )
+        verification_status = require_enum(
+            task_obj.get("verification_status"),
+            f"task_results[{index}].verification_status",
+            TASK_VERIFICATION_STATUSES,
+        )
+        new_run = task_obj.get("new_run")
+        if verification_status in {"not_sampled", "exec_failed"}:
+            if new_run is not None:
+                raise ValidationError(
+                    f"task_results[{index}].new_run must be null when "
+                    f"verification_status is {verification_status}"
+                )
+        else:
+            _validate_run_record(
+                require_dict(new_run, f"task_results[{index}].new_run"),
+                f"task_results[{index}].new_run",
+            )
+    unexpected = require_list(
+        payload.get("unexpected_run_task_results"),
+        "unexpected_run_task_results",
+    )
+    for index, record in enumerate(unexpected):
+        _validate_run_record(
+            require_dict(record, f"unexpected_run_task_results[{index}]"),
+            f"unexpected_run_task_results[{index}]",
+        )

@@ -48,7 +48,9 @@ Agents/utils/common/Harbor/
     │   ├── planning_context/   # Runtime inventory and workspace evidence
     │   ├── policy/             # T1 rules, path routing, and T2/T3 Agent policy
     │   ├── prompts.py          # Task and plan agent contracts
-    │   └── validation.py       # Plan and execution artifact validation
+    │   ├── validation.py       # Plan, execution, and verification validation
+    │   ├── verification/       # Selection, rerun, and Harbor-state details
+    │   └── verifier.py         # Verification public entry points
     ├── online_rule_analyzer.py # Optional console-only online analysis
     └── write_harbor_registry_summary.py # Native registry summary writer
 ```
@@ -61,6 +63,13 @@ in the environment as `HARBOR_ANALYZER_*` variables.
 JSON-event validation, final JSON extraction, and provenance shared by Harbor
 Pi callers. Analyzer-specific tool access, path gating, prompts, artifact
 locations, and error compatibility remain in `harbor_analyzer/pi.py`.
+
+## Harbor Fixer Verification
+
+`verifier.py` exposes the workflow implemented under `verification/`. It selects
+stable smoke samples from Fix Plan v2, optionally launches a rerun, and maps
+Harbor results back to plan task identities. This stage does not invoke agents; its tests live in
+`test_harbor_fixer_verification.py`.
 
 ## Path Resolution
 
