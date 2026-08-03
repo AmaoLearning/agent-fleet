@@ -375,6 +375,11 @@ for optional in PI_VERSION TRACE_TO_OPIK OPIK_URL OPIK_API_KEY OPIK_WORKSPACE OP
     run_env+=("$optional=${!optional}")
   fi
 done
+for optional in HARBOR_TEMPERATURE HARBOR_TOP_P HARBOR_MAX_TOKENS; do
+  if [[ ${!optional+x} ]]; then
+    run_env+=("$optional=${!optional}")
+  fi
+done
 for optional in PIP_INDEX_URL PIP_EXTRA_INDEX_URL PIP_TRUSTED_HOST NPM_CONFIG_REGISTRY GO111MODULE GOPROXY GOSUMDB RUSTUP_UPDATE_ROOT RUSTUP_DIST_SERVER CARGO_REGISTRY_REPLACE_WITH CARGO_REGISTRY_URL DIND_REGISTRY_MIRRORS DIND_REGISTRY_MIRROR TB_SKIP_DOCKERHUB_PREFLIGHT; do
   if [[ -n "${!optional:-}" ]]; then
     run_env+=("$optional=${!optional}")
