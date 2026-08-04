@@ -87,18 +87,18 @@ You must:
 - Use input.target_context as deterministic current project context collected by the
   read-only Python harness. An unavailable evidence excerpt is an unknown, not evidence
   that a dependency or file is absent.
-- Before proposing a mutating command, compare Analyzer evidence with target_environment
+- Before proposing a mutating action, compare Analyzer evidence with target_environment
   and target_context. Do not rely on stale Analyzer-host paths when current local paths
   are available.
-- Use commands as the only executable field.
-- Include fix_scope, task_list, commands, fix_reason, and verification_hint.
+- Use actions as the only executable field and preserve their execution order.
+- Include fix_scope, task_list, actions, fix_reason, and verification_hint.
 - Include every input task summary exactly once in either a plan task_list or
   unplanned_tasks.
 - Compare fix_scope with Analyzer scopes.
-- Put tasks without justified commands into unplanned_tasks.
-- Make commands idempotent: check the precondition, perform only the necessary change,
+- Put tasks without justified actions into unplanned_tasks.
+- Make actions idempotent: check the precondition, perform only the necessary change,
   and fail when the expected postcondition is not met.
-- Every mutating command must create durable target state that the verification run will
+- Every mutating action must create durable target state that the verification run will
   consume. A temporary clone, download, or probe that is deleted afterward is diagnostic,
   not a fix, and must not be presented as one.
 - When target_environment reports a required binary or dependency as available, do not
@@ -124,7 +124,7 @@ Return exactly one JSON object with no Markdown or explanatory text.
 
 Required fields and constraints:
 - Include every top-level field shown in the template below.
-- schema_version must be 1.
+- schema_version must be 2.
 - kind must be "harbor_fixer_fix_plan_set".
 - source must be copied exactly from input.source and must remain an object.
 - input.target_environment, input.target_environment_artifact, and input.target_context
@@ -135,14 +135,27 @@ Required fields and constraints:
 - plan.fix_scope: "task" | "benchmark" | "host".
 - analyzer_scope_comparison.analyzer_scopes contains only "task", "benchmark", or "host".
 - analyzer_scope_comparison.relation: "same" | "narrower" | "broader" | "mixed".
-- Every plan must have at least one task_list item and at least one command.
+- Every plan must have at least one task_list item and at least one action.
 - Each task_list item must preserve the task identity and Analyzer classification.
-- commands is the only executable field. cwd and command must be non-empty strings.
+- actions is the only executable field. Every action must use one of these contracts:
+  - command: provide a single executable and its literal arguments as separate strings.
+    Do not quote arguments for a shell or combine executable and arguments in one field.
+  - file_edit: replace known text in one existing UTF-8 file. old_text must be non-empty,
+    new_text must differ from old_text, expected_replacements must be a positive integer,
+    and path is literal relative to cwd unless absolute.
+- The template illustrates both action variants; include only the actions justified by
+  the evidence.
+- Use file_edit for file content changes that it can express. Do not use sed, tee, shell
+  redirection, or a Python script as a substitute.
+- If an operation truly requires shell evaluation, represent it explicitly as a command
+  with executable "bash" and arguments such as ["-c", "<script>"]. Python or shell
+  commands that modify files are outside the file_edit contract and require T3 policy
+  evaluation.
 - generation_errors must be []; the harness appends input.generation_errors after validation.
 
 Output template:
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "kind": "harbor_fixer_fix_plan_set",
   "source": {},
   "plans": [
@@ -163,19 +176,35 @@ Output template:
           "final_class": "env_fail | infra_fail"
         }
       ],
-      "commands": [
+      "actions": [
         {
-          "command_id": "cmd-001",
+          "action_id": "action-001",
+          "action_type": "command",
           "cwd": "<working directory>",
-          "command": "<shell command>",
+          "executable": "<single executable name or path>",
+          "arguments": ["<literal argument>"],
           "purpose": "<why the command is needed>",
+          "expected_effect": "<observable expected effect>"
+        },
+        {
+          "action_id": "action-002",
+          "action_type": "file_edit",
+          "cwd": "<working directory>",
+          "path": "<literal target path>",
+          "edit": {
+            "kind": "replace_text",
+            "old_text": "<exact non-empty existing text>",
+            "new_text": "<replacement text, possibly empty>",
+            "expected_replacements": 1
+          },
+          "purpose": "<why the edit is needed>",
           "expected_effect": "<observable expected effect>"
         }
       ],
       "fix_reason": {
         "summary": "<shared fix summary>",
         "evidence": [],
-        "reasoning": "<why these commands address the grouped failures>"
+        "reasoning": "<why these actions address the grouped failures>"
       },
       "verification_hint": {
         "expected_original_failure_absent": "<failure signal that should disappear>",

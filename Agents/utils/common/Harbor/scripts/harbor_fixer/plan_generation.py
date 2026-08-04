@@ -19,6 +19,7 @@ from .prompts import (
     build_validation_retry_prompt,
 )
 from .validation import (
+    FIX_PLAN_SCHEMA_VERSION,
     ValidationError,
     parse_strict_json_object,
     validate_fix_plan_set,
@@ -209,7 +210,7 @@ def _empty_fix_plan(
     generation_errors: list[dict[str, Any]],
 ) -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": FIX_PLAN_SCHEMA_VERSION,
         "kind": "harbor_fixer_fix_plan_set",
         "source": source,
         "plans": [],
