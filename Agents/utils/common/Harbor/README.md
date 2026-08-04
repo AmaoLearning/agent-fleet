@@ -275,7 +275,14 @@ control the benchmark run. Before using the default analyzer path, configure
 `HARBOR_ANALYZER_MODEL` overrides. If no analyzer model gateway should be used
 for a run, set `HARBOR_ANALYZER_ENABLED=0`.
 
-## Harbor Fixer: Plan Generation
+## Harbor Fixer
+
+Harbor Fixer consumes Analyzer artifacts in stages. Plan Generation proposes
+actions but does not execute them; Execution Policy independently decides
+whether each proposed action may proceed. Later execution and verification
+stages consume these artifacts without weakening the preceding boundary.
+
+### Stage 1: Planning Context and Plan Generation
 
 `scripts/fixer.py` reads Analyzer output artifacts and generates a validated
 `fix-plan-latest.json`. From `analyzer-artifacts-latest.json`, Fixer selects
@@ -381,6 +388,53 @@ immediately before an atomic write.
 Commands that invoke a shell or Python to modify files remain command actions
 and must be assessed by the policy agent instead of inheriting `file_edit`
 approval.
+
+### Stage 2: Execution Policy
+
+`harbor_fixer.policy` independently evaluates a complete Fix Plan before an
+executor consumes it. T1 applies deny-first rules to an unambiguous executable,
+but grants allow only to exact structured argv from a narrow read-only list or
+an explicit user rule. Docker, Git, find, execution wrappers, and explicit
+shell or interpreter payloads are left to an isolated Policy Agent. T2 handles
+only `file_edit` actions whose literal target is proven to remain inside an
+explicitly user-authorized writable root. The default authorized-root list is
+empty: the workspace and repository source are not implicitly writable. T3
+handles all remaining actions.
+
+The standalone Policy API accepts any number of authorized roots:
+
+```python
+from pathlib import Path
+
+from harbor_fixer.policy import run_policy_preflight
+
+decision = run_policy_preflight(
+    fix_plan,
+    workspace_root=Path("/path/to/workspace"),
+    output_dir=Path("/path/to/fixer-output/policy"),
+    invoker=policy_invoker,
+    writable_roots=[
+        Path("/path/to/authorized/benchmark-config"),
+        Path("/path/to/authorized/dockerfiles"),
+    ],
+)
+```
+
+Omit `writable_roots` (or pass an empty list) to disable T2 routing. Supplying a
+root authorizes only Policy evaluation at T2; it does not itself approve or
+execute the action. `workspace_root` supplies path-resolution context only and
+never grants write permission. The T3 agent must deny direct, path-addressed
+host writes that cannot be proven to stay within the explicit roots. Internal
+Docker, package-manager, and service-manager state changes remain eligible for
+T3 evaluation, but explicit host writes, copies, or mounts still use the root
+boundary.
+
+The Policy Agent reuses the Fixer Pi invocation contract without tools. Invalid
+output, invocation failure, configuration errors, or any denied action fail
+closed. The complete decision is atomically written to
+`execution-policy-decision.json`, together with the exact Fix Plan and per-action
+SHA-256 bindings. Policy is admission and audit, not an OS sandbox, and does
+not execute actions.
 
 ## More Details
 
