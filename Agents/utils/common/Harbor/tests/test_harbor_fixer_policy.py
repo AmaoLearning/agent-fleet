@@ -92,6 +92,11 @@ class HarborFixerPolicyTest(FixerTestCase):
             [decision["tier"] for decision in result["decisions"]],
             ["T2", "T3", "T3", "T3"],
         )
+        self.assertEqual(result["decisions"][1]["decision"], "deny")
+        self.assertEqual(
+            result["decisions"][1]["reason_code"],
+            "file_edit_outside_writable_roots",
+        )
         self.assertEqual(len(result["fix_plan_sha256"]), 64)
         self.assertEqual(len(result["decisions"][0]["action_sha256"]), 64)
         self.assertIsNone(result["decisions"][0]["command_analysis"])
@@ -132,6 +137,23 @@ class HarborFixerPolicyTest(FixerTestCase):
 
         self.assertEqual([item["tier"] for item in result["decisions"]], ["T3", "T3"])
         self.assertFalse(
+            result["decisions"][1]["path_analysis"]["path_resolution_stable"]
+        )
+
+    def test_t3_read_probe_preserves_file_edit_path_stability(self) -> None:
+        allowed_root = self.root / "config"
+        allowed_root.mkdir()
+        plan = make_fix_plan()
+        template = plan["plans"][0]["actions"][0]
+        plan["plans"][0]["actions"] = [
+            _command(template, "inspect", "cat", str(allowed_root / "daemon.json")),
+            _file_edit("edit", ".", str(allowed_root / "daemon.json")),
+        ]
+
+        result = self._run(plan, PolicyInvoker(), writable_roots=[allowed_root])
+
+        self.assertEqual([item["tier"] for item in result["decisions"]], ["T3", "T2"])
+        self.assertTrue(
             result["decisions"][1]["path_analysis"]["path_resolution_stable"]
         )
 

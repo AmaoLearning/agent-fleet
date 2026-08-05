@@ -7,20 +7,12 @@ from pathlib import Path
 
 _DENY_EXECUTABLES = {"rm", "rmdir", "shred", "unlink", "wipefs"}
 _READ_ONLY_COMMANDS = {
-    "cat",
-    "du",
     "echo",
-    "grep",
-    "head",
     "id",
-    "ls",
     "printf",
     "pwd",
-    "stat",
-    "test",
     "true",
     "uname",
-    "wc",
     "which",
 }
 

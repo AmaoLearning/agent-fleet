@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -36,7 +37,10 @@ class PiInvocationConfig:
 
 def _safe_path_component(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip(".-")
-    return cleaned[:120] or "agent"
+    if cleaned == value and cleaned and len(cleaned) <= 120:
+        return cleaned
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+    return f"{cleaned[:100] or 'agent'}-{digest}"
 
 
 def _compose_prompt(prompt: str, payload: dict[str, Any]) -> str:
