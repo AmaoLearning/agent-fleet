@@ -71,6 +71,15 @@ print(json.dumps({
         if os.environ["OPENCODE_CONFIG_CONTENT"]
         else None
     ),
+    "fixer": {
+        name: os.environ[name]
+        for name in (
+            "HARBOR_FIXER_MODEL",
+            "HARBOR_FIXER_AGENT_TIMEOUT",
+            "HARBOR_FIXER_EXECUTION_TIMEOUT",
+            "HARBOR_FIXER_SUMMARY_LIMIT",
+        )
+    },
 }))
 PY
 """,
@@ -83,6 +92,20 @@ PY
                 text=True,
             )
         return json.loads(result.stdout)
+
+    def test_fixer_defaults_and_override(self) -> None:
+        config = self._load_config(
+            "claude-code", HARBOR_FIXER_EXECUTION_TIMEOUT="45"
+        )
+        self.assertEqual(
+            config["fixer"],
+            {
+                "HARBOR_FIXER_MODEL": "test-model",
+                "HARBOR_FIXER_AGENT_TIMEOUT": "900",
+                "HARBOR_FIXER_EXECUTION_TIMEOUT": "45",
+                "HARBOR_FIXER_SUMMARY_LIMIT": "4000",
+            },
+        )
 
     def test_opencode_applies_sampling_and_output_token_settings(self) -> None:
         config = self._load_config(
