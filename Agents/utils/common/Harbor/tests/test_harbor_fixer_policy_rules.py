@@ -14,6 +14,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from fixer_test_support import FixerTestCase, write_json
+from harbor_fixer.agent_invocation import _safe_path_component
 from harbor_fixer.policy import analyze_command, evaluate_t1, load_user_rules
 
 
@@ -34,6 +35,13 @@ def _command(executable: str, *arguments: str) -> dict:
 
 
 class HarborFixerPolicyRulesTest(FixerTestCase):
+    def test_agent_artifact_labels_resist_sanitization_collisions(self) -> None:
+        self.assertEqual(_safe_path_component("main-agent"), "main-agent")
+        self.assertNotEqual(
+            _safe_path_component("policy-plan/action"),
+            _safe_path_component("policy-plan?action"),
+        )
+
     def test_command_analysis_copies_structured_argv(self) -> None:
         cases = [
             (_command("python3", "-c", 'print("x" * 1000)'), ("static_argv", True)),
@@ -55,14 +63,15 @@ class HarborFixerPolicyRulesTest(FixerTestCase):
             (_command("docker", "ps", "--all"), None),
             (_command("git", "status", "--short"), None),
             (_command("find", ".", "-delete"), None),
-            (_command("ls", "workspace"), "allow"),
+            (_command("ls", "workspace"), None),
+            (_command("cat", "/proc/self/environ"), None),
             (_command("rm", "-rf", "build"), "deny"),
             (_command("sudo", "-u", "root", "rm", "-f", "/tmp/item"), "deny"),
             (_command("env", "FOO=bar", "rm", "-rf", "build"), "deny"),
             (_command("bash", "-lc", "rm -rf build"), None),
             (_command("xargs", "rm", "-f"), None),
             (_command("rm", "-rf", "*"), "deny"),
-            (_command("ls", "*"), "allow"),
+            (_command("ls", "*"), None),
             (_command("echo", "$HOME"), "allow"),
         ]
         for action, expected in cases:

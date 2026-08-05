@@ -22,6 +22,16 @@ TRUSTED_T1_EXECUTABLE_DIRS = {
     Path("/usr/bin").resolve(),
     Path("/usr/sbin").resolve(),
 }
+PATH_STABLE_T3_READ_COMMANDS = {
+    "cat",
+    "du",
+    "grep",
+    "head",
+    "ls",
+    "stat",
+    "test",
+    "wc",
+}
 
 
 def _json_sha256(value: Any) -> str:
@@ -53,6 +63,12 @@ def _is_trusted_t1_executable(resolved_executable: str) -> bool:
     return bool(resolved_executable) and Path(resolved_executable).parent in (
         TRUSTED_T1_EXECUTABLE_DIRS
     )
+
+
+def _is_path_stable_t3_read(resolved_executable: str) -> bool:
+    return _is_trusted_t1_executable(resolved_executable) and Path(
+        resolved_executable
+    ).name in PATH_STABLE_T3_READ_COMMANDS
 
 
 def _command_analysis(action: dict[str, Any]) -> CommandAnalysis | None:
@@ -160,6 +176,16 @@ def run_policy_preflight(
                                 resolved_executable
                             ),
                         )
+                elif path_analysis["classification"] != "inside_writable_roots":
+                    decision = {
+                        "tier": "T3",
+                        "decision": "deny",
+                        "risk_level": "high",
+                        "source": "builtin_rule",
+                        "rule_id": "file_edit_outside_writable_roots",
+                        "reason_code": "file_edit_outside_writable_roots",
+                        "reason": "file_edit target is outside the authorized roots",
+                    }
                 if decision is None:
                     tier = (
                         "T2"
@@ -215,7 +241,11 @@ def run_policy_preflight(
                         "resolved_executable": resolved_executable,
                     }
                 )
-                if decision["tier"] == "T3":
+                if (
+                    decision["tier"] == "T3"
+                    and decision["decision"] == "allow"
+                    and not _is_path_stable_t3_read(resolved_executable)
+                ):
                     path_resolution_stable = False
     result = {
         "schema_version": 2,
