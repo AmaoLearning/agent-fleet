@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import unittest
@@ -251,10 +252,30 @@ class HarborFixerPlanTest(FixerTestCase):
 
         self.assertFalse(latest.exists())
 
+    def test_write_json_atomic_does_not_follow_preexisting_temp_symlink(self) -> None:
+        output = self.root / "atomic-output" / "exec-result-latest.json"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        outside = self.root / "outside.json"
+        outside.write_text("outside\n", encoding="utf-8")
+        temp = output.with_name(f".{output.name}.{os.getpid()}.tmp")
+        temp.symlink_to(outside)
+        try:
+            write_json_atomic(output, {"ok": True})
+            self.assertFalse(output.is_symlink())
+            self.assertEqual(
+                json.loads(output.read_text(encoding="utf-8")),
+                {"ok": True},
+            )
+            self.assertEqual(outside.read_text(encoding="utf-8"), "outside\n")
+        finally:
+            if temp.exists() or temp.is_symlink():
+                temp.unlink()
+
     def test_plan_generation_and_cli_smoke_write_fix_plan(self) -> None:
         analyzer_dir = write_analyzer_fixture(self.root)
         cli_out = self.root / "cli-fixer"
         api_key = "fixture-super-secret-api-key"
+        pi_bin = write_fixture_pi(self.root / "fixture_pi.py")
         result = subprocess.run(
             [
                 sys.executable,
@@ -263,25 +284,26 @@ class HarborFixerPlanTest(FixerTestCase):
                 str(analyzer_dir),
                 "--output-dir",
                 str(cli_out),
-                "--pi-bin",
-                str(write_fixture_pi(self.root / "fixture_pi.py")),
-                "--pi-base-url",
-                "https://example.test/v1",
-                "--pi-model",
-                "fixture-model",
-                "--pi-api-key-env",
-                "FIXTURE_PI_API_KEY",
+                "--timeout",
+                "60",
                 "--max-task-summary-chars",
                 "100000",
-                "--max-task-summaries-chars",
-                "200000",
                 "--workspace-root",
                 str(self.root),
             ],
             text=True,
             capture_output=True,
             check=False,
-            env={"PATH": "/usr/bin:/bin", "FIXTURE_PI_API_KEY": api_key},
+            env={
+                "PATH": "/usr/bin:/bin",
+                "HARBOR_FIXER_API_KEY": api_key,
+                "HARBOR_FIXER_PI_BIN": str(pi_bin),
+                "HARBOR_FIXER_BASE_URL": "https://example.test/v1",
+                "HARBOR_FIXER_MODEL": "fixture-model",
+                "HARBOR_FIXER_AGENT_TIMEOUT": "bad",
+                "HARBOR_FIXER_MAX_TASK_SUMMARY_CHARS": "1",
+                "HARBOR_FIXER_MAX_TASK_SUMMARIES_CHARS": "200000",
+            },
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         plan = json.loads(
@@ -300,12 +322,10 @@ class HarborFixerPlanTest(FixerTestCase):
             api_key,
             main_input_path.read_text(encoding="utf-8"),
         )
-        self.assertNotIn(
-            api_key,
-            (cli_out / "pi-agent-prompts" / "main-agent" / "attempt-1.txt").read_text(
-                encoding="utf-8"
-            ),
+        main_prompt = next(
+            (cli_out / "pi-agent-prompts").glob("main-agent/attempt-1.txt")
         )
+        self.assertNotIn(api_key, main_prompt.read_text(encoding="utf-8"))
         provenance_paths = sorted(
             (cli_out / "pi-agent-provenance").glob("task-*/attempt-1.json")
         )
