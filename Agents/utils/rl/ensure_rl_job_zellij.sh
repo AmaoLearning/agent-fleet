@@ -5,9 +5,9 @@ RL_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HARBOR_SCRIPT_DIR="${HARBOR_SCRIPT_DIR:-$(cd "$RL_SCRIPT_DIR/../common/Harbor" && pwd)}"
 . "$HARBOR_SCRIPT_DIR/env.sh"
 
-ray_submission_id="${1:?ray submission id required}"
+ray_submission_id="${1:-${RL_ZELLIJ_SUBMISSION_ID:?ray submission id required}}"
 dataset_name="${2:-${RL_DATASET_NAME:-seta}}"
-job_queue_dir="${3:-${RL_JOB_QUEUE_ROOT}/$(printf '%s' "$ray_submission_id" | tr -c 'A-Za-z0-9._-' '-')}"
+job_queue_dir="${3:-${RL_ZELLIJ_JOB_QUEUE_DIR:-${RL_JOB_QUEUE_ROOT}/$(printf '%s' "$ray_submission_id" | tr -c 'A-Za-z0-9._-' '-')}}"
 
 safe_name() {
   printf '%s' "$1" | tr '/[:space:]' '---' | tr -cd 'A-Za-z0-9._-'
@@ -23,7 +23,8 @@ ensure_zellij_web_sharing_config() {
   fi
 }
 
-submission_slug="$(safe_name "$ray_submission_id")"
+submission_storage_id="${RL_ZELLIJ_SUBMISSION_STORAGE_ID:-$ray_submission_id}"
+submission_slug="$(safe_name "$submission_storage_id")"
 agent_slug="$(safe_name "${RL_AGENT:-claude-code}")"
 dataset_slug="$(safe_name "$dataset_name")"
 session_name="harbor-rollout-${agent_slug}-${dataset_slug}-${submission_slug}"

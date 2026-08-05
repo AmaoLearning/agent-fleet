@@ -17,6 +17,7 @@ import subprocess
 import threading
 import time
 from datetime import datetime, timezone
+from hashlib import sha256
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -34,6 +35,8 @@ DEFAULT_API_KEY_MODE = os.environ.get("RL_API_KEY_MODE", "static").strip().lower
 DEFAULT_OPIK_PROJECT_NAME = os.environ.get("OPIK_PROJECT_NAME", "")
 DEFAULT_DISABLED_TASK_IDS = os.environ.get("RL_DISABLED_TASK_IDS", "")
 DEFAULT_TIMEOUT = float(os.environ.get("RL_REQUEST_TIMEOUT", "3600"))
+REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+COMMAND_ARG_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,255}\Z")
 TRACE_LOG = Path(os.environ.get("RL_TRACE_LOG", "/workspace/runs/rl-rollout-requests.jsonl"))
 QUEUE_DIR = Path(os.environ.get("RL_QUEUE_DIR", "/workspace/runs/rl-rollout-queue"))
 PENDING_DIR = QUEUE_DIR / "pending"
@@ -83,6 +86,44 @@ def _safe_slug(value: str, *, fallback: str = "default") -> str:
     return slug or fallback
 
 
+def _is_relative_path(value: Path) -> bool:
+    return not value.is_absolute() and ".." not in value.parts
+
+
+def _require_contained_path(path: Path, root: Path, *, label: str) -> Path:
+    resolved_path = path.resolve()
+    resolved_root = root.resolve()
+    try:
+        resolved_path.relative_to(resolved_root)
+    except ValueError as exc:
+        raise ValueError(f"{label} {resolved_path} is outside trusted root {resolved_root}") from exc
+    return resolved_path
+
+
+def _storage_id(value: str, *, prefix: str) -> str:
+    digest = sha256(value.encode("utf-8")).hexdigest()[:32]
+    return f"{prefix}-{digest}"
+
+
+def _validated_request_id(value: Any) -> str:
+    if value is None or str(value).strip() == "":
+        return uuid4().hex[:12]
+    request_id = str(value).strip()
+    if not REQUEST_ID_RE.fullmatch(request_id):
+        raise ValueError("request_id may contain only letters, digits, dot, underscore, and hyphen, up to 128 characters")
+    return request_id
+
+
+def _validated_command_arg_id(value: Any, *, label: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{label} is required")
+    if not COMMAND_ARG_ID_RE.fullmatch(text):
+        raise ValueError(f"{label} may contain only letters, digits, dot, underscore, and hyphen")
+    return text
+
+
+
 def _short_suffix(value: str, width: int = 6) -> str:
     value = str(value or "").strip()
     return value[-width:] if value else ""
@@ -92,7 +133,7 @@ def _extract_ray_submission_id(request: dict[str, Any]) -> str:
     ray_submission_id = _first_nonempty(request.get("ray_submission_id"))
     if not ray_submission_id:
         raise ValueError("top-level ray_submission_id is required in rollout mode")
-    return ray_submission_id
+    return _validated_command_arg_id(ray_submission_id, label="ray_submission_id")
 
 
 def _extract_opik_project_name(request: dict[str, Any], ray_submission_id: str) -> str:
@@ -121,6 +162,21 @@ def _extract_polar_task_id(request: dict[str, Any], session_id: str) -> str:
     )
 
 
+def _extract_api_base(request: dict[str, Any]) -> str:
+    api_base = _allowed_request_value(request, "api_base", "trial_config.agent.kwargs.api_base")
+    if api_base == "":
+        api_base = os.environ.get("RL_API_BASE", "")
+    if api_base == "":
+        return ""
+    api_base = str(api_base).strip()
+    parsed = urlparse(api_base)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("api_base must be an http or https URL with a host")
+    if any(ord(char) < 32 for char in api_base):
+        raise ValueError("api_base cannot contain control characters")
+    return api_base
+
+
 def _display_name(task_name: str, polar_task_id: str, session_id: str) -> str:
     suffix = _short_suffix(polar_task_id or session_id)
     return f"{task_name}-{suffix}" if suffix else task_name
@@ -128,14 +184,14 @@ def _display_name(task_name: str, polar_task_id: str, session_id: str) -> str:
 
 def _queue_for_submission(ray_submission_id: str) -> Path:
     if not ray_submission_id:
-        return QUEUE_DIR
-    return JOB_QUEUE_ROOT / _safe_slug(ray_submission_id)
+        return _require_contained_path(QUEUE_DIR, QUEUE_DIR, label="queue dir")
+    return _require_contained_path(JOB_QUEUE_ROOT / _storage_id(ray_submission_id, prefix="submission"), JOB_QUEUE_ROOT, label="queue dir")
 
 
 def _submission_session_name(ray_submission_id: str, dataset_name: str) -> str:
     agent_slug = _safe_slug(os.environ.get("RL_AGENT", "claude-code"))
     dataset_slug = _safe_slug(dataset_name)
-    submission_slug = _safe_slug(ray_submission_id)
+    submission_slug = _storage_id(ray_submission_id, prefix="submission")
     return f"harbor-rollout-{agent_slug}-{dataset_slug}-{submission_slug}"
 
 
@@ -214,7 +270,7 @@ def _ensure_submission_zellij(
         raise ValueError("ray_submission_id is required in rollout mode so a worker zellij session can be started")
     if not ENABLE_DYNAMIC_JOB_ZELLIJ:
         raise RuntimeError("RL_DYNAMIC_JOB_ZELLIJ=0 is unsupported without a prestarted worker pool")
-    submission_slug = _safe_slug(ray_submission_id)
+    submission_slug = _storage_id(ray_submission_id, prefix="submission")
     expected_session = _submission_session_name(ray_submission_id, dataset_name)
     ready_session = _cached_job_session(submission_slug)
     if ready_session:
@@ -236,13 +292,14 @@ def _ensure_submission_zellij(
         env = os.environ.copy()
         env.update({
             "RL_ZELLIJ_SUBMISSION_ID": ray_submission_id,
+            "RL_ZELLIJ_SUBMISSION_STORAGE_ID": submission_slug,
             "RL_ZELLIJ_JOB_QUEUE_DIR": str(queue_dir),
             "RL_JOB_RUNTIME_ROOT": str(JOB_RUNTIME_ROOT),
             "RL_MODEL_NAME": model_name,
             "OPIK_PROJECT_NAME": opik_project_name,
         })
         returncode, stdout, stderr = _run_helper(
-            [str(script), ray_submission_id, dataset_name, str(queue_dir)],
+            [str(script)],
             cwd=str(SCRIPT_DIR),
             env=env,
             timeout=float(os.environ.get("RL_JOB_ZELLIJ_START_TIMEOUT", "45")),
@@ -278,7 +335,7 @@ def _dataset_roots() -> dict[str, Path]:
             roots[name.strip()] = Path(path.strip())
         else:
             roots[Path(item).name] = Path(item)
-    return roots
+    return {name: root.resolve() for name, root in roots.items()}
 
 
 def _task_sort_key(path: Path) -> tuple[int, int | str]:
@@ -287,13 +344,61 @@ def _task_sort_key(path: Path) -> tuple[int, int | str]:
 
 def _dataset_root(dataset_name: str | None = None, dataset_root: str | None = None) -> Path:
     roots = _dataset_roots()
-    root = Path(dataset_root) if dataset_root else roots.get(dataset_name or DEFAULT_DATASET_NAME)
+    selected_dataset = dataset_name or DEFAULT_DATASET_NAME
+    _validated_command_arg_id(selected_dataset, label="dataset_name")
+    root = roots.get(selected_dataset)
     if root is None:
         raise ValueError(f"unknown dataset_name={dataset_name!r}; known={sorted(roots)}")
-    root = root.resolve()
+    if dataset_root:
+        requested_root = os.path.normpath(str(dataset_root).strip())
+        matched_root = next((configured_root for configured_root in roots.values() if requested_root == str(configured_root)), None)
+        if matched_root is None:
+            raise ValueError("dataset_root must match a configured dataset root")
+        if matched_root != root:
+            raise ValueError("dataset_root does not match dataset_name")
     if not root.is_dir():
         raise FileNotFoundError(f"dataset root does not exist: {root}")
     return root
+
+
+def _allowed_request_value(request: dict[str, Any], *paths: str) -> Any:
+    for path in paths:
+        value: Any = request
+        for part in path.split("."):
+            if not isinstance(value, dict):
+                value = None
+                break
+            value = value.get(part)
+        if value not in (None, ""):
+            return value
+    return ""
+
+
+def _worker_options(request: dict[str, Any]) -> dict[str, Any]:
+    option_paths = {
+        "force_build": ("force_build", "trial_config.environment.force_build"),
+        "max_new_tokens": ("max_new_tokens", "trial_config.agent.kwargs.max_new_tokens"),
+        "model_info": ("model_info", "trial_config.agent.kwargs.model_info"),
+        "claude_code_max_output_tokens": (
+            "claude_code_max_output_tokens",
+            "trial_config.agent.kwargs.claude_code_max_output_tokens",
+        ),
+        "max_turns": ("max_turns", "trial_config.agent.kwargs.max_turns"),
+        "temperature": ("temperature", "trial_config.agent.kwargs.temperature", "trial_config.agent.kwargs.llm_kwargs.temperature"),
+        "top_p": ("top_p", "trial_config.agent.kwargs.llm_kwargs.top_p", "trial_config.agent.kwargs.top_p"),
+        "top_k": ("top_k", "trial_config.agent.kwargs.llm_kwargs.top_k", "trial_config.agent.kwargs.top_k"),
+        "min_p": ("min_p", "trial_config.agent.kwargs.llm_kwargs.min_p", "trial_config.agent.kwargs.min_p"),
+        "llm_timeout": ("llm_timeout", "trial_config.agent.kwargs.llm_kwargs.timeout"),
+        "llm_max_retries": ("llm_max_retries", "trial_config.agent.kwargs.llm_kwargs.max_retries"),
+        "agent_timeout_multiplier": ("agent_timeout_multiplier", "trial_config.agent.agent_timeout_multiplier"),
+        "collect_rollout_details": ("collect_rollout_details", "trial_config.agent.kwargs.collect_rollout_details"),
+        "enable_summarize": ("enable_summarize", "trial_config.agent.kwargs.enable_summarize"),
+    }
+    return {
+        key: value
+        for key, paths in option_paths.items()
+        if (value := _allowed_request_value(request, *paths)) != ""
+    }
 
 
 def list_dataset_tasks(
@@ -316,23 +421,22 @@ def resolve_task_path(request: dict[str, Any]) -> Path:
     raw_task = request.get("task_path") or request.get("task_id")
     if not raw_task:
         raise ValueError("task_id or task_path is required")
-    task_path = Path(raw_task)
-    if not task_path.is_absolute():
-        task_path = dataset_root / task_path
-    task_path = task_path.resolve()
-    try:
-        task_path.relative_to(dataset_root)
-    except ValueError as exc:
-        raise ValueError(f"task path {task_path} is outside dataset root {dataset_root}") from exc
-    if not task_path.is_dir():
-        raise FileNotFoundError(f"task path does not exist: {task_path}")
-    if task_path.name in _disabled_task_ids():
-        raise ValueError(f"task id {task_path.name} is disabled for dataset {request.get('dataset_name') or DEFAULT_DATASET_NAME}")
-    return task_path
+    task_id = str(raw_task).strip()
+    task_path = Path(task_id)
+    if not task_id or not _is_relative_path(task_path) or len(task_path.parts) != 1:
+        raise ValueError("task_id or task_path must be a relative path inside the configured dataset root")
+    for candidate in dataset_root.iterdir():
+        if candidate.name == task_id and candidate.is_dir():
+            task_path = _require_contained_path(candidate, dataset_root, label="task path")
+            if task_path.name in _disabled_task_ids():
+                raise ValueError(f"task id {task_path.name} is disabled for dataset {request.get('dataset_name') or DEFAULT_DATASET_NAME}")
+            return task_path
+    raise FileNotFoundError(f"task path does not exist: {dataset_root / task_id}")
 
 
 def _enqueue_request(request: dict[str, Any]) -> tuple[str, Path]:
-    request_id = request.get("request_id") or uuid4().hex[:12]
+    request_id = _validated_request_id(request.get("request_id"))
+    request_file_id = _storage_id(request_id, prefix="request")
     session_id = request.get("session_id") or uuid4().hex
     task_path = resolve_task_path(request)
     dataset_root = _dataset_root(request.get("dataset_name"), request.get("dataset_root"))
@@ -354,8 +458,8 @@ def _enqueue_request(request: dict[str, Any]) -> tuple[str, Path]:
         opik_project_name,
     )
     payload = {
-        **request,
         "request_id": request_id,
+        "request_file_id": request_file_id,
         "session_id": session_id,
         "ray_submission_id": ray_submission_id,
         "polar_task_id": polar_task_id,
@@ -366,18 +470,17 @@ def _enqueue_request(request: dict[str, Any]) -> tuple[str, Path]:
         "dataset_root": str(dataset_root),
         "model_name": model_name,
         "opik_project_name": opik_project_name,
-        "api_base": request.get("api_base") or os.environ.get("RL_API_BASE", ""),
-        "api_key": request.get("api_key") or DEFAULT_API_KEY,
-        "api_key_mode": DEFAULT_API_KEY_MODE,
+        "api_base": _extract_api_base(request),
         "queue_dir": str(queue_dir),
         "zellij_session": zellij_session,
         "created_at": _now(),
     }
+    payload.update(_worker_options(request))
     pending_dir.mkdir(parents=True, exist_ok=True)
     results_dir.mkdir(parents=True, exist_ok=True)
     active_dir.mkdir(parents=True, exist_ok=True)
-    tmp_path = pending_dir / f"{request_id}.json.tmp"
-    final_path = pending_dir / f"{request_id}.json"
+    tmp_path = pending_dir / f"{request_file_id}.json.tmp"
+    final_path = pending_dir / f"{request_file_id}.json"
     tmp_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True), encoding="utf-8")
     tmp_path.replace(final_path)
     _append_trace({
@@ -395,7 +498,7 @@ def _enqueue_request(request: dict[str, Any]) -> tuple[str, Path]:
         "queue_dir": str(queue_dir),
         "zellij_session": zellij_session,
     })
-    return request_id, results_dir / f"{request_id}.json"
+    return request_id, results_dir / f"{request_file_id}.json"
 
 
 def _wait_result(result_path: Path, timeout: float) -> dict[str, Any]:
