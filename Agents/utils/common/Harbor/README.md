@@ -336,6 +336,52 @@ with no env/infra tasks produces an empty fix plan without invoking Pi.
 Starting generation removes any stale `fix-plan-latest.json`; if no task
 summary succeeds, Fixer writes a diagnostic empty plan and exits nonzero.
 
+### Fix Plan action contract
+
+Fix Plan schema version 2 stores each plan's work as an ordered `actions`
+array. A command action separates the executable from its literal arguments;
+policy can inspect the resulting argv without splitting a shell command string.
+Execution must pass that argv directly without an implicit shell:
+
+```json
+{
+  "action_id": "action-001",
+  "action_type": "command",
+  "cwd": "/workspace",
+  "executable": "docker",
+  "arguments": ["build", "--tag", "benchmark-image", "."],
+  "purpose": "Build the benchmark image",
+  "expected_effect": "The benchmark image is available locally"
+}
+```
+
+File content changes use a separate exact-replacement contract:
+
+```json
+{
+  "action_id": "action-002",
+  "action_type": "file_edit",
+  "cwd": "/workspace",
+  "path": "config/daemon.json",
+  "edit": {
+    "kind": "replace_text",
+    "old_text": "\"enabled\": false",
+    "new_text": "\"enabled\": true",
+    "expected_replacements": 1
+  },
+  "purpose": "Enable the required daemon integration",
+  "expected_effect": "The daemon configuration enables the integration"
+}
+```
+
+`file_edit` is limited to existing UTF-8 files and literal paths. Creation,
+deletion, renaming, and dynamic edits are not represented by this action.
+The future executor must confirm the literal target and exact replacement count
+immediately before an atomic write.
+Commands that invoke a shell or Python to modify files remain command actions
+and must be assessed by the policy agent instead of inheriting `file_edit`
+approval.
+
 ## More Details
 
 Architecture, script roles, task resolution, and full variable descriptions are in [STRUCT.md](./STRUCT.md).

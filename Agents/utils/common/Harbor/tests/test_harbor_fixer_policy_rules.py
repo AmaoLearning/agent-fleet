@@ -21,44 +21,53 @@ def _prefix_rule(rule_id: str, *pattern: str) -> dict:
     return {"rule_id": rule_id, "pattern": list(pattern), "match": "prefix"}
 
 
+def _command(executable: str, *arguments: str) -> dict:
+    return {
+        "action_id": "action-001",
+        "action_type": "command",
+        "cwd": ".",
+        "executable": executable,
+        "arguments": list(arguments),
+        "purpose": "test",
+        "expected_effect": "test",
+    }
+
+
 class HarborFixerPolicyRulesTest(FixerTestCase):
-    def test_command_analysis_separates_argv_from_shell_scripts(self) -> None:
-        cases = {
-            "python3 -c 'print(\"x\" * 1000)'": ("static_argv", True),
-            "python3 - <<'EOF'\nprint('x')\nEOF": ("shell_script", False),
-            "docker ps | grep fixture": ("shell_script", False),
-            "echo '$HOME'": ("static_argv", False),
-            "echo 'unterminated": ("invalid", False),
-        }
-        for command, expected in cases.items():
-            with self.subTest(command=command):
-                analysis = analyze_command(command)
+    def test_command_analysis_copies_structured_argv(self) -> None:
+        cases = [
+            (_command("python3", "-c", 'print("x" * 1000)'), ("static_argv", True)),
+            (_command("bash", "-lc", "docker ps | grep fixture"), ("static_argv", True)),
+            (_command("echo", "$HOME"), ("static_argv", False)),
+            ({"action_type": "file_edit"}, ("invalid", False)),
+        ]
+        for action, expected in cases:
+            with self.subTest(action=action):
+                analysis = analyze_command(action)
                 self.assertEqual(
                     (analysis.classification, analysis.has_embedded_script),
                     expected,
                 )
-                self.assertEqual(len(analysis.command_sha256), 64)
+                self.assertEqual(len(analysis.action_sha256), 64)
 
     def test_builtin_rules(self) -> None:
-        cases = {
-            "docker ps --all": None,
-            "git status --short": None,
-            "find . -delete": None,
-            "ls workspace": "allow",
-            "rm -rf build": "deny",
-            "sudo -u root rm -f /tmp/item": "deny",
-            "FOO=bar rm -rf build": "deny",
-            "bash -lc 'rm -rf build'": None,
-            "echo $(rm -f marker)": None,
-            "printf '%s\\n' marker | xargs rm -f": None,
-            "PATH=$PWD:$PATH ls": None,
-            "rm -rf *": "deny",
-            "ls *": None,
-            "echo '$HOME'": "allow",
-        }
-        for command, expected in cases.items():
-            with self.subTest(command=command):
-                decision = evaluate_t1(command, [], executable_verified=True)
+        cases = [
+            (_command("docker", "ps", "--all"), None),
+            (_command("git", "status", "--short"), None),
+            (_command("find", ".", "-delete"), None),
+            (_command("ls", "workspace"), "allow"),
+            (_command("rm", "-rf", "build"), "deny"),
+            (_command("sudo", "-u", "root", "rm", "-f", "/tmp/item"), "deny"),
+            (_command("env", "FOO=bar", "rm", "-rf", "build"), "deny"),
+            (_command("bash", "-lc", "rm -rf build"), None),
+            (_command("xargs", "rm", "-f"), None),
+            (_command("rm", "-rf", "*"), "deny"),
+            (_command("ls", "*"), "allow"),
+            (_command("echo", "$HOME"), "allow"),
+        ]
+        for action, expected in cases:
+            with self.subTest(action=action):
+                decision = evaluate_t1(action, [], executable_verified=True)
                 self.assertEqual(
                     None if decision is None else decision["decision"], expected
                 )
@@ -84,28 +93,37 @@ class HarborFixerPolicyRulesTest(FixerTestCase):
         rules, _ = load_user_rules(rules_path)
 
         self.assertEqual(
-            evaluate_t1("docker ps -a", rules)["rule_id"], "deny-docker-ps"
-        )
-        self.assertEqual(evaluate_t1("rm -rf build", rules)["source"], "builtin_rule")
-        self.assertIsNone(evaluate_t1("pytest -q $TESTS", rules))
-        self.assertIsNone(
-            evaluate_t1("python3 -c 'print(1)'", rules, executable_verified=True)
+            evaluate_t1(_command("docker", "ps", "-a"), rules)["rule_id"],
+            "deny-docker-ps",
         )
         self.assertEqual(
-            evaluate_t1("pytest -q tests/unit", rules, executable_verified=True)[
-                "decision"
-            ],
+            evaluate_t1(_command("rm", "-rf", "build"), rules)["source"],
+            "builtin_rule",
+        )
+        self.assertIsNone(
+            evaluate_t1(
+                _command("python3", "-c", "print(1)"),
+                rules,
+                executable_verified=True,
+            )
+        )
+        self.assertEqual(
+            evaluate_t1(
+                _command("pytest", "-q", "$TESTS"),
+                rules,
+                executable_verified=True,
+            )["decision"],
             "allow",
         )
         self.assertIsNone(
             evaluate_t1(
-                "curl https://example.test",
+                _command("curl", "https://example.test"),
                 [],
-                analysis=analyze_command("ls"),
+                analysis=analyze_command(_command("ls")),
                 executable_verified=True,
             )
         )
-        self.assertIsNone(evaluate_t1("ls", []))
+        self.assertIsNone(evaluate_t1(_command("ls"), []))
 
 
 if __name__ == "__main__":

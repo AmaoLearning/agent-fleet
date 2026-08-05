@@ -1,209 +1,95 @@
-"""Conservative shell-shape analysis for Harbor Fixer commands."""
+"""Deterministic analysis of structured Harbor Fixer command actions."""
 
 from __future__ import annotations
 
 import hashlib
-import shlex
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SHELL_PUNCTUATION = frozenset("();&|<>")
-SHELL_RESERVED_WORDS = {
-    "!",
-    "case",
-    "do",
-    "done",
-    "elif",
-    "else",
-    "esac",
-    "fi",
-    "for",
-    "function",
-    "if",
-    "in",
-    "select",
-    "then",
-    "time",
-    "until",
-    "while",
-    "{",
-    "}",
-}
-
 
 @dataclass(frozen=True)
 class CommandAnalysis:
-    """Facts derived from a command without deciding whether to allow it."""
+    """Facts copied or derived from a command action without a policy verdict."""
 
     classification: str
     argv: tuple[str, ...]
     executable_token: str
     interpreter: str
     has_embedded_script: bool
-    shell_features: tuple[str, ...]
-    command_sha256: str
+    action_sha256: str
 
     def as_dict(self) -> dict[str, Any]:
         return {
-            "analysis_version": 1,
+            "analysis_version": 2,
             "classification": self.classification,
             "argv": list(self.argv),
             "executable_token": self.executable_token,
             "interpreter": self.interpreter,
             "has_embedded_script": self.has_embedded_script,
-            "shell_features": list(self.shell_features),
-            "command_sha256": self.command_sha256,
+            "action_sha256": self.action_sha256,
         }
 
 
-def _shell_features(command: str) -> set[str]:
-    features: set[str] = set()
-    quote = ""
-    escaped = False
-    word_start = True
-    index = 0
-    while index < len(command):
-        character = command[index]
-        if escaped:
-            escaped = False
-            word_start = False
-            index += 1
-            continue
-        if character == "\\" and quote != "'":
-            escaped = True
-            index += 1
-            continue
-        if quote:
-            if character == quote:
-                quote = ""
-            elif quote == '"' and character in "$`":
-                features.add("expansion")
-            index += 1
-            continue
-        if character in "'\"":
-            quote = character
-            word_start = False
-        elif character in "\r\n":
-            features.add("newline")
-            word_start = True
-        elif character.isspace():
-            word_start = True
-        elif character in ";&|()":
-            features.add("control_operator")
-            word_start = True
-        elif character in "<>":
-            features.add("redirection")
-            if command[index : index + 2] == "<<":
-                features.add("heredoc")
-            word_start = True
-        elif character in "$`":
-            features.add("expansion")
-            word_start = False
-        elif character in "*?[":
-            features.add("glob")
-            word_start = False
-        elif character in "{}":
-            features.add("brace_expansion")
-            word_start = False
-        elif character == "~" and word_start:
-            features.add("tilde_expansion")
-            word_start = False
-        elif character == "#" and word_start:
-            features.add("comment")
-            word_start = False
-        else:
-            word_start = False
-        index += 1
-    return features
+def _action_sha256(action: Any) -> str:
+    serialized = json.dumps(
+        action,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=repr,
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
-def _lex_tokens(command: str) -> list[str] | None:
-    lexer = shlex.shlex(command, posix=True, punctuation_chars="();&|<>")
-    lexer.whitespace_split = True
-    lexer.commenters = ""
-    try:
-        return list(lexer)
-    except ValueError:
-        return None
-
-
-def lex_single_command(command: str) -> list[str] | None:
-    """Lex one command, including dynamic words, without evaluating it."""
-
-    if not command or "\x00" in command or any(char in command for char in "\r\n"):
-        return None
-    tokens = _lex_tokens(command)
-    if (
-        not tokens
-        or tokens[0] in SHELL_RESERVED_WORDS
-        or any(token and set(token) <= SHELL_PUNCTUATION for token in tokens)
-    ):
-        return None
-    return tokens
-
-
-def _is_assignment(token: str) -> bool:
-    if "=" not in token or token.startswith("="):
-        return False
-    name = token.split("=", 1)[0]
-    return bool(name) and name.replace("_", "a").isalnum()
-
-
-def _interpreter_details(argv: list[str]) -> tuple[str, bool]:
-    if not argv:
-        return "", False
+def _interpreter_details(argv: tuple[str, ...]) -> tuple[str, bool]:
     executable = Path(argv[0]).name
+    arguments = argv[1:]
     if executable.startswith(("python", "pypy")):
-        return "python", "-c" in argv[1:]
+        return "python", "-c" in arguments
     if executable in {"bash", "dash", "ksh", "sh", "zsh"}:
         return "shell", any(
-            "c" in option[1:] for option in argv[1:] if option.startswith("-")
+            "c" in option[1:] for option in arguments if option.startswith("-")
         )
     if executable == "node":
-        return "javascript", any(option in argv[1:] for option in ("-e", "--eval"))
+        return "javascript", any(option in arguments for option in ("-e", "--eval"))
     if executable in {"perl", "ruby"}:
-        return executable, "-e" in argv[1:]
+        return executable, "-e" in arguments
     return "", False
 
 
-def analyze_command(command: str) -> CommandAnalysis:
-    """Classify a raw command as static argv, shell script, or invalid."""
+def analyze_command(action: dict[str, Any]) -> CommandAnalysis:
+    """Copy an exact argv from a command action and identify interpreter payloads."""
 
-    digest = hashlib.sha256(command.encode("utf-8")).hexdigest()
-    features = _shell_features(command)
-    if not command.strip() or "\x00" in command or _lex_tokens(command) is None:
+    digest = _action_sha256(action)
+    executable = action.get("executable")
+    arguments = action.get("arguments")
+    valid = (
+        action.get("action_type") == "command"
+        and isinstance(executable, str)
+        and bool(executable)
+        and "\x00" not in executable
+        and not any(character.isspace() for character in executable)
+        and isinstance(arguments, list)
+        and all(isinstance(argument, str) and "\x00" not in argument for argument in arguments)
+    )
+    if not valid:
         return CommandAnalysis(
             classification="invalid",
             argv=(),
             executable_token="",
             interpreter="",
             has_embedded_script=False,
-            shell_features=tuple(sorted(features)),
-            command_sha256=digest,
+            action_sha256=digest,
         )
-    lexical_argv = lex_single_command(command)
-    if lexical_argv is None:
-        return CommandAnalysis(
-            classification="shell_script",
-            argv=(),
-            executable_token="",
-            interpreter="",
-            has_embedded_script=False,
-            shell_features=tuple(sorted(features)),
-            command_sha256=digest,
-        )
-
-    if _is_assignment(lexical_argv[0]):
-        features.add("environment_assignment")
-    is_static = not features and lexical_argv[0] not in SHELL_RESERVED_WORDS
-    interpreter, embedded_script = _interpreter_details(lexical_argv)
+    argv = (executable, *arguments)
+    interpreter, embedded_script = _interpreter_details(argv)
     return CommandAnalysis(
-        classification="static_argv" if is_static else "shell_script",
-        argv=tuple(lexical_argv) if is_static else (),
-        executable_token=lexical_argv[0],
+        classification="static_argv",
+        argv=argv,
+        executable_token=executable,
         interpreter=interpreter,
         has_embedded_script=embedded_script,
-        shell_features=tuple(sorted(features)),
-        command_sha256=digest,
+        action_sha256=digest,
     )

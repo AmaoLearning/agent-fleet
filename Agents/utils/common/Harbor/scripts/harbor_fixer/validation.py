@@ -19,6 +19,8 @@ SCOPE_AGREEMENTS = {"agree", "unclear", "disagree"}
 CONFIDENCE_LABELS = {"high", "medium", "low"}
 PLAN_SCOPE_RELATIONS = {"same", "narrower", "broader", "mixed"}
 SCOPE_RANK = {"task": 0, "benchmark": 1, "host": 2}
+FIX_PLAN_SCHEMA_VERSION = 2
+ACTION_TYPES = {"command", "file_edit"}
 
 
 def require_dict(value: Any, name: str) -> dict[str, Any]:
@@ -46,6 +48,81 @@ def require_enum(value: Any, name: str, allowed: set[str]) -> str:
     if text not in allowed:
         raise ValidationError(f"{name} must be one of: {', '.join(sorted(allowed))}")
     return text
+
+
+def _require_exact_fields(value: dict[str, Any], name: str, fields: set[str]) -> None:
+    actual = set(value)
+    if actual != fields:
+        missing = sorted(fields - actual)
+        extra = sorted(actual - fields)
+        details = []
+        if missing:
+            details.append(f"missing {', '.join(missing)}")
+        if extra:
+            details.append(f"unexpected {', '.join(extra)}")
+        raise ValidationError(f"{name} fields are invalid: {'; '.join(details)}")
+
+
+def _require_text(value: Any, name: str, *, allow_empty: bool = False) -> str:
+    text = require_string(value, name, allow_empty=allow_empty)
+    if "\x00" in text:
+        raise ValidationError(f"{name} must not contain NUL")
+    return text
+
+
+def _validate_fix_action(value: Any, name: str) -> str:
+    action = require_dict(value, name)
+    action_type = require_enum(
+        action.get("action_type"), f"{name}.action_type", ACTION_TYPES
+    )
+    common_fields = {
+        "action_id",
+        "action_type",
+        "cwd",
+        "purpose",
+        "expected_effect",
+    }
+    action_fields = (
+        common_fields | {"executable", "arguments"}
+        if action_type == "command"
+        else common_fields | {"path", "edit"}
+    )
+    _require_exact_fields(action, name, action_fields)
+    action_id = _require_text(action.get("action_id"), f"{name}.action_id")
+    _require_text(action.get("cwd"), f"{name}.cwd")
+    _require_text(action.get("purpose"), f"{name}.purpose")
+    _require_text(action.get("expected_effect"), f"{name}.expected_effect")
+    if action_type == "command":
+        executable = _require_text(action.get("executable"), f"{name}.executable")
+        if any(character.isspace() for character in executable):
+            raise ValidationError(f"{name}.executable must be one token")
+        for index, argument in enumerate(
+            require_list(action.get("arguments"), f"{name}.arguments")
+        ):
+            _require_text(argument, f"{name}.arguments[{index}]", allow_empty=True)
+        return action_id
+
+    _require_text(action.get("path"), f"{name}.path")
+    edit = require_dict(action.get("edit"), f"{name}.edit")
+    _require_exact_fields(
+        edit,
+        f"{name}.edit",
+        {"kind", "old_text", "new_text", "expected_replacements"},
+    )
+    if edit.get("kind") != "replace_text":
+        raise ValidationError(f"{name}.edit.kind must be replace_text")
+    old_text = _require_text(edit.get("old_text"), f"{name}.edit.old_text")
+    new_text = _require_text(
+        edit.get("new_text"), f"{name}.edit.new_text", allow_empty=True
+    )
+    if old_text == new_text:
+        raise ValidationError(f"{name}.edit must change the matched text")
+    replacements = edit.get("expected_replacements")
+    if isinstance(replacements, bool) or not isinstance(replacements, int):
+        raise ValidationError(f"{name}.edit.expected_replacements must be an integer")
+    if replacements < 1:
+        raise ValidationError(f"{name}.edit.expected_replacements must be positive")
+    return action_id
 
 
 def task_key(task: dict[str, Any]) -> tuple[str, str, str]:
@@ -289,7 +366,12 @@ def validate_fix_plan_set(
     expected_source: dict[str, Any] | None = None,
     expected_task_summaries: list[dict[str, Any]] | None = None,
 ) -> None:
-    _check_kind(payload, version=1, kind="harbor_fixer_fix_plan_set", name="fix plan set")
+    _check_kind(
+        payload,
+        version=FIX_PLAN_SCHEMA_VERSION,
+        kind="harbor_fixer_fix_plan_set",
+        name="fix plan set",
+    )
     source = require_dict(payload.get("source"), "source")
     if expected_source is not None and source != expected_source:
         raise ValidationError("fix plan source does not match main agent input")
@@ -302,6 +384,19 @@ def validate_fix_plan_set(
     seen_plan_ids: set[str] = set()
     for index, plan in enumerate(require_list(payload.get("plans"), "plans")):
         plan_obj = require_dict(plan, f"plans[{index}]")
+        _require_exact_fields(
+            plan_obj,
+            f"plans[{index}]",
+            {
+                "plan_id",
+                "fix_scope",
+                "analyzer_scope_comparison",
+                "task_list",
+                "actions",
+                "fix_reason",
+                "verification_hint",
+            },
+        )
         plan_id = require_string(plan_obj.get("plan_id"), f"plans[{index}].plan_id")
         if plan_id in seen_plan_ids:
             raise ValidationError(f"duplicate plan_id: {plan_id}")
@@ -383,29 +478,16 @@ def validate_fix_plan_set(
                 raise ValidationError("fix plan analyzer scopes do not match task summaries")
             if relation != _scope_relation(fix_scope, expected_analyzer_scopes):
                 raise ValidationError("fix plan scope relation does not match task summaries")
-        commands = require_list(plan_obj.get("commands"), f"plans[{index}].commands")
-        if not commands:
-            raise ValidationError(f"plans[{index}].commands must be non-empty")
-        command_ids: set[str] = set()
-        for command_index, command in enumerate(commands):
-            command_obj = require_dict(command, f"plans[{index}].commands[{command_index}]")
-            command_id = require_string(
-                command_obj.get("command_id"),
-                f"plans[{index}].commands[{command_index}].command_id",
-            )
-            if command_id in command_ids:
-                raise ValidationError(f"duplicate command_id in plan {plan_id}: {command_id}")
-            command_ids.add(command_id)
-            require_string(command_obj.get("cwd"), f"plans[{index}].commands[{command_index}].cwd")
-            require_string(command_obj.get("command"), f"plans[{index}].commands[{command_index}].command")
-            require_string(
-                command_obj.get("purpose"),
-                f"plans[{index}].commands[{command_index}].purpose",
-            )
-            require_string(
-                command_obj.get("expected_effect"),
-                f"plans[{index}].commands[{command_index}].expected_effect",
-            )
+        actions = require_list(plan_obj.get("actions"), f"plans[{index}].actions")
+        if not actions:
+            raise ValidationError(f"plans[{index}].actions must be non-empty")
+        action_ids: set[str] = set()
+        for action_index, action in enumerate(actions):
+            name = f"plans[{index}].actions[{action_index}]"
+            action_id = _validate_fix_action(action, name)
+            if action_id in action_ids:
+                raise ValidationError(f"duplicate action_id in plan {plan_id}: {action_id}")
+            action_ids.add(action_id)
         fix_reason = require_dict(plan_obj.get("fix_reason"), f"plans[{index}].fix_reason")
         require_string(fix_reason.get("summary"), f"plans[{index}].fix_reason.summary")
         require_list(fix_reason.get("evidence"), f"plans[{index}].fix_reason.evidence")

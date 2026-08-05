@@ -81,13 +81,55 @@ class HarborFixerPlanTest(FixerTestCase):
         self.assertEqual(plan["generation_errors"], main_input["generation_errors"])
 
         incomplete = json.loads(valid_output)
-        del incomplete["plans"][0]["commands"][0]["expected_effect"]
+        del incomplete["plans"][0]["actions"][0]["expected_effect"]
         with self.assertRaisesRegex(ValidationError, "expected_effect"):
             validate_fix_plan_set(
                 incomplete,
                 expected_source=main_input["source"],
                 expected_task_summaries=[summary],
             )
+
+        with_file_edit = json.loads(valid_output)
+        with_file_edit["plans"][0]["actions"].append(
+            {
+                "action_id": "action-002",
+                "action_type": "file_edit",
+                "cwd": ".",
+                "path": "config.json",
+                "edit": {
+                    "kind": "replace_text",
+                    "old_text": '"enabled": false',
+                    "new_text": '"enabled": true',
+                    "expected_replacements": 1,
+                },
+                "purpose": "Enable the fixture.",
+                "expected_effect": "The fixture is enabled.",
+            }
+        )
+        validate_fix_plan_set(with_file_edit, expected_task_summaries=[summary])
+
+        raw_command = json.loads(valid_output)
+        raw_command["plans"][0]["actions"][0]["command"] = "printf hello"
+        with self.assertRaisesRegex(ValidationError, "unexpected command"):
+            validate_fix_plan_set(raw_command, expected_task_summaries=[summary])
+
+        legacy_commands = json.loads(valid_output)
+        legacy_commands["plans"][0]["commands"] = legacy_commands["plans"][0].pop(
+            "actions"
+        )
+        with self.assertRaisesRegex(ValidationError, "missing actions"):
+            validate_fix_plan_set(legacy_commands, expected_task_summaries=[summary])
+
+        invalid_edit = json.loads(json.dumps(with_file_edit))
+        invalid_edit["plans"][0]["actions"][1]["edit"]["expected_replacements"] = 0
+        with self.assertRaisesRegex(ValidationError, "must be positive"):
+            validate_fix_plan_set(invalid_edit, expected_task_summaries=[summary])
+
+        no_op_edit = json.loads(json.dumps(with_file_edit))
+        edit = no_op_edit["plans"][0]["actions"][1]["edit"]
+        edit["new_text"] = edit["old_text"]
+        with self.assertRaisesRegex(ValidationError, "must change"):
+            validate_fix_plan_set(no_op_edit, expected_task_summaries=[summary])
 
         agent_owned_errors = json.loads(valid_output)
         agent_owned_errors["generation_errors"] = [{"stage": "invented"}]

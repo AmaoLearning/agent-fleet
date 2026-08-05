@@ -214,7 +214,7 @@ class MainInvoker:
 
 def make_fix_plan() -> dict:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "harbor_fixer_fix_plan_set",
         "source": {"fixture": True},
         "plans": [
@@ -235,11 +235,13 @@ def make_fix_plan() -> dict:
                         "final_class": "env_fail",
                     }
                 ],
-                "commands": [
+                "actions": [
                     {
-                        "command_id": "cmd-001",
+                        "action_id": "action-001",
+                        "action_type": "command",
                         "cwd": ".",
-                        "command": "printf '%s\\n' hello",
+                        "executable": "printf",
+                        "arguments": ["%s\\n", "hello"],
                         "purpose": "Emit a harmless test line.",
                         "expected_effect": "stdout contains hello.",
                     }
@@ -277,10 +279,10 @@ def write_fixture_pi(path: Path) -> Path:
                 "else:",
                 "    summaries = payload['task_summaries']",
                 "    result = {",
-                "      'schema_version': 1, 'kind': 'harbor_fixer_fix_plan_set', 'source': payload['source'],",
+                "      'schema_version': 2, 'kind': 'harbor_fixer_fix_plan_set', 'source': payload['source'],",
                 "      'plans': [{'plan_id': 'fix-001', 'fix_scope': 'benchmark', 'analyzer_scope_comparison': {'analyzer_scopes': ['benchmark'], 'relation': 'same', 'reason': 'fixture'},",
                 "        'task_list': [{'task_index': s['task']['task_index'], 'task_name': s['task']['task_name'], 'attempt_id': s['task']['attempt_id'], 'root_cause_code': s['analyzer_alignment']['root_cause_code'], 'final_class': s['analyzer_alignment']['final_class']} for s in summaries],",
-                "        'commands': [{'command_id': 'cmd-001', 'cwd': '.', 'command': \"printf '%s\\\\n' fixture-fix\", 'purpose': 'fixture command', 'expected_effect': 'fixture command runs'}],",
+                "        'actions': [{'action_id': 'action-001', 'action_type': 'command', 'cwd': '.', 'executable': 'printf', 'arguments': ['%s\\\\n', 'fixture-fix'], 'purpose': 'fixture command', 'expected_effect': 'fixture command runs'}],",
                 "        'fix_reason': {'summary': 'fixture shared fix', 'evidence': [], 'reasoning': 'fixture'},",
                 "        'verification_hint': {'expected_original_failure_absent': 'fixture failure', 'target_task_indexes': [s['task']['task_index'] for s in summaries]}}],",
                 "      'unplanned_tasks': [], 'generation_errors': []}",

@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from ..artifact_io import read_json
-from ..command_analysis import CommandAnalysis, analyze_command, lex_single_command
+from ..command_analysis import CommandAnalysis, analyze_command
 from ..validation import (
     ValidationError,
     require_dict,
@@ -54,10 +53,10 @@ def _is_assignment(token: str) -> bool:
     return bool(name) and name.replace("_", "a").isalnum()
 
 
-def parse_simple_argv(command: str) -> list[str] | None:
-    """Return a static, expansion-free argv eligible for T1 allow."""
+def parse_simple_argv(action: dict[str, Any]) -> list[str] | None:
+    """Return the exact argv from a valid command action."""
 
-    analysis = analyze_command(command)
+    analysis = analyze_command(action)
     return list(analysis.argv) if analysis.classification == "static_argv" else None
 
 
@@ -94,13 +93,10 @@ def normalize_argv(argv: list[str]) -> list[str]:
     return result
 
 
-def _rule_argv(
-    command: str,
-    analysis: CommandAnalysis,
-) -> tuple[list[list[str]], list[str]] | None:
-    argv = lex_single_command(command)
-    if argv is None:
+def _rule_argv(analysis: CommandAnalysis) -> tuple[list[list[str]], list[str]] | None:
+    if analysis.classification != "static_argv":
         return None
+    argv = list(analysis.argv)
     normalized = normalize_argv(argv)
     if not normalized:
         return None
@@ -110,8 +106,7 @@ def _rule_argv(
     static_argv = list(analysis.argv)
     allow_argv = (
         []
-        if static_argv is None
-        or _is_assignment(argv[0])
+        if not static_argv
         or analysis.has_embedded_script
         or Path(argv[0]).name in AGENT_ONLY_EXECUTABLES
         else static_argv
@@ -169,7 +164,7 @@ def _matches(rule: PrefixRule, argv: list[str]) -> bool:
 
 
 def evaluate_t1(
-    command: str,
+    action: dict[str, Any],
     user_rules: list[PrefixRule],
     *,
     analysis: CommandAnalysis | None = None,
@@ -177,13 +172,13 @@ def evaluate_t1(
 ) -> dict[str, Any] | None:
     """Return a deterministic T1 decision for a simple command, if available."""
 
-    command_sha256 = hashlib.sha256(command.encode("utf-8")).hexdigest()
+    action_sha256 = analyze_command(action).action_sha256
     command_analysis = (
         analysis
-        if analysis is not None and analysis.command_sha256 == command_sha256
-        else analyze_command(command)
+        if analysis is not None and analysis.action_sha256 == action_sha256
+        else analyze_command(action)
     )
-    parsed = _rule_argv(command, command_analysis)
+    parsed = _rule_argv(command_analysis)
     if parsed is None:
         return None
     candidates, allow_argv = parsed
