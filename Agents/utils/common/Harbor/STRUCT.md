@@ -45,6 +45,7 @@ Agents/utils/common/Harbor/
     │   ├── artifact_io.py      # JSON, JSONL, and text artifact I/O
     │   ├── plan_generation.py  # Task summary and plan generation flow
     │   ├── planning_context/   # Runtime inventory and workspace evidence
+    │   ├── policy/             # T1 rules, path routing, and T2/T3 Agent policy
     │   ├── prompts.py          # Task and plan agent contracts
     │   └── validation.py       # Analyzer, task-summary, and Fix Plan validation
     ├── online_rule_analyzer.py # Optional console-only online analysis
@@ -59,22 +60,6 @@ in the environment as `HARBOR_ANALYZER_*` variables.
 JSON-event validation, final JSON extraction, and provenance shared by Harbor
 Pi callers. Analyzer-specific tool access, path gating, prompts, artifact
 locations, and error compatibility remain in `harbor_analyzer/pi.py`.
-
-## Harbor Fixer Plan Generation
-
-The Fixer foundation validates Analyzer handoff artifacts and builds a bounded,
-redacted planning context without invoking an agent. It records runtime
-inventory and selected workspace evidence for later plan generation. Analyzer
-inputs are selected through `analyzer-artifacts-latest.json`; Fixer reads the
-current env/infra and evidence snapshot for every selected handover without
-depending on the deprecated flat latest-report files.
-
-Plan generation is independently usable and produces
-`target-environment.json`, `target-context.json`, `main-agent-input.json`, and
-`fix-plan-latest.json`. It performs bounded deterministic inspection before
-dispatching isolated no-tool Pi agents. Tests are split between
-`test_harbor_fixer_plan.py` and `test_harbor_fixer_runtime_context.py`, with
-shared fixtures in the non-discovered `fixer_test_support.py`.
 
 ## Path Resolution
 
