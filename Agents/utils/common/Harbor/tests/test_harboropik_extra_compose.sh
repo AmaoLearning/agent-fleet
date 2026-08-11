@@ -267,6 +267,7 @@ run_harboropik() {
   local queue_worker="${8:-1}"
   local min_test="${9:-0}"
   local runs="${10:-1}"
+  local n_concurrent="${11:-1}"
   local opik_base="http://opik.example"
   local opik_url_override="http://opik.example/api"
   local hook_flag="1"
@@ -280,9 +281,13 @@ run_harboropik() {
   local fake_bin
   local trace_dir
   local wheel_dir
+  local dataset_path
   fake_bin="$(dirname "$capture_bin")"
   mkdir -p "$output_dir"
   mkdir -p "$output_dir/run/runtime/$agent"
+  mkdir -p "$output_dir/run/queue/$agent"
+  dataset_path="$output_dir/dataset"
+  mkdir -p "$dataset_path"
   wheel_dir="$output_dir/wheels"
   mkdir -p "$wheel_dir"
   trace_dir="$output_dir/trace"
@@ -302,6 +307,7 @@ run_harboropik() {
     HOME="$output_dir/home" \
     AGENT="$agent" \
     DATASET_NAME="$dataset_name" \
+    DATASET_PATH="$dataset_path" \
     INCLUDE_TASKS="$include_tasks" \
     OUTPUT_PATH="$output_dir/run" \
     HARBOR_QUEUE_WORKER="$queue_worker" \
@@ -321,7 +327,7 @@ run_harboropik() {
     TB_SKIP_DOCKERHUB_PREFLIGHT="1" \
     TB_RUNS="$runs" \
     N_ATTEMPTS="1" \
-    TB_N_CONCURRENT="1" \
+    TB_N_CONCURRENT="$n_concurrent" \
     TOTAL_WORKERS="1" \
     TB_MAX_RETRIES="0" \
     HARBOR_CAPTURE_FILE="$capture_file" \
@@ -379,6 +385,7 @@ assert_registry_summary_requires_result() {
 main() {
   local tmp fake_bin default_overlay claude_capture opencode_capture capture_bin
   local seta_capture sweverify_capture registry_capture traceoff_capture traceoff_oc_capture
+  local opencode_registry_capture opencode_local_capture
   local min_test_capture
   tmp="$(mktemp -d)"
   TEST_TMP_DIR="$tmp"
@@ -431,6 +438,18 @@ main() {
     "$opencode_capture" \
     "--ve" \
     "TB_VERIFIER_UV_BIN_DIR=/opt/tb-uv-backup/bin"
+
+  opencode_registry_capture="$tmp/opencode-registry.args"
+  run_harboropik \
+    "opencode" "$capture_bin" "$opencode_registry_capture" "$tmp/opencode-registry" \
+    "terminalbench21" "" "true" "0" "0" "1" "20"
+  assert_arg_pair "$opencode_registry_capture" "--n-concurrent" "20"
+
+  opencode_local_capture="$tmp/opencode-local.args"
+  run_harboropik \
+    "opencode" "$capture_bin" "$opencode_local_capture" "$tmp/opencode-local" \
+    "auto" "" "true" "0" "0" "1" "20"
+  assert_arg_pair "$opencode_local_capture" "--n-concurrent" "1"
 
   seta_capture="$tmp/seta-default.args"
   run_harboropik \

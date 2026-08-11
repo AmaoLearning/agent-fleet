@@ -1240,7 +1240,13 @@ PY
     no_proxy_value="$no_proxy_value,$opik_host"
   fi
 
-  local cmd
+  local cmd opencode_n_concurrent
+  opencode_n_concurrent="1"
+  if harbor_is_native_registry_main; then
+    # Registry runs use one Harbor process, so it must own the requested
+    # concurrency. Local task lists already shard work across queue workers.
+    opencode_n_concurrent="$TB_N_CONCURRENT"
+  fi
   build_opencode_cmd() {
     local trial_id="$1"
     local opencode_tgz_url=""
@@ -1252,7 +1258,7 @@ PY
     cmd=(
       "$HARBOR_OPIK_PYTHON" "$HARBOR_OPENCODE_DIR/enable_track_harbor.py" run
       -y
-      --n-concurrent 1
+      --n-concurrent "$opencode_n_concurrent"
       --max-retries "$TB_MAX_RETRIES"
       -o "$out_dir"
       -k 1
