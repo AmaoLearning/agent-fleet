@@ -106,6 +106,7 @@ def _config(args: argparse.Namespace) -> AnalyzerConfig:
         run_dir=run_dir,
         queue_dir=queue_dir.resolve() if queue_dir else None,
         output_dir=output_dir,
+        monitor_path=args.handover.resolve().parent / "monitor-latest.json",
         run_id=args.run_id,
         pi_bin=args.pi_bin,
         provider=args.pi_provider,

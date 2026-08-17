@@ -41,6 +41,7 @@ class AnalyzerConfig:
     run_dir: Path
     queue_dir: Path | None
     output_dir: Path
+    monitor_path: Path | None = None
     run_id: str | None = None
     pi_bin: str = "pi"
     provider: str = "harbor-analyzer"
@@ -542,6 +543,7 @@ def _write_outputs(
         "handover_id": handover_id,
         "publication_id": publication_id,
         "run_id": benchmark_report.get("run_id"),
+        "monitor_path": str(config.monitor_path) if config.monitor_path else "",
         "generated_at": generated_at,
         "artifacts": artifacts,
     }

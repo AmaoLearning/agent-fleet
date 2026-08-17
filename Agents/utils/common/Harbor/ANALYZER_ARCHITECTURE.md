@@ -86,6 +86,7 @@ snapshot paths named inside it.
 | `analyzer-artifacts-latest.json` `artifacts.benchmark_report_path` | `analyzer-runs/<handover_id>/<publication_id>.json` | benchmark-level report containing every task analysis |
 | `analyzer-artifacts-latest.json` `artifacts.env_infra_tasks_path` | `env-infra-tasks/<handover_id>/<publication_id>.json` | only tasks classified as `env_fail` or `infra_fail` |
 | `analyzer-artifacts-latest.json` `artifacts.fix_line_index_path` | `fix-line-index/<handover_id>/<publication_id>.jsonl` | legacy-named evidence index; each row points to lines used by the analyzer |
+| `analyzer-artifacts-latest.json` `monitor_path` | external monitor snapshot | monitor used to recover the Harbor runner agent; may be unavailable after relocation |
 
 `fix-line-index` is a historical artifact name. Its rows are root-cause
 evidence references, not repair instructions.
