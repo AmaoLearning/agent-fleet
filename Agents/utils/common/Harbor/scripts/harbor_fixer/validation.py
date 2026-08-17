@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import shlex
 from typing import Any
 
 
@@ -658,6 +659,47 @@ def validate_verification_input(payload: dict[str, Any]) -> None:
     ):
         require_string(payload.get(key), key)
     require_enum(payload.get("monitor_policy"), "monitor_policy", MONITOR_POLICIES)
+    rerun_command = payload.get("rerun_command")
+    if rerun_command is not None:
+        rerun_command = require_string(
+            rerun_command, "rerun_command", allow_empty=True
+        )
+        if rerun_command:
+            try:
+                argv = shlex.split(rerun_command)
+            except ValueError as exc:
+                raise ValidationError(f"rerun_command is invalid: {exc}") from None
+            if not argv:
+                raise ValidationError("rerun_command must not be blank")
+    rerun_timeout = payload.get("rerun_timeout")
+    if "rerun_timeout" in payload and (
+        isinstance(rerun_timeout, bool)
+        or not isinstance(rerun_timeout, int)
+        or rerun_timeout <= 0
+    ):
+        raise ValidationError("rerun_timeout must be a positive integer")
+    monitor_wait_timeout = payload.get("monitor_wait_timeout")
+    if "monitor_wait_timeout" in payload and (
+        isinstance(monitor_wait_timeout, bool)
+        or not isinstance(monitor_wait_timeout, int)
+        or monitor_wait_timeout <= 0
+    ):
+        raise ValidationError("monitor_wait_timeout must be a positive integer")
+    monitor_poll_interval = payload.get("monitor_poll_interval")
+    valid_poll_interval = "monitor_poll_interval" not in payload or (
+        not isinstance(monitor_poll_interval, bool)
+        and isinstance(monitor_poll_interval, (int, float))
+        and monitor_poll_interval > 0
+    )
+    if valid_poll_interval and "monitor_poll_interval" in payload:
+        try:
+            valid_poll_interval = math.isfinite(float(monitor_poll_interval))
+        except OverflowError:
+            valid_poll_interval = False
+    if not valid_poll_interval:
+        raise ValidationError(
+            "monitor_poll_interval must be a positive finite number"
+        )
     if payload.get("verification_mode") != "smoke_test":
         raise ValidationError("verification_mode must be smoke_test")
     limit = payload.get("verification_task_limit_per_plan")
