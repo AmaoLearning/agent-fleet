@@ -49,6 +49,16 @@ harbor_is_native_registry_main() {
     && [[ "${HARBOR_QUEUE_WORKER:-0}" != "1" ]]
 }
 
+harbor_is_fixer_verification_main() {
+  [[ "${HARBOR_FIXER_VERIFICATION_RERUN:-0}" == "1" ]] \
+    && [[ "${HARBOR_QUEUE_WORKER:-0}" != "1" ]]
+}
+
+harbor_publishes_job_dir() {
+  harbor_is_native_registry_main \
+    || harbor_is_fixer_verification_main
+}
+
 harbor_uses_local_opensandbox_dataset() {
   [[ "$TB_ENVIRONMENT_TYPE" == "opensandbox" ]] \
     && [[ -n "${TB_PATH:-}" ]] \
@@ -67,7 +77,7 @@ write_harbor_registry_summary() {
     "$job_dir" "$OUTPUT_PATH/summary.txt" "$exit_code" "$dataset"
 }
 
-if harbor_is_native_registry_main; then
+if harbor_publishes_job_dir; then
   : > "$HARBOR_JOB_DIR_FILE"
   rm -f "$HARBOR_BENCHMARK_EXIT_FILE"
   # BASHPID needs bash >= 4; at this top-level scope $$ is the same pid.
@@ -78,14 +88,19 @@ if harbor_is_native_registry_main; then
     > "$HARBOR_BENCHMARK_PID_FILE"
   record_harbor_benchmark_exit() {
     local rc="$?"
-    # The exit file is the completion contract with the registry monitor;
+    # The exit file is the completion contract with the native monitor;
     # write it before the best-effort summary and analyzer teardown.
     printf '%s\n' "$rc" > "$HARBOR_BENCHMARK_EXIT_FILE"
-    if ! write_harbor_registry_summary "$rc"; then
-      echo "[WARN] failed to write registry summary: $OUTPUT_PATH/summary.txt" >&2
+    if harbor_is_native_registry_main; then
+      if ! write_harbor_registry_summary "$rc"; then
+        echo "[WARN] failed to write registry summary: $OUTPUT_PATH/summary.txt" >&2
+      fi
     fi
     if ! harbor_stop_online_analysis; then
       echo "[WARN] failed to stop online analyzer for $OUTPUT_PATH" >&2
+    fi
+    if harbor_is_fixer_verification_main; then
+      cleanup_verifier_uv_bin_dir
     fi
   }
   trap record_harbor_benchmark_exit EXIT
@@ -743,6 +758,9 @@ run_oracle_task() {
   local job_name out_dir
   job_name="$(date +%Y-%m-%d__%H-%M-%S)"
   out_dir="$effective_jobs_root/$job_name"
+  if harbor_is_fixer_verification_main; then
+    printf '%s\n' "$out_dir" > "$HARBOR_JOB_DIR_FILE"
+  fi
   mkdir -p "$out_dir"
 
   VERIFIER_UV_BIN_DIR_SOURCE="$(mktemp -d "${RUNTIME_DIR%/}/verifier-uv.oracle.XXXXXX" 2>/dev/null || true)"
@@ -892,7 +910,7 @@ run_tb() {
   local job_name out_dir
   job_name="$(date +%Y-%m-%d__%H-%M-%S)"
   out_dir="$effective_jobs_root/$job_name"
-  if harbor_is_native_registry_main; then
+  if harbor_publishes_job_dir; then
     printf '%s\n' "$out_dir" > "$HARBOR_JOB_DIR_FILE"
   fi
   mkdir -p "$out_dir"
@@ -1337,7 +1355,7 @@ run_opencode_task() {
   local job_name out_dir
   job_name="$(date +%Y-%m-%d__%H-%M-%S)"
   out_dir="$JOBS_ROOT/$job_name"
-  if harbor_is_native_registry_main; then
+  if harbor_publishes_job_dir; then
     printf '%s\n' "$out_dir" > "$HARBOR_JOB_DIR_FILE"
   fi
   mkdir -p "$out_dir"
@@ -1366,9 +1384,9 @@ PY
 
   local cmd opencode_n_concurrent
   opencode_n_concurrent="1"
-  if harbor_is_native_registry_main; then
-    # Registry runs use one Harbor process, so it must own the requested
-    # concurrency. Local task lists already shard work across queue workers.
+  if harbor_is_native_registry_main || harbor_is_fixer_verification_main; then
+    # Registry and Fixer verification runs use one Harbor process, so it must
+    # own the requested concurrency. Normal local runs shard across workers.
     opencode_n_concurrent="$TB_N_CONCURRENT"
   fi
   build_opencode_cmd() {
