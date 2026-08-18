@@ -29,6 +29,9 @@ Entry point: 作业中心 (Job Center) → Sandbox.
      (镜像管理) first.
 3. Wait until the Template status is ready.
 
+For the repository-side `create`, `list`, and `get` workflow, see the
+[QZ Template Manager](QZ_TEMPLATE_MANAGER.md).
+
 ## Repository-side configuration
 
 Add to `config.local.env` (never commit the key):
