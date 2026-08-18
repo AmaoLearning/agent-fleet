@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import signal
 import sys
 from pathlib import Path
 from unittest import mock
@@ -16,10 +17,11 @@ for path in (TEST_DIR, SCRIPT_DIR):
         sys.path.insert(0, str(path))
 
 from fixer_test_support import FixerTestCase, make_exec_result, make_fix_plan
-from harbor_fixer.validation import task_key
+from harbor_fixer.validation import ValidationError, task_key
 from harbor_fixer.verification.outcomes import aggregate_status, exec_failure_reason
 from harbor_fixer.verification.rerun import (
     GENERATED_MONITOR_FILES,
+    _terminate_process_group,
     map_run_records,
     run_command,
     wait_for_monitor,
@@ -227,35 +229,92 @@ class HarborFixerVerificationRuntimeTest(FixerTestCase):
         self.assertEqual(term_marker.read_text(), "term")
         self.assertFalse(verifier_backup.exists())
 
+    def test_run_command_rejects_invalid_commands_and_setup(self) -> None:
+        task_source = self.root / "tasks.txt"
+        task_source.write_text("task-a\n", encoding="utf-8")
+
+        cases = (
+            ('"', task_source, "invalid"),
+            ("   ", task_source, "blank"),
+            ("/missing/verification-command", task_source, "cannot launch"),
+            ("true", self.root / "missing-tasks.txt", "cannot prepare"),
+        )
+        for command, source, message in cases:
+            with self.subTest(command=command), self.assertRaisesRegex(
+                ValidationError, message
+            ):
+                run_command(
+                    command,
+                    self.root / "run",
+                    "claude-code",
+                    task_source_path=str(source),
+                    selection_path=str(self.root / "selection.json"),
+                    should_run=True,
+                    timeout_seconds=1,
+                )
+
+    def test_termination_kills_descendants_after_leader_exits(self) -> None:
+        process = mock.Mock(pid=123)
+        process.wait.return_value = 0
+        with (
+            mock.patch(
+                "harbor_fixer.verification.rerun._process_group_exists",
+                return_value=True,
+            ),
+            mock.patch(
+                "harbor_fixer.verification.rerun.time.monotonic",
+                side_effect=[0.0, 6.0],
+            ),
+            mock.patch("harbor_fixer.verification.rerun.os.killpg") as killpg,
+        ):
+            _terminate_process_group(process)
+
+        self.assertEqual(
+            killpg.call_args_list,
+            [mock.call(123, signal.SIGTERM), mock.call(123, signal.SIGKILL)],
+        )
+
     def test_wait_for_monitor_resets_generated_state(self) -> None:
         monitor_dir = self.root / "output" / "verification-monitor"
         monitor_dir.mkdir(parents=True)
         for name in GENERATED_MONITOR_FILES:
             (monitor_dir / name).write_text("stale\n", encoding="utf-8")
 
+        snapshots = iter(
+            [{"benchmark_status": "running"}, {"benchmark_status": "completed"}]
+        )
+
         def snapshot(*_args: object, startup_grace: int) -> tuple[dict, str]:
             self.assertFalse(
                 any((monitor_dir / name).exists() for name in GENERATED_MONITOR_FILES)
             )
             self.assertEqual(startup_grace, 1)
-            return {"benchmark_status": "completed"}, str(
+            return next(snapshots), str(
                 monitor_dir / "monitor-latest.json"
             )
 
-        with mock.patch(
-            "harbor_fixer.verification.rerun.generate_monitor_snapshot",
-            side_effect=snapshot,
+        with (
+            mock.patch(
+                "harbor_fixer.verification.rerun.generate_monitor_snapshot",
+                side_effect=snapshot,
+            ),
+            mock.patch(
+                "harbor_fixer.verification.rerun.time.monotonic",
+                side_effect=[0.0, 0.0, 0.75, 0.75],
+            ),
+            mock.patch("harbor_fixer.verification.rerun.time.sleep") as sleep,
         ):
             monitor, _, timed_out = wait_for_monitor(
                 self.root / "run",
                 self.root / "output",
                 "claude-code",
                 timeout_seconds=1,
-                poll_interval=0.1,
+                poll_interval=30,
             )
 
         self.assertEqual(monitor, {"benchmark_status": "completed"})
         self.assertFalse(timed_out)
+        sleep.assert_called_once_with(0.25)
 
     def test_verification_start_runs_directly_without_zellij(self) -> None:
         fake_bin = self.root / "bin"

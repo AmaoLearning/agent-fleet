@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..validation import task_key
+from ..validation import ValidationError, task_key
 from .run_state import generate_monitor_snapshot
 from .selection import sort_task_index
 
@@ -86,20 +86,33 @@ def _read_log_tail(stream: Any) -> str:
 
 
 def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
+    deadline = time.monotonic() + TERMINATION_GRACE_SECONDS
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
         pass
     try:
         process.wait(timeout=TERMINATION_GRACE_SECONDS)
-        return
     except subprocess.TimeoutExpired:
         pass
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+    while _process_group_exists(process.pid) and time.monotonic() < deadline:
+        time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+    if _process_group_exists(process.pid):
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
     process.wait()
+
+
+def _process_group_exists(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _cleanup_verifier_backups(run_dir: Path, agent: str) -> None:
@@ -132,7 +145,10 @@ def wait_for_monitor(
         latest = generate_monitor_snapshot(run_dir, output_dir, agent, startup_grace=1)
         if latest[0] is not None and monitor_is_terminal(latest[0]):
             return *latest, False
-        time.sleep(max(0.1, poll_interval))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(max(0.1, poll_interval), remaining))
     return *latest, True
 
 
@@ -158,15 +174,21 @@ def run_command(
             "stderr_summary": "",
             "skipped_reason": skipped_reason,
         }
-    argv = shlex.split(command)
+    try:
+        argv = shlex.split(command)
+    except ValueError as exc:
+        raise ValidationError(f"--rerun-command is invalid: {exc}") from None
     if not argv:
-        raise ValueError("--rerun-command must not be empty")
-    run_dir = run_dir.resolve()
-    run_dir.mkdir(parents=True, exist_ok=True)
-    task_source = Path(task_source_path).resolve()
-    task_text = task_source.read_text(encoding="utf-8")
-    task_file = run_dir / "tasks.txt"
-    task_file.write_text(task_text, encoding="utf-8")
+        raise ValidationError("--rerun-command must not be blank")
+    try:
+        run_dir = run_dir.resolve()
+        run_dir.mkdir(parents=True, exist_ok=True)
+        task_source = Path(task_source_path).resolve()
+        task_text = task_source.read_text(encoding="utf-8")
+        task_file = run_dir / "tasks.txt"
+        task_file.write_text(task_text, encoding="utf-8")
+    except OSError as exc:
+        raise ValidationError(f"cannot prepare verification rerun: {exc}") from None
     smoke_tasks = ",".join(
         task.strip() for task in task_text.splitlines() if task.strip()
     )
@@ -209,27 +231,30 @@ def run_command(
     started_at = _utc_now()
     started = time.monotonic()
     timed_out = False
-    with (
-        tempfile.TemporaryFile() as stdout_file,
-        tempfile.TemporaryFile() as stderr_file,
-    ):
-        process = subprocess.Popen(
-            argv,
-            cwd=run_dir,
-            stdout=stdout_file,
-            stderr=stderr_file,
-            env=env,
-            start_new_session=True,
-        )
-        try:
-            exit_code = process.wait(timeout=timeout_seconds)
-        except subprocess.TimeoutExpired:
-            _terminate_process_group(process)
-            _cleanup_verifier_backups(run_dir, agent)
-            exit_code = 124
-            timed_out = True
-        stdout_summary = _read_log_tail(stdout_file)
-        stderr_summary = _read_log_tail(stderr_file)
+    try:
+        with (
+            tempfile.TemporaryFile() as stdout_file,
+            tempfile.TemporaryFile() as stderr_file,
+        ):
+            process = subprocess.Popen(
+                argv,
+                cwd=run_dir,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                env=env,
+                start_new_session=True,
+            )
+            try:
+                exit_code = process.wait(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                _terminate_process_group(process)
+                _cleanup_verifier_backups(run_dir, agent)
+                exit_code = 124
+                timed_out = True
+            stdout_summary = _read_log_tail(stdout_file)
+            stderr_summary = _read_log_tail(stderr_file)
+    except OSError as exc:
+        raise ValidationError(f"cannot launch verification rerun: {exc}") from None
     if timed_out:
         stderr_summary = (
             stderr_summary

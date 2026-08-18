@@ -366,6 +366,30 @@ Execution writes `exec-input.json`, `execution-policy-decision.json`,
 blocks the complete plan set. A failed action skips the remainder of its plan;
 later plans continue. `--execution-timeout` applies to each command action.
 
+### Verify an executed plan
+
+Verification is code-only and samples at most two successfully executed tasks
+per plan by default:
+
+```bash
+python3 Agents/utils/common/Harbor/scripts/fixer.py \
+  --verify-only \
+  --fix-plan /path/to/fixer-output/fix-plan-latest.json \
+  --exec-result /path/to/fixer-output/exec-result-latest.json \
+  --verification-run-dir /path/to/new-harbor-run \
+  --output-dir /path/to/fixer-output
+```
+
+Use `--rerun-command` to launch the smoke run. The wrapper receives an ordered
+`TASK_SOURCE_FILE` and `HARBOR_FIXER_SMOKE_SELECTION`; it must preserve their
+line-to-task mapping. `--rerun-timeout` limits that command to 600 seconds by
+default and can also be set with `HARBOR_FIXER_RERUN_TIMEOUT`. Task identities
+come directly from Fix Plan v2.
+Verification writes
+`verification-smoke-selection.json`, `verification-smoke-tasks.txt`, and
+`verification-result-latest.json`. If the Fix Plan was generated without a
+local monitor, select `claude-code`, `opencode`, or `oracle` with `--agent`.
+
 ## More Details
 
 Architecture, script roles, task resolution, and full variable descriptions are in [STRUCT.md](./STRUCT.md).
