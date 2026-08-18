@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from harbor_pi_runtime import sleep_before_retry
+
 from . import PROMPT_VERSION, SCHEMA_VERSION, TAXONOMY_VERSION
 from .contract import validate_handover
 from .io import load_json, stable_hash, utc_now, write_json_atomic, write_text_atomic
@@ -654,6 +656,7 @@ def _run_task_analysis(
                 provenance["retry_reason"] = reason
                 timeout_seconds = _retry_timeout_seconds(reason, timeout_seconds)
                 prompt = build_dispatch_retry_prompt(base_prompt=base_prompt, block_reason=reason)
+                provenance["retry_delay_seconds"] = sleep_before_retry(attempt)
                 attempt += 1
                 continue
             provenance["retry_decision"] = "fallback"
@@ -695,6 +698,7 @@ def _run_task_analysis(
                     previous_json=task_report,
                     validation_errors=validation_errors,
                 )
+                provenance["retry_delay_seconds"] = sleep_before_retry(attempt)
                 attempt += 1
                 continue
             raw_task_path = raw_task_dir / f"{task_slug}.json"

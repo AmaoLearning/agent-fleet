@@ -125,7 +125,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--rerun-timeout",
         type=int,
-        default=os.environ.get("HARBOR_FIXER_RERUN_TIMEOUT", "600"),
+        default=os.environ.get("HARBOR_FIXER_RERUN_TIMEOUT", "3600"),
     )
     parser.add_argument(
         "--monitor-policy", choices=["auto", "on", "off"], default="auto"
@@ -225,15 +225,18 @@ def main() -> int:
             raise SystemExit("--verification-result is required with --report-only")
         if args.analyzer_output is None:
             raise SystemExit("--analyzer-output is required with --report-only")
-        result = run_report_from_paths(
-            args.verification_result,
-            args.analyzer_output,
-            args.output_dir,
-            PiAgentInvoker(args.output_dir, build_pi_config(args)),
-            baseline_run_dir=args.baseline_run_dir,
-            baseline_monitor_policy=args.baseline_monitor_policy,
-        )
-        return 0 if result["summary"]["status"] in {"success", "failed"} else 1
+        try:
+            result = run_report_from_paths(
+                args.verification_result,
+                args.analyzer_output,
+                args.output_dir,
+                PiAgentInvoker(args.output_dir, build_pi_config(args)),
+                baseline_run_dir=args.baseline_run_dir,
+                baseline_monitor_policy=args.baseline_monitor_policy,
+            )
+        except ValidationError as exc:
+            raise SystemExit(str(exc)) from None
+        return 0 if result["summary"]["status"] == "success" else 1
     if args.analyzer_output is None:
         raise SystemExit("--analyzer-output is required unless --exec-only is used")
     if args.prepare_only:

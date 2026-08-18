@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 def write_json(path: Path, payload: dict) -> None:
@@ -19,6 +20,11 @@ class FixerTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
+        retry_env = mock.patch.dict(
+            "os.environ", {"HARBOR_AGENT_RETRY_INITIAL_SECONDS": "0"}
+        )
+        retry_env.start()
+        self.addCleanup(retry_env.stop)
         self.root = Path(self.temp_dir.name)
 
 

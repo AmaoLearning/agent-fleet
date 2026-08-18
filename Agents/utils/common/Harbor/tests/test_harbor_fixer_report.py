@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -16,6 +18,7 @@ for path in (TEST_DIR, SCRIPT_DIR):
 from fixer_test_support import (  # noqa: E402
     ReportInvoker,
     make_fix_plan,
+    write_json,
     write_verification_fixture,
 )
 from harbor_fixer.reporter import (  # noqa: E402
@@ -135,6 +138,62 @@ class HarborFixerReportTest(unittest.TestCase):
             self.assertIn(expected, markdown)
         self.assertNotIn("secret-value", markdown)
         self.assertNotIn("Verifier aggregate status", markdown)
+
+    def test_cli_reports_fallback_and_validation_failures_without_tracebacks(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            analyzer_dir, _output_dir, verification_path = write_verification_fixture(
+                root_path
+            )
+            output_dir = root_path / "report-output"
+            base_command = [
+                sys.executable,
+                str(SCRIPT_DIR / "fixer.py"),
+                "--report-only",
+                "--analyzer-output",
+                str(analyzer_dir),
+                "--output-dir",
+                str(output_dir),
+            ]
+            environment = {
+                "PATH": "/usr/bin:/bin",
+                "HARBOR_FIXER_API_KEY": "fixture",
+                "HARBOR_AGENT_RETRY_INITIAL_SECONDS": "0",
+            }
+
+            fallback = subprocess.run(
+                [
+                    *base_command,
+                    "--verification-result",
+                    str(verification_path),
+                    "--pi-bin",
+                    "/bin/false",
+                    "--pi-model",
+                    "fixture-model",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+                env=environment,
+            )
+            self.assertEqual(fallback.returncode, 1, fallback.stderr)
+            payload = json.loads(
+                (output_dir / "fix-report-latest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(payload["summary"]["status"], "failed")
+
+            invalid_path = root_path / "invalid-verification.json"
+            write_json(invalid_path, {})
+            invalid = subprocess.run(
+                [*base_command, "--verification-result", str(invalid_path)],
+                text=True,
+                capture_output=True,
+                check=False,
+                env=environment,
+            )
+            self.assertNotEqual(invalid.returncode, 0)
+            self.assertIn("verification result schema_version must be 2", invalid.stderr)
+            self.assertNotIn("Traceback", invalid.stderr)
 
 
 if __name__ == "__main__":

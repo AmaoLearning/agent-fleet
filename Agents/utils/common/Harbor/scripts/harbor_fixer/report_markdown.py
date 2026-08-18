@@ -517,6 +517,8 @@ def render_human_report(
                     "Monitor available",
                     "Monitor timed out",
                     "Duration ms",
+                    "Stdout log",
+                    "Stderr log",
                 ],
                 [
                     [
@@ -526,6 +528,8 @@ def render_human_report(
                         rerun.get("monitor_available", "Unavailable"),
                         rerun.get("monitor_timed_out", "Unavailable"),
                         rerun.get("duration_ms", "Unavailable"),
+                        rerun.get("stdout_path", "Unavailable"),
+                        rerun.get("stderr_path", "Unavailable"),
                     ]
                 ],
             ),
@@ -713,4 +717,3 @@ def render_human_report(
     ]
     lines.append(_markdown_table(["Artifact", "Path"], artifact_rows))
     return "\n".join(lines).rstrip() + "\n"
-

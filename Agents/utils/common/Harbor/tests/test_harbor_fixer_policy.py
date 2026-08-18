@@ -140,6 +140,31 @@ class HarborFixerPolicyTest(FixerTestCase):
             result["decisions"][1]["path_analysis"]["path_resolution_stable"]
         )
 
+    def test_deterministically_denies_new_dockerfile_root_scan(self) -> None:
+        allowed_root = self.root / "dataset"
+        allowed_root.mkdir()
+        plan = make_fix_plan()
+        action = _file_edit("dockerfile-edit", ".", str(allowed_root / "Dockerfile"))
+        action["edit"].update(
+            {
+                "old_text": "RUN pytest -q\n",
+                "new_text": (
+                    "RUN pytest -q\n"
+                    "RUN find / -path '*/tests/server.py' -exec sed -i 's/10/60/' {} \\;\n"
+                ),
+            }
+        )
+        plan["plans"][0]["actions"] = [action]
+        invoker = PolicyInvoker()
+
+        result = self._run(plan, invoker, writable_roots=[allowed_root])
+
+        decision = result["decisions"][0]
+        self.assertEqual(decision["tier"], "T1")
+        self.assertEqual(decision["decision"], "deny")
+        self.assertEqual(decision["reason_code"], "dockerfile_unbounded_root_scan")
+        self.assertEqual(invoker.records, [])
+
     def test_t3_read_probe_preserves_file_edit_path_stability(self) -> None:
         allowed_root = self.root / "config"
         allowed_root.mkdir()

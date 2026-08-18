@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from harbor_pi_runtime import sleep_before_retry
+
 from .agent_invocation import AgentInvoker
 from .analyzer_inputs import resolve_analyzer_paths
 from .artifact_io import read_json, write_json, write_text
@@ -362,6 +364,8 @@ def generate_report_summary(
                     previous_output=raw,
                     validation_error=error,
                 )
+            if attempt < max_attempts:
+                sleep_before_retry(attempt)
     return _fallback_summary(summary_input, errors), raw_paths
 
 
@@ -540,6 +544,12 @@ def run_report(
                 str(target_context_path) if target_context_path.is_file() else ""
             ),
             "human_report_path": str(human_report_path),
+            "verification_rerun_stdout_path": verification_result["rerun"].get(
+                "stdout_path", ""
+            ),
+            "verification_rerun_stderr_path": verification_result["rerun"].get(
+                "stderr_path", ""
+            ),
             "raw_summary_output_paths": raw_paths,
         },
     }

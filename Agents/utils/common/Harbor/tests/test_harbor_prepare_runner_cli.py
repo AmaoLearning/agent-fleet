@@ -7,6 +7,7 @@ import stat
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest import mock
 
@@ -111,10 +112,13 @@ class RunnerValidationTest(unittest.TestCase):
         self.assertEqual((self.runtime / "status").read_text(), "done\n")
 
         self.harbor.unlink()
-        with mock.patch.dict(os.environ, self.environment):
+        stderr = io.StringIO()
+        with mock.patch.dict(os.environ, self.environment), redirect_stderr(stderr):
             self.assertEqual(MODULE.main(), 1)
         self.assertEqual((self.runtime / "status").read_text(), "failed\n")
         self.assertTrue((self.runtime / "workers.failed").is_file())
+        self.assertIn("runner executable is missing", stderr.getvalue())
+        self.assertIn("repository's ./scripts/setup.sh", stderr.getvalue())
 
 
 if __name__ == "__main__":

@@ -32,7 +32,7 @@ from .run_state import (
 )
 from .selection import build_smoke_selection, plan_exec_map, plan_tasks
 
-DEFAULT_RERUN_TIMEOUT_SECONDS = 600
+DEFAULT_RERUN_TIMEOUT_SECONDS = 3600
 
 
 def _prepare_verification_output(output_dir: Path) -> None:

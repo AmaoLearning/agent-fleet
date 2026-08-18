@@ -174,6 +174,18 @@ class HarborFixerVerificationRuntimeTest(FixerTestCase):
             )
 
         self.assertEqual(result["exit_code"], 0)
+        self.assertEqual(
+            result["stdout_path"],
+            str(
+                self.root
+                / "run"
+                / "runtime"
+                / "opencode"
+                / "verification-rerun.stdout.log"
+            ),
+        )
+        self.assertTrue(Path(result["stdout_path"]).is_file())
+        self.assertTrue(Path(result["stderr_path"]).is_file())
         call = popen.call_args.kwargs
         env = call["env"]
         self.assertNotIn("QUEUE_DIR", env)
@@ -195,7 +207,9 @@ class HarborFixerVerificationRuntimeTest(FixerTestCase):
         self.assertTrue(call["start_new_session"])
         self.assertTrue(call["stdout"].closed)
         self.assertTrue(call["stderr"].closed)
-        process.wait.assert_called_once_with(timeout=9)
+        process.wait.assert_called_once()
+        self.assertGreater(process.wait.call_args.kwargs["timeout"], 8.9)
+        self.assertLessEqual(process.wait.call_args.kwargs["timeout"], 9)
         self.assertEqual(
             (self.root / "run" / "tasks.txt").read_text(), "task-b\ntask-a\n"
         )

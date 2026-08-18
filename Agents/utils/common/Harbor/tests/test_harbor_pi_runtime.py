@@ -15,7 +15,12 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from harbor_analyzer.pi import dispatch_to_child
-from harbor_pi_runtime import load_final_json_from_event_stream, run_pi_json_process
+from harbor_pi_runtime import (
+    load_final_json_from_event_stream,
+    retry_delay_seconds,
+    run_pi_json_process,
+    sleep_before_retry,
+)
 from harbor_pi_runtime.process import models_config
 
 
@@ -100,6 +105,23 @@ class HarborPiRuntimeTest(unittest.TestCase):
         options.update(overrides)
         with mock.patch.dict(os.environ, {"FIXTURE_API_KEY": "fake"}, clear=True):
             return run_pi_json_process(**options)
+
+    def test_agent_retry_backoff_is_exponential_and_bounded(self) -> None:
+        sleeper = mock.Mock()
+        with mock.patch.dict(
+            os.environ,
+            {
+                "HARBOR_AGENT_RETRY_INITIAL_SECONDS": "2",
+                "HARBOR_AGENT_RETRY_MAX_SECONDS": "5",
+            },
+            clear=False,
+        ):
+            self.assertEqual(
+                [retry_delay_seconds(attempt) for attempt in range(1, 5)],
+                [2, 4, 5, 5],
+            )
+            self.assertEqual(sleep_before_retry(2, sleeper=sleeper), 4)
+        sleeper.assert_called_once_with(4)
 
     def test_models_config_preserves_explicit_and_omitted_auth_header(self) -> None:
         explicit = models_config(
