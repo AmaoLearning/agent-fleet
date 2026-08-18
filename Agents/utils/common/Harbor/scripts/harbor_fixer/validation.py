@@ -217,6 +217,12 @@ def validate_analyzer_manifest(payload: dict[str, Any]) -> None:
         name="analyzer artifact manifest",
     )
     require_string(payload.get("run_id"), "analyzer artifact manifest run_id")
+    if "monitor_path" in payload:
+        require_string(
+            payload["monitor_path"],
+            "analyzer artifact manifest monitor_path",
+            allow_empty=True,
+        )
     seen_handovers: set[str] = set()
     for index, item in enumerate(
         require_list(payload.get("publications"), "analyzer artifact manifest publications")

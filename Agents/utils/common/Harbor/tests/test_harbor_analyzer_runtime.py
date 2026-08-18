@@ -754,6 +754,7 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
                 run_dir=Path(root) / "run",
                 queue_dir=Path(root) / "run" / "queue",
                 output_dir=output_dir,
+                monitor_path=Path(root) / "monitor" / "monitor-latest.json",
             )
 
             _write_outputs(
@@ -769,6 +770,10 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
             self.assertTrue(manifest_path.is_file())
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(manifest["handover_id"], HANDOVER_ID)
+            self.assertEqual(
+                manifest["monitor_path"],
+                str(Path(root) / "monitor" / "monitor-latest.json"),
+            )
             publication_id = manifest["publication_id"]
             self.assertEqual(
                 manifest["artifacts"]["benchmark_report_path"],

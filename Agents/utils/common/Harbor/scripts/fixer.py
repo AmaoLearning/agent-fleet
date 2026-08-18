@@ -44,7 +44,11 @@ def build_pi_config(args: argparse.Namespace) -> PiInvocationConfig:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Harbor Fixer MVP CLI")
-    parser.add_argument("--analyzer-output", type=Path)
+    parser.add_argument(
+        "--analyzer-output",
+        type=Path,
+        default=os.environ.get("HARBOR_ANALYZER_OUTPUT_DIR"),
+    )
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--pi-bin", default=os.environ.get("HARBOR_FIXER_PI_BIN", "pi"))
     parser.add_argument(

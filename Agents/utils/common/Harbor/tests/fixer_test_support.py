@@ -44,6 +44,7 @@ def write_analyzer_fixture(
     root: Path,
     count: int = 1,
     *,
+    agent: str = "claude-code",
     handover_task_indexes: tuple[tuple[int, ...], ...] | None = None,
 ) -> Path:
     analyzer_dir = root / "analyzer"
@@ -128,12 +129,28 @@ def write_analyzer_fixture(
             "handover_id": publications[-1]["handover_id"],
             "publication_id": publications[-1]["publication_id"],
             "run_id": "run-1",
+            "monitor_path": str(root / "monitor" / "monitor-latest.json"),
             "generated_at": "2026-07-16T00:00:00Z",
             "artifacts": {
                 "env_infra_tasks_path": "/stale-copy/env-infra-tasks.json",
                 "fix_line_index_path": "/stale-copy/fix-line-index.jsonl",
             },
             "publications": publications,
+        },
+    )
+    queue_dir = root / "queue" / agent
+    write_json(
+        root / "monitor" / "monitor-latest.json",
+        {
+            "analyzer_handover": {
+                "agent": agent,
+                "run_id": "run-1",
+                "paths": {
+                    "run_dir": str(root),
+                    "queue_dir": str(queue_dir),
+                },
+            },
+            "user_notify": {"paths": {"queue_dir": str(queue_dir)}},
         },
     )
     return analyzer_dir

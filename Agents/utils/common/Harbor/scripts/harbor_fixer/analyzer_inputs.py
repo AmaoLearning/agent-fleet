@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,33 @@ def _path_component(value: Any, name: str) -> str:
     return text
 
 
+def _resolve_run_agent(
+    manifest: dict[str, Any], run_id: str
+) -> tuple[str, Path | None]:
+    recorded_path = str(manifest.get("monitor_path") or "")
+    monitor_dir = os.environ.get("HARBOR_MONITOR_DIR")
+    candidates = [
+        Path(path).expanduser()
+        for path in (
+            recorded_path,
+            str(Path(monitor_dir) / "monitor-latest.json") if monitor_dir else "",
+        )
+        if path
+    ]
+    for monitor_path in dict.fromkeys(candidates):
+        if not monitor_path.is_file():
+            continue
+        monitor = read_json(monitor_path)
+        handover = monitor.get("analyzer_handover")
+        if not isinstance(handover, dict) or handover.get("run_id") != run_id:
+            continue
+        agent = handover.get("agent")
+        if not agent:
+            continue
+        return _path_component(agent, "monitor agent"), monitor_path
+    return "", None
+
+
 def resolve_analyzer_paths(analyzer_output_path: Path) -> dict[str, Any]:
     """Resolve every handover's current publication from the Analyzer manifest."""
 
@@ -32,6 +60,7 @@ def resolve_analyzer_paths(analyzer_output_path: Path) -> dict[str, Any]:
     manifest_path = analyzer_root / "analyzer-artifacts-latest.json"
     manifest = read_json(manifest_path)
     validate_analyzer_manifest(manifest)
+    agent, monitor_path = _resolve_run_agent(manifest, manifest["run_id"])
 
     publications: list[dict[str, str]] = []
     for index, item in enumerate(manifest["publications"]):
@@ -64,7 +93,9 @@ def resolve_analyzer_paths(analyzer_output_path: Path) -> dict[str, Any]:
     return {
         "analyzer_root": analyzer_root,
         "manifest_path": manifest_path,
+        "monitor_path": monitor_path,
         "run_id": manifest["run_id"],
+        "agent": agent,
         "publications": publications,
     }
 
@@ -94,7 +125,9 @@ def build_task_inputs(
     source = {
         "analyzer_root": str(resolved["analyzer_root"]),
         "manifest_path": str(resolved["manifest_path"]),
+        "monitor_path": str(resolved["monitor_path"] or ""),
         "run_id": resolved["run_id"],
+        "agent": resolved["agent"],
         "publications": resolved["publications"],
     }
 

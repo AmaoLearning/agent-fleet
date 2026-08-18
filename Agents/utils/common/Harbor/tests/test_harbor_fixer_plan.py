@@ -45,8 +45,19 @@ from harbor_fixer.validation import (
 
 class HarborFixerPlanTest(FixerTestCase):
     def test_task_summary_retry_identity_and_contract(self) -> None:
-        analyzer_dir = write_analyzer_fixture(self.root)
-        task_input = build_task_inputs(analyzer_dir)[0][0]
+        analyzer_dir = write_analyzer_fixture(self.root, agent="opencode")
+        env_monitor_root = self.root / "environment-monitor"
+        write_analyzer_fixture(env_monitor_root, agent="claude-code")
+        with mock.patch.dict(
+            os.environ, {"HARBOR_MONITOR_DIR": str(env_monitor_root / "monitor")}
+        ):
+            task_inputs, source = build_task_inputs(analyzer_dir)
+        task_input = task_inputs[0]
+        self.assertEqual(source["agent"], "opencode")
+        self.assertEqual(
+            source["monitor_path"],
+            str(self.root / "monitor" / "monitor-latest.json"),
+        )
 
         invoker = SequenceInvoker(["not-json", json.dumps(task_summary_for(task_input))])
         summaries, errors = collect_task_summaries([task_input], invoker, self.root / "out")
@@ -59,6 +70,62 @@ class HarborFixerPlanTest(FixerTestCase):
         bad_summary["analyzer_alignment"]["final_class"] = "infra_fail"
         with self.assertRaises(ValidationError):
             validate_task_summary(bad_summary, expected_input=task_input)
+
+        monitor_path = Path(source["monitor_path"])
+        monitor = json.loads(monitor_path.read_text(encoding="utf-8"))
+        monitor["analyzer_handover"]["run_id"] = "other-run"
+        monitor_path.write_text(json.dumps(monitor), encoding="utf-8")
+        with mock.patch.dict(
+            os.environ, {"HARBOR_MONITOR_DIR": str(env_monitor_root / "monitor")}
+        ):
+            _, source = build_task_inputs(analyzer_dir)
+        self.assertEqual(source["agent"], "claude-code")
+        self.assertEqual(
+            source["monitor_path"],
+            str(env_monitor_root / "monitor" / "monitor-latest.json"),
+        )
+
+        fallback_root = self.root / "fallback-monitor"
+        fallback_analyzer = write_analyzer_fixture(fallback_root, agent="opencode")
+        fallback_manifest_path = fallback_analyzer / "analyzer-artifacts-latest.json"
+        fallback_manifest = json.loads(fallback_manifest_path.read_text(encoding="utf-8"))
+        fallback_manifest["monitor_path"] = "/missing/monitor-latest.json"
+        fallback_manifest_path.write_text(json.dumps(fallback_manifest), encoding="utf-8")
+        with mock.patch.dict(
+            os.environ, {"HARBOR_MONITOR_DIR": str(fallback_root / "monitor")}
+        ):
+            _, source = build_task_inputs(fallback_analyzer)
+        self.assertEqual(source["agent"], "opencode")
+
+        analyzer_without_monitor = write_analyzer_fixture(self.root / "no-monitor")
+        (analyzer_without_monitor.parent / "monitor" / "monitor-latest.json").unlink()
+        with mock.patch.dict(os.environ, {"HARBOR_MONITOR_DIR": ""}):
+            _, source = build_task_inputs(analyzer_without_monitor)
+        self.assertEqual(source["agent"], "")
+        self.assertEqual(source["monitor_path"], "")
+
+    def test_analyzer_output_uses_environment_when_cli_is_omitted(self) -> None:
+        analyzer_dir = write_analyzer_fixture(self.root)
+        output_dir = self.root / "prepared"
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT_DIR / "fixer.py"),
+                "--prepare-only",
+                "--output-dir",
+                str(output_dir),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+            env={
+                "PATH": "/usr/bin:/bin",
+                "HARBOR_ANALYZER_OUTPUT_DIR": str(analyzer_dir),
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        source = json.loads((output_dir / "source.json").read_text(encoding="utf-8"))
+        self.assertEqual(source["analyzer_root"], str(analyzer_dir.resolve()))
 
     def test_main_plan_contract_and_generation_error_ownership(self) -> None:
         task_input = build_task_inputs(write_analyzer_fixture(self.root))[0][0]
@@ -303,6 +370,7 @@ class HarborFixerPlanTest(FixerTestCase):
                 "HARBOR_FIXER_AGENT_TIMEOUT": "bad",
                 "HARBOR_FIXER_MAX_TASK_SUMMARY_CHARS": "1",
                 "HARBOR_FIXER_MAX_TASK_SUMMARIES_CHARS": "200000",
+                "HARBOR_ANALYZER_OUTPUT_DIR": str(self.root / "wrong-analyzer"),
             },
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -312,6 +380,8 @@ class HarborFixerPlanTest(FixerTestCase):
         validate_fix_plan_set(plan)
         main_input_path = cli_out / "main-agent-input.json"
         main_input = json.loads(main_input_path.read_text(encoding="utf-8"))
+        self.assertEqual(plan["source"]["agent"], "claude-code")
+        self.assertEqual(plan["source"], main_input["source"])
         for name in ("target_environment_artifact", "target_context_artifact"):
             artifact = main_input[name]
             self.assertEqual(
