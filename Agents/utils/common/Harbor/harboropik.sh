@@ -284,11 +284,6 @@ validate_environment_backend() {
           exit 1
         fi
       fi
-      if ! harbor_agent_is_oracle; then
-        echo "[ERROR] qz currently supports AGENT=oracle only: the claude-code/opencode delivery mechanisms (wheel server, hook bind mounts) cannot reach a qz sandbox" >&2
-        echo '[ERROR] agent runtime delivery for qz lands with the per-task template pipeline' >&2
-        exit 1
-      fi
       case "${TB_FORCE_BUILD:-0}" in
         0|false|no|"") ;;
         *)
@@ -297,6 +292,11 @@ validate_environment_backend() {
           ;;
       esac
       echo "[INFO] qz sandbox template: $QZ_SANDBOX_TEMPLATE"
+      if harbor_agent_is_claude_code; then
+        echo "[INFO] qz claude-code delivery: npm registry ${NPM_CONFIG_REGISTRY:-<unset>} | node dist ${TB_CC_NODE_DIST_URL:-<unset>}"
+      elif harbor_agent_is_opencode; then
+        echo "[INFO] qz opencode delivery: npm registry ${NPM_CONFIG_REGISTRY:-<unset>} | node dist ${TB_CC_NODE_DIST_URL:-<unset>}"
+      fi
       ;;
     *)
       echo "[ERROR] TB_ENVIRONMENT_TYPE must be docker, e2b, opensandbox, or qz, got: $TB_ENVIRONMENT_TYPE" >&2
@@ -328,6 +328,15 @@ ensure_environment_backend() {
       exit 1
     fi
     echo "[INFO] using E2B environment; skip host Docker daemon and Docker Hub preflight"
+  fi
+  if [[ "$TB_ENVIRONMENT_TYPE" == "qz" ]]; then
+    if ! harbor_agent_is_oracle && [[ "$OPIK_MODE" != "remote" ]]; then
+      # Same constraint as e2b: a local Opik stack needs the host Docker
+      # daemon, which qz runs skip entirely.
+      echo "[ERROR] OPIK_MODE=remote is required when TB_ENVIRONMENT_TYPE=qz" >&2
+      exit 1
+    fi
+    echo "[INFO] using qz sandbox environment; skip host Docker daemon and Docker Hub preflight"
   fi
 }
 
@@ -1172,7 +1181,9 @@ PY
   if [[ "$mounts_json" != "[]" ]]; then
     cmd+=( --mounts-json "$mounts_json" )
   fi
-  if [[ "$TB_ENVIRONMENT_TYPE" == "docker" || "$TB_ENVIRONMENT_TYPE" == "e2b" || "$TB_ENVIRONMENT_TYPE" == "opensandbox" ]] && verifier_uv_bin_ready; then
+  if [[ "$TB_ENVIRONMENT_TYPE" == "docker" || "$TB_ENVIRONMENT_TYPE" == "e2b" \
+    || "$TB_ENVIRONMENT_TYPE" == "opensandbox" || "$TB_ENVIRONMENT_TYPE" == "qz" ]] \
+    && verifier_uv_bin_ready; then
     local verifier_uv_path_prefix
     verifier_uv_path_prefix="/root/.local/bin:/home/oai/.local/bin:/home/agent/.local/bin:/home/ubuntu/.local/bin"
     if [[ -n "${TB_VERIFIER_UV_HOME:-}" ]]; then
@@ -1202,6 +1213,9 @@ PY
   fi
   if [[ -n "${NPM_CONFIG_REGISTRY:-}" ]]; then
     cmd+=( --ae "NPM_CONFIG_REGISTRY=$NPM_CONFIG_REGISTRY" --ve "NPM_CONFIG_REGISTRY=$NPM_CONFIG_REGISTRY" )
+  fi
+  if [[ -n "${TB_CC_NODE_DIST_URL:-}" ]]; then
+    cmd+=( --ae "CC_NODE_DIST_URL=$TB_CC_NODE_DIST_URL" )
   fi
   if [[ -n "${GO111MODULE:-}" ]]; then
     cmd+=( --ae "GO111MODULE=$GO111MODULE" --ve "GO111MODULE=$GO111MODULE" )
@@ -1501,7 +1515,8 @@ PY
     if [[ "$mounts_json" != "[]" ]]; then
       cmd+=( --mounts-json "$mounts_json" )
     fi
-    if [[ "$TB_ENVIRONMENT_TYPE" == "docker" || "$TB_ENVIRONMENT_TYPE" == "e2b" || "$TB_ENVIRONMENT_TYPE" == "opensandbox" ]] \
+    if [[ "$TB_ENVIRONMENT_TYPE" == "docker" || "$TB_ENVIRONMENT_TYPE" == "e2b" \
+      || "$TB_ENVIRONMENT_TYPE" == "opensandbox" || "$TB_ENVIRONMENT_TYPE" == "qz" ]] \
       && verifier_uv_bin_ready; then
       cmd+=(
         --ve "PATH=/root/.local/bin:/home/oai/.local/bin:/home/agent/.local/bin:/home/ubuntu/.local/bin:$TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -1532,6 +1547,9 @@ PY
     fi
     if [[ -n "${NPM_CONFIG_REGISTRY:-}" ]]; then
       cmd+=( --ae "NPM_CONFIG_REGISTRY=$NPM_CONFIG_REGISTRY" --ve "NPM_CONFIG_REGISTRY=$NPM_CONFIG_REGISTRY" )
+    fi
+    if [[ -n "${TB_CC_NODE_DIST_URL:-}" ]]; then
+      cmd+=( --ae "CC_NODE_DIST_URL=$TB_CC_NODE_DIST_URL" )
     fi
     if [[ -n "${GO111MODULE:-}" ]]; then
       cmd+=( --ae "GO111MODULE=$GO111MODULE" --ve "GO111MODULE=$GO111MODULE" )

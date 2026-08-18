@@ -38,6 +38,15 @@ RL_ENVIRONMENT_TYPE=qz
 SBX_API_KEY=sbx_xxx                # from step 1
 QZ_SANDBOX_TEMPLATE=your_template  # Template name (or ID) from step 2
 # QZ_SANDBOX_TIMEOUT_SEC=14400     # max sandbox lifetime; 4h is the platform cap
+# NPM_CONFIG_REGISTRY=https://registry.npmjs.org
+# QZ_NODE_DIST_URL=https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-x64.tar.gz
+```
+
+Then run the normal Agent Fleet setup. It reads the saved qz backend before
+checking prerequisites, so a qz runner host does not need Docker:
+
+```bash
+bash scripts/setup.sh
 ```
 
 If a Harbor runner environment was installed before this provider existed,
@@ -62,11 +71,81 @@ TB_N_CONCURRENT=1 \
 bash start.sh
 ```
 
-Scale up the worker count after a single task passes. The launcher currently
-accepts `AGENT=oracle` only on qz: the claude-code/opencode delivery
-mechanisms (runner-local wheel server, hook bind mounts) cannot reach a qz
-sandbox, and agent runtime delivery lands together with the per-task template
-pipeline.
+Scale up the worker count after a single task passes. The launcher accepts
+`AGENT=oracle` (reference solutions), `AGENT=claude-code`, and
+`AGENT=opencode` (real agents) on qz.
+
+The same OpenCode run is available through the repository-level fleet entry
+point; the backend, key, and current Template come from `config.local.env`:
+
+```bash
+./scripts/run_fleet.sh \
+  --taskset /absolute/path/to/Harbor-Dataset \
+  --task 0 \
+  --agent opencode \
+  --workers 1
+```
+
+## Real agents
+
+qz does not expose Notebook-host bind mounts to a Sandbox. Real-agent setup
+therefore installs its runtime inside the Sandbox instead of depending on a
+mounted runner cache or inbound access to the runner's temporary HTTP server.
+Public endpoints can be reachable, but that availability is not treated as a
+platform contract. The qz defaults use npmmirror; `NPM_CONFIG_REGISTRY` and
+`QZ_NODE_DIST_URL` can select npmjs/nodejs.org or private sources explicitly.
+
+"Host bind mount" here means mounting a path from the runner Notebook into the
+Sandbox. It does not describe or rule out E2B-managed storage capabilities.
+
+### claude-code (via the launcher)
+
+`AGENT=claude-code` works with the normal launcher flow (`bash start.sh`, same
+variables as above plus the model gateway settings from `config.local.env`).
+Under the hood:
+
+- Node comes from a dist tarball (`TB_CC_NODE_DIST_URL`, resolved from
+  `QZ_NODE_DIST_URL` or the npmmirror default) downloaded and unpacked inside
+  the Sandbox without depending on its package manager;
+- `@anthropic-ai/claude-code` (repo-pinned `CLAUDE_CODE_VERSION`) installs
+  from `NPM_CONFIG_REGISTRY`, which defaults to npmmirror on qz;
+- the agent talks to the SII model gateway through `ANTHROPIC_BASE_URL` /
+  `ANTHROPIC_AUTH_TOKEN` (derived from `BASE_URL` / `API_KEY`); the gateway
+  natively serves the Anthropic `/v1/messages` API;
+- realtime Opik hooks stay disabled (they need host bind mounts), so use
+  `TRACE_TO_OPIK=false` or a remote Opik (`OPIK_MODE=remote` is required for
+  non-oracle qz runs, same as e2b).
+
+### opencode (via the launcher)
+
+`AGENT=opencode` uses the same launcher, qz Template, and configurable runtime
+sources as Claude Code. The generated custom-provider config continues to
+route the agent through `BASE_URL` / `API_KEY`.
+
+Start with `TRACE_TO_OPIK=false`. Traced OpenCode runs require remote Opik and
+a sandbox-reachable Python package mirror for the hook dependencies; they do
+not use runner-local bind mounts or the runner-local wheel HTTP server.
+
+### pi (direct `harbor run`)
+
+`qz_pi_agent.py` is a Pi subclass with the same configurable in-Sandbox
+runtime sources and a gateway provider injected via `models.json`; the
+launcher does not manage pi, so drive Harbor's CLI directly from the runner
+environment:
+
+```bash
+source Agents/utils/common/Harbor/env.sh
+
+SBX_API_KEY=sbx_xxx QZ_SANDBOX_TEMPLATE=your_template \
+BASE_URL=<gateway-url> API_KEY=<gateway-key> \
+PYTHONPATH=Agents/utils/common/Harbor \
+"$HARBOR_CLI_BIN" run -p <task-dir> -a qz_pi_agent:QzPi -m <model> \
+  -e "qz_e2b_sandbox:QzSandboxEnvironment" -n 1 -o jobs -y
+```
+
+The `smoke/hello_sandbox` task in this directory is a minimal fixture for
+exactly this loop (oracle reward 1.0 in ~6 s, pi reward 1.0 in ~47 s against
+`glm` via the SII gateway).
 
 ## Limitations
 

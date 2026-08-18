@@ -112,7 +112,10 @@ def _patch_trial_decorator_with_tb_tags() -> None:
 
 
 def main() -> None:
-    if os.environ.get("TB_ENVIRONMENT_TYPE", "docker").strip().lower() == "e2b":
+    if os.environ.get("TB_ENVIRONMENT_TYPE", "docker").strip().lower() in {
+        "e2b",
+        "qz",
+    }:
         from e2b_runtime import patch_e2b_runtime_from_env
 
         patch_e2b_runtime_from_env()

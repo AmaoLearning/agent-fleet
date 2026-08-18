@@ -31,6 +31,13 @@ printf 'RUN_ID=%s\\n' "${RUN_ID-}"
 printf 'BASE_URL=%s\\n' "${BASE_URL-}"
 printf 'API_KEY=%s\\n' "${API_KEY-}"
 printf 'MODEL=%s\\n' "${MODEL-}"
+printf 'RL_ENVIRONMENT_TYPE=%s\\n' "${RL_ENVIRONMENT_TYPE-}"
+printf 'QZ_SANDBOX_TEMPLATE=%s\\n' "${QZ_SANDBOX_TEMPLATE-}"
+if [[ -n "${SBX_API_KEY-}" ]]; then
+  printf 'SBX_API_KEY_SET=1\\n'
+else
+  printf 'SBX_API_KEY_SET=0\\n'
+fi
 exit "${STUB_EXIT:-0}"
 """,
             encoding="utf-8",
@@ -94,6 +101,10 @@ exit "${STUB_EXIT:-0}"
             "TB_MODEL",
             "TRACE_TO_OPIK",
             "OPIK_URL",
+            "RL_ENVIRONMENT_TYPE",
+            "TB_ENVIRONMENT_TYPE",
+            "QZ_SANDBOX_TEMPLATE",
+            "SBX_API_KEY",
         ):
             env.pop(name, None)
         env["REPO_DIR"] = str(self.repo)
@@ -133,6 +144,35 @@ exit "${STUB_EXIT:-0}"
         self.assertIn("DATASET_NAME=auto", result.stdout)
         self.assertIn(f"DATASET_PATH={self.root}/./tasks", result.stdout)
         self.assertIn(f"TB_PATH={self.root}/./tasks", result.stdout)
+
+    def test_qz_opencode_config_reaches_harbor_entrypoint(self):
+        (self.repo / "config.local.env").write_text(
+            "BASE_URL=https://gateway.example.invalid\n"
+            "API_KEY=fake-runner-key\n"
+            "MODEL=test-model\n"
+            "TRACE_TO_OPIK=false\n"
+            "RL_ENVIRONMENT_TYPE=qz\n"
+            "SBX_API_KEY=sbx_fake_qz_key\n"
+            "QZ_SANDBOX_TEMPLATE=current_template\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_fleet(
+            "--taskset",
+            "terminalbench21",
+            "--agent",
+            "opencode",
+            "--workers",
+            "1",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("AGENT=opencode", result.stdout)
+        self.assertIn("TB_AGENT=opencode", result.stdout)
+        self.assertIn("RL_ENVIRONMENT_TYPE=qz", result.stdout)
+        self.assertIn("QZ_SANDBOX_TEMPLATE=current_template", result.stdout)
+        self.assertIn("SBX_API_KEY_SET=1", result.stdout)
+        self.assertNotIn("sbx_fake_qz_key", result.stdout)
 
     def test_pinchbench_routes_to_openclaw_runner(self):
         result = self.run_fleet(

@@ -107,7 +107,7 @@ if [[ "${1:-}" == "clone" ]]; then
 fi
 """,
         )
-        for command in ("curl", "jq"):
+        for command in ("curl", "flock", "jq", "setsid"):
             self.write_executable(command, "#!/usr/bin/env bash\nexit 0\n")
         self.write_executable("uv", "#!/usr/bin/env bash\necho 'uv 0.11.28'\n")
         self.write_executable("uvx", "#!/usr/bin/env bash\necho 'uvx 0.11.28'\n")
@@ -121,6 +121,9 @@ fi
             "docker",
             """#!/usr/bin/env bash
 if [[ "${1:-}" == "compose" && "${2:-}" == "version" ]]; then
+  if [[ "${SETUP_TEST_DOCKER_COMPOSE_DENY:-0}" == "1" ]]; then
+    exit 1
+  fi
   echo "2.30.0"
 fi
 if [[ "${SETUP_TEST_DOCKER_DENY:-0}" == "1" && "${1:-}" == "ps" ]]; then
@@ -217,6 +220,9 @@ exit 0
             "CLAUDE_WHEEL_DIR_SOURCE",
             "TB_CC_CLAUDE_TGZ_SOURCE",
             "TB_CC_PY_WHEEL_DIR_SOURCE",
+            "RL_ENVIRONMENT_TYPE",
+            "TB_ENVIRONMENT_TYPE",
+            "AGENT_FLEET_REQUIRE_DOCKER",
         ):
             env.pop(name, None)
         env.update(
@@ -341,6 +347,96 @@ exit 0
         self.assertNotEqual(denied.returncode, 0)
         self.assertIn("cannot access the Docker daemon", denied.stderr)
         self.assertNotIn("Environment setup complete", denied.stdout)
+
+    def test_setup_loads_saved_qz_backend_before_docker_prerequisites(self):
+        (self.repo / "config.local.env").write_text(
+            "BASE_URL=https://existing.example.invalid\n"
+            "API_KEY=fake-existing-secret\n"
+            "MODEL=existing-model\n"
+            "TRACE_TO_OPIK=false\n"
+            "RL_ENVIRONMENT_TYPE=qz\n",
+            encoding="utf-8",
+        )
+        env = self.setup_env()
+        env.update(
+            {
+                "SETUP_TEST_DOCKER_COMPOSE_DENY": "1",
+                "SETUP_TEST_DOCKER_DENY": "1",
+            }
+        )
+
+        result = subprocess.run(
+            [str(SETUP)],
+            cwd=self.repo,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "configured sandbox backend does not need it",
+            result.stdout,
+        )
+        self.assertNotIn("Docker Compose v2 is required", result.stderr)
+
+    def test_setup_loads_saved_docker_override_before_prerequisites(self):
+        (self.repo / "config.local.env").write_text(
+            "BASE_URL=https://existing.example.invalid\n"
+            "API_KEY=fake-existing-secret\n"
+            "MODEL=existing-model\n"
+            "RL_ENVIRONMENT_TYPE=opensandbox\n"
+            "AGENT_FLEET_REQUIRE_DOCKER=0\n",
+            encoding="utf-8",
+        )
+        env = self.setup_env()
+        env.update(
+            {
+                "SETUP_TEST_DOCKER_COMPOSE_DENY": "1",
+                "SETUP_TEST_DOCKER_DENY": "1",
+            }
+        )
+
+        result = subprocess.run(
+            [str(SETUP)],
+            cwd=self.repo,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "configured sandbox backend does not need it",
+            result.stdout,
+        )
+        self.assertNotIn("Docker Compose v2 is required", result.stderr)
+
+    def test_setup_saved_docker_override_can_force_prerequisite(self):
+        (self.repo / "config.local.env").write_text(
+            "BASE_URL=https://existing.example.invalid\n"
+            "API_KEY=fake-existing-secret\n"
+            "MODEL=existing-model\n"
+            "RL_ENVIRONMENT_TYPE=qz\n"
+            "AGENT_FLEET_REQUIRE_DOCKER=1\n",
+            encoding="utf-8",
+        )
+        env = self.setup_env()
+        env["SETUP_TEST_DOCKER_COMPOSE_DENY"] = "1"
+
+        result = subprocess.run(
+            [str(SETUP)],
+            cwd=self.repo,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Docker Compose v2 is required", result.stderr)
 
     def test_setup_reuses_existing_config_and_defaults_opik_off(self):
         original = (

@@ -322,17 +322,44 @@ agent_fleet_check_commands() {
   return "$failed"
 }
 
+agent_fleet_docker_required() {
+  # qz and e2b run every task off-host and build nothing locally (qz templates
+  # are platform-registered, e2b builds on the remote service), so their
+  # runner hosts (for example SII notebooks) may not ship a docker client at
+  # all. Docker stays required everywhere else, including opensandbox, whose
+  # task images are built and pushed by the runner's local daemon.
+  # AGENT_FLEET_REQUIRE_DOCKER forces either behavior explicitly (for example
+  # 0 for opensandbox runs that only use a prebuilt
+  # HARBOR_OPENSANDBOX_IMAGE_REF).
+  case "${AGENT_FLEET_REQUIRE_DOCKER:-}" in
+    0|false|no) return 1 ;;
+    1|true|yes) return 0 ;;
+  esac
+  # TB_ENVIRONMENT_TYPE is the effective per-run override used by env.sh;
+  # RL_ENVIRONMENT_TYPE is its fallback.
+  case "${TB_ENVIRONMENT_TYPE:-${RL_ENVIRONMENT_TYPE:-docker}}" in
+    qz|e2b) return 1 ;;
+  esac
+  return 0
+}
+
 agent_fleet_check_core() {
-  local failed=0
+  local failed=0 docker_required=0
   agent_fleet_check_commands "required" \
-    bash git curl jq docker python3 openssl awk sed grep find tar date mktemp nohup env \
+    bash git curl jq python3 openssl awk sed grep find tar date mktemp nohup env \
     chmod cp dirname mkdir mv rm uname \
     || failed=1
+  if agent_fleet_docker_required; then
+    docker_required=1
+    agent_fleet_check_commands "required" docker || failed=1
+  elif ! command -v docker >/dev/null 2>&1; then
+    agent_fleet_prereq_info "docker not found; continuing because the configured sandbox backend does not need it"
+  fi
   if command -v python3 >/dev/null 2>&1 && ! agent_fleet_python_version_ok; then
     agent_fleet_prereq_error "python3 must be >=3.9: $(python3 --version 2>&1)"
     failed=1
   fi
-  if command -v docker >/dev/null 2>&1; then
+  if (( docker_required )) && command -v docker >/dev/null 2>&1; then
     if docker compose version >/dev/null 2>&1; then
       agent_fleet_prereq_ok "docker compose: $(docker compose version --short 2>/dev/null || docker compose version)"
     else
