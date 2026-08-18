@@ -116,10 +116,14 @@ class E2BRuntimeTest(unittest.TestCase):
         fake_e2b = types.SimpleNamespace(AsyncSandbox=FakeAsyncSandbox)
         with patch.dict(sys.modules, {"e2b": fake_e2b}), patch.dict(
             os.environ,
-            {
-                "TB_ENVIRONMENT_TYPE": "e2b",
-                "TB_E2B_SANDBOX_TIMEOUT_SEC": "3600",
-            },
+            {"TB_ENVIRONMENT_TYPE": "qz", "TB_E2B_SANDBOX_TIMEOUT_SEC": "3600"},
+        ):
+            # The cap is E2B-specific; a qz worker inheriting the variable on
+            # a mixed host must keep its own timeout handling.
+            self.assertFalse(MODULE.patch_e2b_sandbox_timeout_from_env())
+        with patch.dict(sys.modules, {"e2b": fake_e2b}), patch.dict(
+            os.environ,
+            {"TB_ENVIRONMENT_TYPE": "e2b", "TB_E2B_SANDBOX_TIMEOUT_SEC": "3600"},
         ):
             self.assertTrue(MODULE.patch_e2b_sandbox_timeout_from_env())
             result = asyncio.run(FakeAsyncSandbox.create(timeout=86_400))
@@ -321,6 +325,36 @@ class E2BRuntimeTest(unittest.TestCase):
                 "root",
             ),
         )
+
+    def test_verifier_tools_patch_arms_for_qz_but_not_docker(self) -> None:
+        class FakeE2BEnvironment:
+            async def start(self, force_build: bool):
+                return "started"
+
+            async def exec(self, command, user=None):
+                return types.SimpleNamespace(return_code=0, stdout="", stderr="")
+
+            async def upload_dir(self, source: Path, target: str):
+                return None
+
+        modules = fake_runtime_modules(FakeE2BEnvironment, type("FakeTemplate", (), {}))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir)
+            for name in ("uv", "uvx", "curl"):
+                (source / name).write_text(name)
+
+            common_env = {
+                "TB_E2B_VERIFIER_UV_SOURCE": str(source),
+                "TB_VERIFIER_UV_BIN_DIR_MOUNT_PATH": "/opt/test-uv/bin",
+            }
+            with patch.dict(sys.modules, modules), patch.dict(
+                os.environ, {**common_env, "TB_ENVIRONMENT_TYPE": "qz"}
+            ):
+                self.assertTrue(MODULE.patch_e2b_verifier_tools_from_env())
+            with patch.dict(
+                os.environ, {**common_env, "TB_ENVIRONMENT_TYPE": "docker"}
+            ):
+                self.assertFalse(MODULE.patch_e2b_verifier_tools_from_env())
 
 if __name__ == "__main__":
     unittest.main()

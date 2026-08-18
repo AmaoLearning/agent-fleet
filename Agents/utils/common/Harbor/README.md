@@ -3,7 +3,8 @@
 This directory contains the shared Harbor runner for Claude Code and OpenCode.
 
 For YiCloud OpenSandbox, start with the
-[OpenSandbox quick start](OPENSANDBOX_README.md).
+[OpenSandbox quick start](OPENSANDBOX_README.md). For qz (SII Inspire)
+sandboxes, start with the [qz Sandbox quick start](QZ_SANDBOX_README.md).
 
 The normal workflow is:
 

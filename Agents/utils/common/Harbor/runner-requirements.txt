@@ -1,7 +1,10 @@
 # Direct dependencies of the Harbor runner control environment.
 # Keep this list small; task-container dependencies are prepared separately.
 harbor==0.18.0
+# e2b serves both the cloud E2B backend and the qz provider; dockerfile-parse
+# completes the harbor[e2b] extra.
 e2b==2.32.1
+dockerfile-parse==2.0.1
 opik==2.1.32
 pip==25.2
 s3cmd==2.4.0

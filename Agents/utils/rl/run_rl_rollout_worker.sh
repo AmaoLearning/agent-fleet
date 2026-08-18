@@ -355,6 +355,8 @@ while true; do
       export TB_ENVIRONMENT_SPEC="$HARBOR_E2B_PREBUILT_ENVIRONMENT_SPEC"
     elif [[ "$environment_type" == "opensandbox" ]]; then
       export TB_ENVIRONMENT_SPEC="yicloud_opensandbox:YiCloudOpenSandboxEnvironment"
+    elif [[ "$environment_type" == "qz" ]]; then
+      export TB_ENVIRONMENT_SPEC="qz_e2b_sandbox:QzSandboxEnvironment"
     elif [[ "$environment_type" != "${RL_ENVIRONMENT_TYPE:-docker}" ]]; then
       # A per-request backend override must not inherit the listener's default
       # environment import path.

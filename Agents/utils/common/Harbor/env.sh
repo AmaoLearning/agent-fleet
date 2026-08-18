@@ -368,6 +368,22 @@ export YICLOUD_SANDBOX_S3_DIRECTORY_COMPRESSION
 export YICLOUD_SANDBOX_S3CMD
 export YICLOUD_SANDBOX_CPU YICLOUD_SANDBOX_MEMORY
 export YICLOUD_SANDBOX_LIFECYCLE_MINUTES
+
+# qz (SII Inspire) E2B-compatible sandbox connection. Values usually come from
+# config.local.env; re-export here so shell-provided values survive into
+# worker panes. The qz adapter maps SBX_*/QZ_SANDBOX_* onto the official e2b
+# SDK. Those qz values override ambient cloud-E2B connection and transport
+# settings inside a qz process; E2B_API_KEY remains a fallback only when it
+# contains an sbx_-prefixed qz key.
+QZ_SANDBOX_API_KEY="${QZ_SANDBOX_API_KEY:-}"
+QZ_SANDBOX_API_URL="${QZ_SANDBOX_API_URL:-}"
+QZ_SANDBOX_TEMPLATE="${QZ_SANDBOX_TEMPLATE:-}"
+QZ_SANDBOX_TIMEOUT_SEC="${QZ_SANDBOX_TIMEOUT_SEC:-}"
+SBX_API_KEY="${SBX_API_KEY:-}"
+SBX_API_URL="${SBX_API_URL:-}"
+export QZ_SANDBOX_API_KEY QZ_SANDBOX_API_URL QZ_SANDBOX_TEMPLATE
+export QZ_SANDBOX_TIMEOUT_SEC SBX_API_KEY SBX_API_URL
+
 UV_INDEX_URL="${UV_INDEX_URL:-$PIP_INDEX_URL}"
 UV_DEFAULT_INDEX="${UV_DEFAULT_INDEX:-$UV_INDEX_URL}"
 
@@ -482,13 +498,17 @@ RL_ENABLE_SUMMARIZE="${RL_ENABLE_SUMMARIZE:-false}"
 
 # Harbor accepts either a built-in environment name or a module:Class import
 # path. YiCloud uses its own OpenAPI SDK and OGW signing, so it is loaded as a
-# provider adapter without patching the PyPI Harbor package.
+# provider adapter without patching the PyPI Harbor package. qz (SII Inspire)
+# exposes an E2B-compatible control plane, so its adapter reuses Harbor's E2B
+# environment with qz connection settings mapped onto the official e2b SDK.
 TB_ENVIRONMENT_TYPE="${TB_ENVIRONMENT_TYPE:-$RL_ENVIRONMENT_TYPE}"
 if [[ -z "${TB_ENVIRONMENT_SPEC:-}" ]]; then
   if [[ "$TB_ENVIRONMENT_TYPE" == "opensandbox" ]]; then
     TB_ENVIRONMENT_SPEC="yicloud_opensandbox:YiCloudOpenSandboxEnvironment"
   elif [[ "$TB_ENVIRONMENT_TYPE" == "e2b" && -n "$TB_E2B_PREBUILT_TEMPLATE" ]]; then
     TB_ENVIRONMENT_SPEC="$HARBOR_E2B_PREBUILT_ENVIRONMENT_SPEC"
+  elif [[ "$TB_ENVIRONMENT_TYPE" == "qz" ]]; then
+    TB_ENVIRONMENT_SPEC="qz_e2b_sandbox:QzSandboxEnvironment"
   else
     TB_ENVIRONMENT_SPEC="$TB_ENVIRONMENT_TYPE"
   fi
@@ -1229,9 +1249,10 @@ harbor_write_effective_wheel_source() {
 }
 
 harbor_apply_effective_wheel_source() {
-  if [[ "$TB_ENVIRONMENT_TYPE" == "e2b" ]]; then
-    # Public E2B Sandboxes cannot consume a runner-local HTTP server. Leave
-    # these unset so agent installation uses a Sandbox-reachable registry.
+  if [[ "$TB_ENVIRONMENT_TYPE" == "e2b" || "$TB_ENVIRONMENT_TYPE" == "qz" ]]; then
+    # Public E2B Sandboxes cannot consume a runner-local HTTP server, and qz
+    # sandboxes have no route back to the runner host either. Leave these
+    # unset so agent installation uses a Sandbox-reachable registry.
     unset TB_LOCAL_WHEEL_SERVER_URL TB_LOCAL_CLAUDE_TGZ_URL
     return 0
   fi

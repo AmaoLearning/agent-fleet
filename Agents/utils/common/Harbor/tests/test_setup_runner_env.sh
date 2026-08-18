@@ -20,6 +20,10 @@ elif [[ "\${3:-}" == "pip" ]]; then
   printf '%s\n' '25.2'
 elif [[ "\${3:-}" == "s3cmd" ]]; then
   printf '%s\n' '2.4.0'
+elif [[ "\${3:-}" == "e2b" ]]; then
+  printf '%s\n' '2.32.1'
+elif [[ "\${3:-}" == "dockerfile-parse" ]]; then
+  printf '%s\n' '2.0.1'
 elif [[ "\$#" == 2 ]]; then
   printf '%s\n' '3.12.13'
 else

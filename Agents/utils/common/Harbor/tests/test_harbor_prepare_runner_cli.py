@@ -63,6 +63,7 @@ class RunnerValidationTest(unittest.TestCase):
             f"[ \"$#\" = 2 ] && echo {python_version} && exit 0\n"
             f"[ \"$3\" = harbor ] && echo {harbor_version} && exit 0\n"
             "[ \"$3\" = e2b ] && echo 2.32.1 && exit 0\n"
+            "[ \"$3\" = dockerfile-parse ] && echo 2.0.1 && exit 0\n"
             "[ \"$3\" = opik ] && echo 2.1.32 && exit 0\n"
             "[ \"$3\" = pip ] && echo 25.2 && exit 0\n"
             "[ \"$3\" = s3cmd ] && echo 2.4.0 && exit 0\n"
@@ -76,6 +77,7 @@ class RunnerValidationTest(unittest.TestCase):
             [
                 ("harbor", "0.18.0"),
                 ("e2b", "2.32.1"),
+                ("dockerfile-parse", "2.0.1"),
                 ("opik", "2.1.32"),
                 ("pip", "25.2"),
                 ("s3cmd", "2.4.0"),

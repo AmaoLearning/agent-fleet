@@ -82,27 +82,30 @@ def _environment_type(request: dict[str, Any]) -> str:
         DEFAULT_ENVIRONMENT_TYPE,
         "docker",
     ).lower()
-    if value not in {"docker", "e2b", "opensandbox"}:
+    if value not in {"docker", "e2b", "opensandbox", "qz"}:
         raise ValueError(
-            "environment_type must be docker, e2b, or opensandbox, "
+            "environment_type must be docker, e2b, opensandbox, or qz, "
             f"got: {value}"
         )
     return value
 
 
 def _reject_e2b_credentials(request: dict[str, Any]) -> None:
-    if _contains_key(request, "e2b_api_key"):
-        raise ValueError(
-            "E2B_API_KEY must be supplied by the agent-fleet host environment, not the request"
-        )
+    for key in ("e2b_api_key", "sbx_api_key", "qz_sandbox_api_key"):
+        if _contains_key(request, key):
+            raise ValueError(
+                "sandbox API keys must be supplied by the agent-fleet host "
+                "environment, not the request"
+            )
     for key in (
         "e2b_template",
         "tb_e2b_prebuilt_template",
         "rl_e2b_prebuilt_template",
+        "qz_sandbox_template",
     ):
         if _contains_key(request, key):
             raise ValueError(
-                "the E2B prebuilt template must be supplied by the agent-fleet "
+                "the sandbox template must be supplied by the agent-fleet "
                 "host environment, not the request"
             )
 
@@ -632,7 +635,7 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:
         print(f"{self.address_string()} - {fmt % args}", flush=True)
 
-    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler protocol
+    def do_GET(self) -> None:
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
         try:
@@ -679,7 +682,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001 - HTTP boundary returns structured failures
             self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"detail": {"exception_type": type(exc).__name__, "exception_message": str(exc)}})
 
-    def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler protocol
+    def do_POST(self) -> None:
         if urlparse(self.path).path != "/run_trial":
             self._send_json(HTTPStatus.NOT_FOUND, {"detail": "not found"})
             return
