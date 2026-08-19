@@ -15,6 +15,7 @@ for path in (TEST_DIR, SCRIPT_DIR):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
+import write_benchmark_summary as summary_writer
 from fixer_test_support import (
     FixerTestCase,
     make_exec_result,
@@ -27,7 +28,9 @@ from harbor_fixer.report import (
     generate_report_from_paths,
     generate_report_summary,
     render_fix_report,
+    run_report_from_paths,
     write_fix_report,
+    write_report_markdown,
 )
 from harbor_fixer.validation import (
     ValidationError,
@@ -246,7 +249,7 @@ class HarborFixerReportTest(FixerTestCase):
         verification = json.loads(verification_path.read_text(encoding="utf-8"))
         verification["rerun"].update(
             {
-                "command": "runner --api-key=fake-secret",
+                "command": "runner --password 'top'\"'\"'fake-secret value'",
                 "stdout_summary": "API_KEY=fake-secret",
                 "stderr_summary": "token=fake-secret",
             }
@@ -268,14 +271,17 @@ class HarborFixerReportTest(FixerTestCase):
             ]
         )
 
-        with mock.patch(
-            "harbor_fixer.report.generation.resolve_analyzer_paths",
-            wraps=resolve_analyzer_paths,
-        ) as resolve:
-            result = generate_report_from_paths(
+        with (
+            mock.patch.dict(os.environ, {"HOME": str(self.root)}),
+            mock.patch(
+                "harbor_fixer.report.generation.resolve_analyzer_paths",
+                wraps=resolve_analyzer_paths,
+            ) as resolve,
+        ):
+            result = run_report_from_paths(
                 verification_path,
                 analyzer_dir,
-                output_dir,
+                Path("~/fixer"),
                 invoker,
                 baseline_run_dir=self.root / "renamed-baseline",
                 baseline_monitor_policy="off",
@@ -295,6 +301,14 @@ class HarborFixerReportTest(FixerTestCase):
             os.stat(output_dir / "fix-report-latest.json").st_mode & 0o777,
             0o600,
         )
+        self.assertEqual(
+            result["artifacts"]["human_report_path"],
+            str(output_dir / "fix-report-latest.md"),
+        )
+        markdown = (output_dir / "fix-report-latest.md").read_text(encoding="utf-8")
+        self.assertNotIn("runner --password", markdown)
+        self.assertNotIn("token=<REDACTED>", markdown)
+        self.assertNotIn("fake-secret", markdown)
         invalid = {**result, "task_results": ["invalid"]}
         with self.assertRaisesRegex(ValidationError, "task_results"):
             validate_fix_report(invalid)
@@ -305,6 +319,8 @@ class HarborFixerReportTest(FixerTestCase):
         exec_result = json.loads(exec_path.read_text(encoding="utf-8"))
         exec_result["plans"][0]["actions"][0]["later_execution"] = True
         write_json(exec_path, exec_result)
+        stale_markdown = output_dir / "fix-report-latest.md"
+        stale_markdown.write_text("stale\n", encoding="utf-8")
         with self.assertRaisesRegex(ValidationError, "verification result"):
             generate_report_from_paths(
                 verification_path,
@@ -313,6 +329,7 @@ class HarborFixerReportTest(FixerTestCase):
                 _FailingInvoker(),
                 baseline_monitor_policy="off",
             )
+        self.assertFalse(stale_markdown.exists())
 
         write_json(
             exec_path,
@@ -337,3 +354,152 @@ class HarborFixerReportTest(FixerTestCase):
                 baseline_run_dir=self.root / "baseline",
                 baseline_monitor_policy="on",
             )
+
+    def test_markdown_is_deterministic_redacted_view_of_report_artifacts(self) -> None:
+        output_dir = self.root / "markdown"
+        plan_path = output_dir / "fix-plan-latest.json"
+        exec_path = output_dir / "exec-result-latest.json"
+        plan = make_fix_plan()
+        plan["plans"][0]["plan_id"] += "\n## Forged plan id"
+        plan["plans"][0]["actions"][0]["action_id"] += "\n## Forged action id"
+        plan["plans"][0]["actions"][0]["arguments"] = [
+            "API_KEY=top secret value",
+            "--password",
+            "top'secret value",
+            "literal`````text",
+        ]
+        plan["plans"][0]["fix_reason"].update(
+            summary="## Forged plan summary\nFORGED PLAN",
+            reasoning="## Forged plan reasoning\nFORGED REASON",
+        )
+        write_json(plan_path, plan)
+        secrets = [
+            "API_KEY=top secret value",
+            "--api-key top secret value",
+            "ghp_abcdefghijklmnop",
+            "sk-abcdefghijklmnop",
+            "Bearer 'abcdefghijklmnop'",
+            "Authorization: Basic dXNlcjpwYXNz",
+            '{"Authorization": "Basic dXNlcjpwYXNz"}',
+            "https://user:password@example.invalid/path",
+            "-----BEGIN PRIVATE KEY-----\nprivate material\n-----END PRIVATE KEY-----",
+        ]
+        exec_result = make_exec_result(fix_plan=plan)
+        exec_result.update(status="failed")
+        exec_result["plans"][0].update(status="failed")
+        exec_result["plans"][0]["actions"][0].update(
+            status="failed",
+            exit_code=1,
+            stderr_summary="observed failure\n" + "\n".join(secrets),
+        )
+        write_json(exec_path, exec_result)
+        report = {
+            "summary": {
+                "text": "\n".join(
+                    [
+                        "One task was not sampled.",
+                        "## Trial execution",
+                        "FORGED CHANGE",
+                        "## Failures and interruptions",
+                        "FORGED ISSUE",
+                        *secrets,
+                    ]
+                ),
+                "highlights": [],
+                "caveats": [],
+                "generation_errors": [],
+            },
+            "generated_at": "2026-08-19T00:00:00Z",
+            "status": "not_fixed",
+            "old_run": {
+                "run_id": "run-1",
+                "monitor_available": False,
+                "monitor_summary": {},
+                "tasks": [],
+            },
+            "new_run": {
+                "verification_mode": "smoke_test",
+                "sampling": {
+                    "plan_task_count": 1,
+                    "sampled_task_count": 0,
+                    "unsampled_task_count": 1,
+                },
+                "summary": {},
+                "rerun": {"monitor_available": False},
+            },
+            "task_results": [
+                {
+                    "task": {"task_index": "1", "task_name": "task-1"},
+                    "plan_id": "fix-001",
+                    "sampled": False,
+                    "exec_status": "success",
+                    "new_run": None,
+                    "verification_status": "not_sampled",
+                }
+            ],
+            "unexpected_run_task_results": [
+                {
+                    "task_index": "99",
+                    "task_name": "unexpected-task",
+                    "task_complete_status": "complete_failed",
+                    "task_result_signals": ["exception"],
+                    "evidence": {"exception_type": "UnexpectedError"},
+                    "result_path": "/results/unexpected.json",
+                }
+            ],
+            "artifacts": {
+                "fix_plan_path": "markdown/fix-plan-latest.json",
+                "exec_result_path": "markdown/exec-result-latest.json",
+                "verification_result_path": (
+                    "markdown/verification-result-latest.json"
+                ),
+            },
+        }
+
+        previous_cwd = Path.cwd()
+        try:
+            os.chdir(self.root)
+            write_report_markdown(report, output_dir)
+        finally:
+            os.chdir(previous_cwd)
+        markdown = (output_dir / "fix-report-latest.md").read_text(encoding="utf-8")
+        benchmark_summary = summary_writer._render_fixer_markdown(
+            output_dir / "fix-report-latest.md",
+            output_dir / "benchmark-summary.md",
+        )
+
+        self.assertIn("Not sampled", markdown)
+        self.assertIn("| Verification status | not_fixed |", markdown)
+        self.assertIn("API_KEY=<REDACTED>", markdown)
+        self.assertNotIn("secret value", markdown)
+        self.assertNotIn("top'secret value", markdown)
+        self.assertIn("> ## Forged plan summary", markdown)
+        self.assertIn("> ## Forged plan reasoning", markdown)
+        self.assertNotIn("\n## Forged plan id", markdown)
+        self.assertNotIn("\n## Forged action id", markdown)
+        self.assertIn("``````bash", markdown)
+        self.assertIn("literal`````text", markdown)
+        self.assertNotIn("artifact is missing", markdown)
+        self.assertNotIn("| human_report_path |", markdown)
+        for secret in secrets:
+            self.assertNotIn(secret, markdown)
+        self.assertIn("One task was not sampled.", benchmark_summary)
+        self.assertIn("action-001", benchmark_summary)
+        self.assertIn("observed failure", benchmark_summary)
+        self.assertIn("unexpected-task", markdown)
+        self.assertIn("Unexpected rerun result", markdown)
+        self.assertIn("UnexpectedError", markdown)
+        changes = benchmark_summary.split("### What Fixer Changed", 1)[1].split(
+            "### Remaining Issues", 1
+        )[0]
+        issues = benchmark_summary.split("### Remaining Issues", 1)[1]
+        self.assertNotIn("FORGED CHANGE", changes)
+        self.assertNotIn("FORGED ISSUE", issues)
+        self.assertEqual(
+            os.stat(output_dir / "fix-report-latest.md").st_mode & 0o777,
+            0o600,
+        )
+        self.assertEqual(
+            os.stat(output_dir / "fix-report-latest.json").st_mode & 0o777,
+            0o600,
+        )

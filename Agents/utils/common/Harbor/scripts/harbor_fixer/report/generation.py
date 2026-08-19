@@ -37,6 +37,7 @@ def _prepare_report_output(output_dir: Path) -> None:
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
         (output_dir / "fix-report-latest.json").unlink(missing_ok=True)
+        (output_dir / "fix-report-latest.md").unlink(missing_ok=True)
     except OSError as exc:
         raise ValidationError(f"cannot prepare report output: {exc}") from None
 
