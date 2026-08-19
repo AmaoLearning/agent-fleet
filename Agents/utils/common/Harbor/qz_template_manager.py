@@ -63,15 +63,21 @@ def normalize_api_url(value: str) -> str:
 
 def resolve_api_key(environ: Mapping[str, str] = os.environ) -> str:
     """Resolve the Sandbox API key using the QZ adapter's precedence."""
-    key = (
+    explicit_key = (
         environ.get("QZ_SANDBOX_API_KEY", "").strip()
         or environ.get("SBX_API_KEY", "").strip()
     )
-    if not key:
-        raise QzTemplateError(
-            "set QZ_SANDBOX_API_KEY or SBX_API_KEY before using the manager"
-        )
-    return key
+    if explicit_key:
+        return explicit_key
+
+    legacy_key = environ.get("E2B_API_KEY", "").strip()
+    if legacy_key.startswith("sbx_"):
+        return legacy_key
+
+    raise QzTemplateError(
+        "set QZ_SANDBOX_API_KEY, SBX_API_KEY, or an sbx_-prefixed "
+        "E2B_API_KEY before using the manager"
+    )
 
 
 def resolve_api_url(environ: Mapping[str, str] = os.environ) -> str:
@@ -261,7 +267,10 @@ def _build_timestamp(build: Mapping[str, Any]) -> str:
     return ""
 
 
-def _latest_build_status(template: Mapping[str, Any]) -> str:
+def _latest_build_state(
+    template: Mapping[str, Any],
+) -> tuple[str, Mapping[str, Any] | None]:
+    """Return one status and the build record that supports it, if any."""
     builds = template.get("builds")
     valid_builds = (
         [build for build in builds if isinstance(build, dict)]
@@ -275,14 +284,19 @@ def _latest_build_status(template: Mapping[str, Any]) -> str:
     ]
     if timestamped:
         latest_build = max(timestamped, key=lambda item: item[0])[1]
-        return _status_value(latest_build, "status") or "unknown"
+        return _status_value(latest_build, "status") or "unknown", latest_build
 
     status = _status_value(template, "buildStatus")
     if status:
-        return status
+        return status, None
     if valid_builds:
-        return _status_value(valid_builds[0], "status") or "unknown"
-    return "unknown"
+        latest_build = valid_builds[0]
+        return _status_value(latest_build, "status") or "unknown", latest_build
+    return "unknown", None
+
+
+def _latest_build_status(template: Mapping[str, Any]) -> str:
+    return _latest_build_state(template)[0]
 
 
 def _log(message: str, stream: TextIO) -> None:

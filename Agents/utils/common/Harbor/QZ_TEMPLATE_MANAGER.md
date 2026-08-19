@@ -15,6 +15,9 @@ export QZ_SANDBOX_API_KEY=sbx_example
 # or: export SBX_API_KEY=sbx_example
 ```
 
+For compatibility with the QZ runtime, `E2B_API_KEY` is also accepted only
+when it has the QZ-specific `sbx_` prefix; cloud E2B keys are rejected.
+
 The default API URL is `https://qz-sbx-api.sii.edu.cn`. Override it with
 `QZ_SANDBOX_API_URL` or `SBX_API_URL`; the manager adds `/v1` when needed.
 
@@ -62,3 +65,7 @@ Both inspection commands print JSON. This version intentionally has no
 rebuild or delete command. `official` is the verified `imageSource` for
 platform images; other values are passed through for later validation with
 custom registries.
+
+For benchmark inventory, explicit one-task materialization, and runtime
+selection, see [QZ Template Mapping](QZ_TEMPLATE_MAPPING.md). Normal benchmark
+runs only resolve ready Templates and never call the create path.

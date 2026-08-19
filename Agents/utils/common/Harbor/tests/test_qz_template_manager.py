@@ -118,6 +118,14 @@ class ConfigurationTest(unittest.TestCase):
         )
         self.assertEqual(manager.resolve_api_key({"SBX_API_KEY": "sbx-key"}), "sbx-key")
 
+    def test_legacy_e2b_key_is_accepted_only_for_qz(self):
+        self.assertEqual(
+            manager.resolve_api_key({"E2B_API_KEY": "sbx_legacy"}),
+            "sbx_legacy",
+        )
+        with self.assertRaisesRegex(manager.QzTemplateError, "sbx_-prefixed"):
+            manager.resolve_api_key({"E2B_API_KEY": "e2b-cloud"})
+
     def test_missing_key_fails(self):
         with self.assertRaisesRegex(manager.QzTemplateError, "SBX_API_KEY"):
             manager.resolve_api_key({})
@@ -152,26 +160,37 @@ class ConfigurationTest(unittest.TestCase):
             self.assertIn(message, stderr.getvalue())
 
     def test_latest_build_status_uses_timestamps_and_top_level_fallback(self):
-        self.assertEqual(
-            manager._latest_build_status(
+        timestamped = {
+            "builds": [
                 {
-                    "builds": [
-                        {
-                            "status": "ready",
-                            "createdAt": "2026-08-18T10:00:00+08:00",
-                        },
-                        {
-                            "status": "building",
-                            "createdAt": "2026-08-18T10:01:00+08:00",
-                        },
-                    ]
-                }
-            ),
+                    "status": "ready",
+                    "createdAt": "2026-08-18T10:00:00+08:00",
+                },
+                {
+                    "status": "building",
+                    "createdAt": "2026-08-18T10:01:00+08:00",
+                },
+            ]
+        }
+        self.assertEqual(
+            manager._latest_build_status(timestamped),
             "building",
         )
+        status, build = manager._latest_build_state(timestamped)
+        self.assertEqual(status, "building")
+        self.assertEqual(build["createdAt"], "2026-08-18T10:01:00+08:00")
         self.assertEqual(
             manager._latest_build_status({"buildStatus": "READY"}),
             "ready",
+        )
+        self.assertEqual(
+            manager._latest_build_state(
+                {
+                    "buildStatus": "READY",
+                    "builds": [{"status": "building", "sbxSpecCode": "g.c2"}],
+                }
+            ),
+            ("ready", None),
         )
 
     def test_template_name_accepts_platform_format(self):

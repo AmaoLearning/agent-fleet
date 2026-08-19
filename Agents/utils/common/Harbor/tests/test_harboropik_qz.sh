@@ -22,6 +22,7 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$tmp/bin/harbor"
 chmod +x "$tmp/bin/harbor"
 printf '[environment]\nbuild_timeout_sec = 60\n' > "$tmp/dataset/0/task.toml"
 printf 'FROM ubuntu:24.04\n' > "$tmp/dataset/0/environment/Dockerfile"
+printf '{"identity_version":"qz-template-image-v1","schema_version":1,"tasks":{},"templates":{}}\n' > "$tmp/qz-map.json"
 
 run_dry() {
   local sbx_api_key="$1"
@@ -33,6 +34,7 @@ run_dry() {
   local dry_run="${7:-1}"
   local npm_registry="${8:-}"
   local qz_node_dist_url="${9:-}"
+  local qz_template_map="${10:-}"
   env -i \
     AGENT="$agent" \
     HARBOR_FORCE_BUILD="$force_build" \
@@ -58,6 +60,7 @@ run_dry() {
     SBX_API_KEY="$sbx_api_key" \
     E2B_API_KEY="$e2b_api_key" \
     QZ_SANDBOX_TEMPLATE="$qz_template" \
+    QZ_SANDBOX_TEMPLATE_MAP="$qz_template_map" \
     NPM_CONFIG_REGISTRY="$npm_registry" \
     QZ_NODE_DIST_URL="$qz_node_dist_url" \
     bash "$HARBOR_DIR/harboropik.sh" 2>&1
@@ -85,6 +88,10 @@ if grep -F -- '--mounts-json' <<< "$qz_run" >/dev/null; then
   exit 1
 fi
 
+# A per-task mapping is an alternative to the fixed Template mode.
+mapping_run="$(run_dry sbx_fake_key '' '' oracle 0 '' 1 '' '' "$tmp/qz-map.json")"
+grep -F -- "qz sandbox template map: $tmp/qz-map.json" <<< "$mapping_run" >/dev/null
+
 # A missing key must fail launch validation before Harbor runs.
 if missing_key="$(run_dry '' fake_template)"; then
   echo 'qz launch unexpectedly succeeded without an API key' >&2
@@ -110,7 +117,21 @@ if missing_template="$(run_dry sbx_fake_key '')"; then
   echo 'qz launch unexpectedly succeeded without a template' >&2
   exit 1
 else
-  grep -F -- 'qz sandbox requires QZ_SANDBOX_TEMPLATE' <<< "$missing_template" >/dev/null
+  grep -F -- 'qz sandbox requires QZ_SANDBOX_TEMPLATE or QZ_SANDBOX_TEMPLATE_MAP' <<< "$missing_template" >/dev/null
+fi
+
+# The two modes are deliberately exclusive and mapping paths fail early.
+if conflicting="$(run_dry sbx_fake_key fake_template '' oracle 0 '' 1 '' '' "$tmp/qz-map.json")"; then
+  echo 'qz launch unexpectedly accepted both Template selection modes' >&2
+  exit 1
+else
+  grep -F -- 'set only one of QZ_SANDBOX_TEMPLATE or QZ_SANDBOX_TEMPLATE_MAP' <<< "$conflicting" >/dev/null
+fi
+if missing_map="$(run_dry sbx_fake_key '' '' oracle 0 '' 1 '' '' "$tmp/missing.json")"; then
+  echo 'qz launch unexpectedly accepted a missing Template mapping' >&2
+  exit 1
+else
+  grep -F -- 'QZ_SANDBOX_TEMPLATE_MAP not found' <<< "$missing_map" >/dev/null
 fi
 
 # An invalid timeout must fail launch validation before Harbor runs.

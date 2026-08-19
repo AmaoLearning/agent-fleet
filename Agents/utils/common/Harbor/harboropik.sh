@@ -255,9 +255,19 @@ validate_environment_backend() {
         echo '[ERROR] qz sandbox requires SBX_API_KEY (or QZ_SANDBOX_API_KEY / an sbx_-prefixed E2B_API_KEY)' >&2
         exit 1
       fi
-      if [[ -z "${QZ_SANDBOX_TEMPLATE:-}" ]]; then
-        echo '[ERROR] qz sandbox requires QZ_SANDBOX_TEMPLATE: a platform-registered template name or ID' >&2
-        echo '[ERROR] per-task template registration is not available yet' >&2
+      if [[ -n "${QZ_SANDBOX_TEMPLATE:-}" \
+        && -n "${QZ_SANDBOX_TEMPLATE_MAP:-}" ]]; then
+        echo '[ERROR] set only one of QZ_SANDBOX_TEMPLATE or QZ_SANDBOX_TEMPLATE_MAP' >&2
+        exit 1
+      fi
+      if [[ -z "${QZ_SANDBOX_TEMPLATE:-}" \
+        && -z "${QZ_SANDBOX_TEMPLATE_MAP:-}" ]]; then
+        echo '[ERROR] qz sandbox requires QZ_SANDBOX_TEMPLATE or QZ_SANDBOX_TEMPLATE_MAP' >&2
+        exit 1
+      fi
+      if [[ -n "${QZ_SANDBOX_TEMPLATE_MAP:-}" \
+        && ! -f "$QZ_SANDBOX_TEMPLATE_MAP" ]]; then
+        echo "[ERROR] QZ_SANDBOX_TEMPLATE_MAP not found: $QZ_SANDBOX_TEMPLATE_MAP" >&2
         exit 1
       fi
       if [[ -n "${QZ_SANDBOX_TIMEOUT_SEC:-}" ]]; then
@@ -274,7 +284,11 @@ validate_environment_backend() {
           exit 1
           ;;
       esac
-      echo "[INFO] qz sandbox template: $QZ_SANDBOX_TEMPLATE"
+      if [[ -n "${QZ_SANDBOX_TEMPLATE:-}" ]]; then
+        echo "[INFO] qz sandbox fixed template: $QZ_SANDBOX_TEMPLATE"
+      else
+        echo "[INFO] qz sandbox template map: $QZ_SANDBOX_TEMPLATE_MAP"
+      fi
       if harbor_agent_is_claude_code; then
         echo "[INFO] qz claude-code delivery: npm registry ${NPM_CONFIG_REGISTRY:-<unset>} | node dist ${HARBOR_CC_NODE_DIST_URL:-<unset>}"
       elif harbor_agent_is_opencode; then

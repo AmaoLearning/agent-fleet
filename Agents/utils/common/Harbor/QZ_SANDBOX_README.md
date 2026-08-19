@@ -39,7 +39,9 @@ Add to `config.local.env` (never commit the key):
 ```bash
 RL_ENVIRONMENT_TYPE=qz
 SBX_API_KEY=sbx_xxx                # from step 1
-QZ_SANDBOX_TEMPLATE=your_template  # Template name (or ID) from step 2
+# Select exactly one:
+QZ_SANDBOX_TEMPLATE_MAP=/absolute/path/to/qz-templates.json
+# QZ_SANDBOX_TEMPLATE=your_template  # fixed Template name or ID
 # QZ_SANDBOX_TIMEOUT_SEC=14400     # max sandbox lifetime; 4h is the platform cap
 # NPM_CONFIG_REGISTRY=https://registry.npmjs.org
 # QZ_NODE_DIST_URL=https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-x64.tar.gz
@@ -156,12 +158,11 @@ exactly this loop (oracle reward 1.0 in ~6 s, pi reward 1.0 in ~47 s against
   (`environment.docker_image` in `task.toml`); docker-compose tasks and
   on-the-fly Dockerfile builds are not supported — the environment image must
   be registered as a Template beforehand.
-- Fixed-template mode is intentional in this first provider version: all tasks
-  share the Template named by `QZ_SANDBOX_TEMPLATE`. A run may contain one task
-  or multiple tasks that use the same environment image; the operator is
-  responsible for selecting a compatible Template. Datasets with a different
-  environment per task require the follow-up content-addressed Template
-  registration and mapping pipeline.
+- `QZ_SANDBOX_TEMPLATE` keeps the backward-compatible fixed mode.
+  `QZ_SANDBOX_TEMPLATE_MAP` selects a ready Template per task; the runner
+  validates live status but never creates Templates implicitly. Inventory,
+  explicit one-task materialization, binding, and cache rules are documented
+  in [QZ Template Mapping](QZ_TEMPLATE_MAPPING.md).
 - Task network policies (no-network / allowlist) are not verified on qz yet;
   do not rely on network isolation for now.
 
