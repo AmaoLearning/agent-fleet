@@ -15,13 +15,26 @@ for path in (TEST_DIR, SCRIPT_DIR):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from fixer_test_support import FixerTestCase, make_exec_result, make_fix_plan
+from fixer_test_support import (
+    FixerTestCase,
+    make_exec_result,
+    make_fix_plan,
+    write_analyzer_fixture,
+    write_json,
+)
+from harbor_fixer.analyzer_inputs import resolve_analyzer_paths
 from harbor_fixer.report import (
+    generate_report_from_paths,
     generate_report_summary,
     render_fix_report,
     write_fix_report,
 )
-from harbor_fixer.validation import ValidationError, validate_report_summary
+from harbor_fixer.validation import (
+    ValidationError,
+    validate_fix_report,
+    validate_report_summary,
+)
+from harbor_fixer.verifier import run_verification_from_paths
 
 
 def _verification_result() -> dict:
@@ -62,20 +75,56 @@ def _verification_result() -> dict:
 class _SequenceInvoker:
     def __init__(self, outputs: list[str]) -> None:
         self.outputs = outputs
+        self.payloads: list[dict] = []
         self.prompts: list[str] = []
 
-    def invoke(
-        self, prompt: str, payload: dict, *, attempt: int, label: str
-    ) -> str:
+    def invoke(self, prompt: str, payload: dict, *, attempt: int, label: str) -> str:
+        self.payloads.append(payload)
         self.prompts.append(prompt)
         return self.outputs[attempt - 1]
 
 
 class _FailingInvoker:
-    def invoke(
-        self, prompt: str, payload: dict, *, attempt: int, label: str
-    ) -> str:
-        raise TimeoutError("provider timed out")
+    def invoke(self, prompt: str, payload: dict, *, attempt: int, label: str) -> str:
+        raise TimeoutError("provider API_KEY=fake-secret timed out")
+
+
+def _write_generation_fixture(root: Path) -> tuple[Path, Path, Path]:
+    analyzer_dir = write_analyzer_fixture(root, count=2)
+    analyzer_paths = resolve_analyzer_paths(analyzer_dir)
+    output_dir = root / "fixer"
+    plan_path = root / "fix-plan-latest.json"
+    exec_path = root / "exec-result-latest.json"
+    plan = make_fix_plan()
+    plan["source"].update(
+        {
+            "agent": "claude-code",
+            "monitor_path": str(root / "monitor" / "monitor-latest.json"),
+            "analyzer_root": str(analyzer_paths["analyzer_root"]),
+            "manifest_path": str(analyzer_paths["manifest_path"]),
+            "run_id": analyzer_paths["run_id"],
+            "publications": analyzer_paths["publications"],
+        }
+    )
+    write_json(plan_path, plan)
+    write_json(exec_path, make_exec_result(fix_plan=plan))
+    run_dir = root / "verification-run"
+    queue_dir = run_dir / "queue" / "claude-code"
+    queue_dir.mkdir(parents=True)
+    (run_dir / "tasks.txt").write_text("task-1\n", encoding="utf-8")
+    (queue_dir / "done.txt").write_text(
+        "1\ttask-1\t1.0\t\t\n", encoding="utf-8"
+    )
+    (queue_dir / "failed.txt").write_text("", encoding="utf-8")
+    run_verification_from_paths(
+        Path(os.path.relpath(plan_path)),
+        Path(os.path.relpath(exec_path)),
+        run_dir,
+        output_dir,
+        agent="claude-code",
+        monitor_policy="off",
+    )
+    return analyzer_dir, output_dir, exec_path
 
 
 class HarborFixerReportTest(FixerTestCase):
@@ -146,9 +195,7 @@ class HarborFixerReportTest(FixerTestCase):
             "caveats": [],
         }
         with self.assertRaises(ValidationError):
-            validate_report_summary(
-                {**valid, "highlights": [{"task": "task-1"}]}
-            )
+            validate_report_summary({**valid, "highlights": [{"task": "task-1"}]})
         with self.assertRaises(ValidationError):
             validate_report_summary({**valid, "detail": {"task": "task-1"}})
         for invalid_text in ("", " \n\t "):
@@ -156,6 +203,8 @@ class HarborFixerReportTest(FixerTestCase):
                 ValidationError
             ):
                 validate_report_summary({**valid, "text": invalid_text})
+        with self.assertRaises(ValidationError):
+            validate_report_summary({**valid, "caveats": [{}]})
         with tempfile.TemporaryDirectory() as root, mock.patch.dict(
             os.environ, {"HARBOR_AGENT_RETRY_INITIAL_SECONDS": "0"}
         ):
@@ -188,4 +237,103 @@ class HarborFixerReportTest(FixerTestCase):
         self.assertIn("1 task(s) were not sampled", fallback["text"])
         self.assertIn("1 unsampled task(s) labeled exec_failed", fallback["text"])
         self.assertIn("Baseline monitor data was unavailable", fallback["text"])
+        self.assertNotIn("fake-secret", json.dumps(fallback))
         self.assertEqual(len(write_invoker.prompts), 1)
+
+    def test_generation_redacts_rerun_secrets(self) -> None:
+        analyzer_dir, output_dir, _ = _write_generation_fixture(self.root)
+        verification_path = output_dir / "verification-result-latest.json"
+        verification = json.loads(verification_path.read_text(encoding="utf-8"))
+        verification["rerun"].update(
+            {
+                "command": "runner --api-key=fake-secret",
+                "stdout_summary": "API_KEY=fake-secret",
+                "stderr_summary": "token=fake-secret",
+            }
+        )
+        write_json(verification_path, verification)
+        invoker = _SequenceInvoker(
+            [
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "kind": "harbor_fixer_report_summary",
+                        "status": "success",
+                        "text": "Fixture report.",
+                        "highlights": [],
+                        "caveats": [],
+                        "generation_errors": [],
+                    }
+                )
+            ]
+        )
+
+        with mock.patch(
+            "harbor_fixer.report.generation.resolve_analyzer_paths",
+            wraps=resolve_analyzer_paths,
+        ) as resolve:
+            result = generate_report_from_paths(
+                verification_path,
+                analyzer_dir,
+                output_dir,
+                invoker,
+                baseline_run_dir=self.root / "renamed-baseline",
+                baseline_monitor_policy="off",
+            )
+
+        validate_fix_report(result, verification_result=verification)
+        report_input_path = output_dir / "report-input.json"
+        report_input = report_input_path.read_text(encoding="utf-8")
+        self.assertNotIn("fake-secret", json.dumps(result))
+        self.assertNotIn("fake-secret", json.dumps(invoker.payloads))
+        self.assertNotIn("fake-secret", report_input)
+        self.assertEqual(resolve.call_count, 1)
+        self.assertTrue(Path(verification["source"]["fix_plan_path"]).is_absolute())
+        self.assertTrue(Path(verification["source"]["exec_result_path"]).is_absolute())
+        self.assertEqual(os.stat(report_input_path).st_mode & 0o777, 0o600)
+        self.assertEqual(
+            os.stat(output_dir / "fix-report-latest.json").st_mode & 0o777,
+            0o600,
+        )
+        invalid = {**result, "task_results": ["invalid"]}
+        with self.assertRaisesRegex(ValidationError, "task_results"):
+            validate_fix_report(invalid)
+
+    def test_generation_rejects_mismatched_runtime_sources(self) -> None:
+        analyzer_dir, output_dir, exec_path = _write_generation_fixture(self.root)
+        verification_path = output_dir / "verification-result-latest.json"
+        exec_result = json.loads(exec_path.read_text(encoding="utf-8"))
+        exec_result["plans"][0]["actions"][0]["later_execution"] = True
+        write_json(exec_path, exec_result)
+        with self.assertRaisesRegex(ValidationError, "verification result"):
+            generate_report_from_paths(
+                verification_path,
+                analyzer_dir,
+                output_dir,
+                _FailingInvoker(),
+                baseline_monitor_policy="off",
+            )
+
+        write_json(
+            exec_path,
+            make_exec_result(
+                fix_plan=json.loads(
+                    (self.root / "fix-plan-latest.json").read_text(encoding="utf-8")
+                )
+            ),
+        )
+        wrong_snapshot = {
+            "analyzer_handover": {"run_id": "other-run", "agent": "claude-code"}
+        }
+        with mock.patch(
+            "harbor_fixer.report.generation.read_monitor_snapshot",
+            return_value=(wrong_snapshot, "snapshot.json"),
+        ), self.assertRaisesRegex(ValidationError, "baseline monitor"):
+            generate_report_from_paths(
+                verification_path,
+                analyzer_dir,
+                output_dir,
+                _FailingInvoker(),
+                baseline_run_dir=self.root / "baseline",
+                baseline_monitor_policy="on",
+            )

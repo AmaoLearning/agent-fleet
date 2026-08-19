@@ -99,7 +99,7 @@ def generate_report_summary(
                 prompt, summary_input, attempt=attempt, label="report-main-agent"
             )
         except Exception as exc:  # noqa: BLE001 - provider retry boundary
-            error = str(exc)
+            error = f"{type(exc).__name__}: report summary invocation failed"
         else:
             raw_path = (
                 output_dir / "raw-report-main-agent-output" / f"attempt-{attempt}.txt"
