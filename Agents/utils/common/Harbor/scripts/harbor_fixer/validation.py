@@ -64,6 +64,7 @@ INCONCLUSIVE_VERIFICATION_REASONS = {
     "monitor_unavailable",
     "rerun_failed",
 }
+REPORT_SUMMARY_STATUSES = {"success", "failed"}
 
 
 def json_sha256(value: Any) -> str:
@@ -942,3 +943,39 @@ def validate_verification_result(payload: dict[str, Any]) -> None:
             require_dict(record, f"unexpected_run_task_results[{index}]"),
             f"unexpected_run_task_results[{index}]",
         )
+
+
+def validate_report_summary(payload: dict[str, Any]) -> None:
+    _require_exact_fields(
+        payload,
+        "report summary",
+        {
+            "schema_version",
+            "kind",
+            "status",
+            "text",
+            "highlights",
+            "caveats",
+            "generation_errors",
+        },
+    )
+    _check_kind(
+        payload, version=1, kind="harbor_fixer_report_summary", name="report summary"
+    )
+    status = require_enum(
+        payload.get("status"), "report summary status", REPORT_SUMMARY_STATUSES
+    )
+    text = require_string(
+        payload.get("text"), "report summary text", allow_empty=status == "failed"
+    )
+    if status == "success" and not text.strip():
+        raise ValidationError("report summary text must contain non-whitespace text")
+    for index, highlight in enumerate(
+        require_list(payload.get("highlights"), "report summary highlights")
+    ):
+        require_string(highlight, f"report summary highlights[{index}]")
+    for index, caveat in enumerate(
+        require_list(payload.get("caveats"), "report summary caveats")
+    ):
+        require_string(caveat, f"report summary caveats[{index}]")
+    require_list(payload.get("generation_errors"), "report summary generation_errors")
