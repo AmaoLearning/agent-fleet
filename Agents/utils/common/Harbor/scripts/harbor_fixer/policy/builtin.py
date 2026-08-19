@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 _DENY_EXECUTABLES = {"rm", "rmdir", "shred", "unlink", "wipefs"}
 _READ_ONLY_COMMANDS = {
@@ -15,6 +17,32 @@ _READ_ONLY_COMMANDS = {
     "uname",
     "which",
 }
+_DOCKERFILE_ROOT_FIND_RE = re.compile(
+    r"(?im)^\s*RUN\b.*?(?<![\w/])(?:/(?:usr/)?bin/)?find"
+    r"(?:\s+|[\"']\s*,\s*[\"'])"
+    r"(?:(?:-[HLP]|-O[^\s,\"']+)(?:\s+|[\"']\s*,\s*[\"']))*"
+    r"/(?=[\"']?(?:[\s,;&|)\]]|$))"
+)
+
+
+def unsafe_file_edit_reason(action: dict[str, Any]) -> tuple[str, str] | None:
+    """Reject newly introduced, deterministically unsafe file-edit content."""
+
+    if action.get("action_type") != "file_edit":
+        return None
+    if Path(str(action.get("path") or "")).name.lower() != "dockerfile":
+        return None
+    edit = action.get("edit") if isinstance(action.get("edit"), dict) else {}
+    old_text = str(edit.get("old_text") or "").replace("\\\n", " ")
+    new_text = str(edit.get("new_text") or "").replace("\\\n", " ")
+    if _DOCKERFILE_ROOT_FIND_RE.search(
+        new_text
+    ) and not _DOCKERFILE_ROOT_FIND_RE.search(old_text):
+        return (
+            "dockerfile_unbounded_root_scan",
+            "Dockerfile edit introduces an unbounded find traversal from filesystem root",
+        )
+    return None
 
 
 def destructive_reason(tokens: Sequence[str]) -> tuple[str, str] | None:

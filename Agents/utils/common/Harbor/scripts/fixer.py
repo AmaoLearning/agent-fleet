@@ -129,7 +129,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--rerun-timeout",
         type=int,
-        default=mode_default("HARBOR_FIXER_RERUN_TIMEOUT", "600"),
+        default=mode_default("HARBOR_FIXER_RERUN_TIMEOUT", "3600"),
     )
     parser.add_argument("--monitor-policy", choices=["auto", "on", "off"], default="auto")
     parser.add_argument("--monitor-wait-timeout", type=int, default=3600)

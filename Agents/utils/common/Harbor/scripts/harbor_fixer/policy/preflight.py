@@ -13,6 +13,7 @@ from ..artifact_io import write_json_atomic
 from ..command_analysis import CommandAnalysis, analyze_command
 from ..validation import ValidationError
 from .agent import evaluate_agent
+from .builtin import unsafe_file_edit_reason
 from .paths import analyze_paths
 from .rules import evaluate_t1, load_user_rules
 
@@ -176,6 +177,16 @@ def run_policy_preflight(
                                 resolved_executable
                             ),
                         )
+                elif unsafe_reason := unsafe_file_edit_reason(action):
+                    decision = {
+                        "tier": "T1",
+                        "decision": "deny",
+                        "risk_level": "high",
+                        "source": "builtin_rule",
+                        "rule_id": unsafe_reason[0],
+                        "reason_code": unsafe_reason[0],
+                        "reason": unsafe_reason[1],
+                    }
                 elif path_analysis["classification"] != "inside_writable_roots":
                     decision = {
                         "tier": "T3",

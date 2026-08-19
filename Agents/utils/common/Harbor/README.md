@@ -375,6 +375,9 @@ Generated artifacts, including `fix-plan-latest.json`, prompts, events, and
 provenance, are written below `--output-dir`. The summary-limit options are
 optional and use the defaults shown above. Fixer CLI flags override the
 corresponding `HARBOR_FIXER_*` defaults loaded by `env.sh`.
+Analyzer and Fixer Agent retries use bounded exponential backoff, starting at
+one second and capped at 30 seconds. Override these values with
+`HARBOR_AGENT_RETRY_INITIAL_SECONDS` and `HARBOR_AGENT_RETRY_MAX_SECONDS`.
 
 ### Stage 2: Execution Policy
 
@@ -420,9 +423,13 @@ python3 Agents/utils/common/Harbor/scripts/fixer.py \
 
 Use `--rerun-command` to launch the smoke run. The wrapper receives an ordered
 `TASK_SOURCE_FILE` and `HARBOR_FIXER_SMOKE_SELECTION`; it must preserve their
-line-to-task mapping. `--rerun-timeout` limits that command to 600 seconds by
+line-to-task mapping. `--rerun-timeout` limits that command to 3600 seconds by
 default and can also be set with `HARBOR_FIXER_RERUN_TIMEOUT`. Task identities
 come directly from Fix Plan v2.
+While the rerun is active, stdout and stderr are written to
+`runtime/<agent>/verification-rerun.stdout.log` and
+`runtime/<agent>/verification-rerun.stderr.log`; the verifier also emits a
+progress message every 30 seconds.
 Verification writes
 `verification-smoke-selection.json`, `verification-smoke-tasks.txt`, and
 `verification-result-latest.json`. If the Fix Plan was generated without a

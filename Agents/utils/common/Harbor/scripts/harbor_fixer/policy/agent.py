@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from harbor_pi_runtime import sleep_before_retry
+
 from ..agent_invocation import AgentInvoker
 from ..prompts import build_validation_retry_prompt
 from ..validation import (
@@ -109,6 +111,8 @@ def evaluate_agent(
                 previous_output=previous_output,
                 validation_error=last_error,
             )
+            if attempt < 2:
+                sleep_before_retry(attempt)
     return {
         "tier": tier,
         "decision": "deny",

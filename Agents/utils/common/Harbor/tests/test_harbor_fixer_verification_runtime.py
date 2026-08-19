@@ -186,6 +186,12 @@ class HarborFixerVerificationRuntimeTest(FixerTestCase):
             )
 
         self.assertEqual(result["exit_code"], 0)
+        stdout_path = self.root / "run/runtime/opencode/verification-rerun.stdout.log"
+        self.assertEqual(result["stdout_path"], str(stdout_path))
+        self.assertTrue(Path(result["stdout_path"]).is_file())
+        self.assertTrue(Path(result["stderr_path"]).is_file())
+        self.assertEqual(stdout_path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(Path(result["stderr_path"]).stat().st_mode & 0o777, 0o600)
         call = popen.call_args.kwargs
         env = call["env"]
         self.assertNotIn("QUEUE_DIR", env)
@@ -214,10 +220,34 @@ class HarborFixerVerificationRuntimeTest(FixerTestCase):
         self.assertTrue(call["start_new_session"])
         self.assertTrue(call["stdout"].closed)
         self.assertTrue(call["stderr"].closed)
-        process.wait.assert_called_once_with(timeout=9)
+        process.wait.assert_called_once()
+        self.assertGreater(process.wait.call_args.kwargs["timeout"], 8.9)
+        self.assertLessEqual(process.wait.call_args.kwargs["timeout"], 9)
         self.assertEqual(
             (self.root / "run" / "tasks.txt").read_text(), "task-b\ntask-a\n"
         )
+
+    def test_run_command_rejects_symlinked_log(self) -> None:
+        task_source = self.root / "tasks.txt"
+        task_source.write_text("task-a\n", encoding="utf-8")
+        runtime_dir = self.root / "run/runtime/opencode"
+        runtime_dir.mkdir(parents=True)
+        victim = self.root / "victim.txt"
+        victim.write_text("preserve", encoding="utf-8")
+        (runtime_dir / "verification-rerun.stdout.log").symlink_to(victim)
+
+        with self.assertRaisesRegex(ValidationError, "cannot launch"):
+            run_command(
+                "true",
+                self.root / "run",
+                "opencode",
+                task_source_path=str(task_source),
+                selection_path=str(self.root / "selection.json"),
+                should_run=True,
+                timeout_seconds=1,
+            )
+
+        self.assertEqual(victim.read_text(encoding="utf-8"), "preserve")
 
     def test_run_command_times_out(self) -> None:
         task_source = self.root / "tasks.txt"

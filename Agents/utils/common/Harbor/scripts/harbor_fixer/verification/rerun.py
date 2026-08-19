@@ -7,7 +7,7 @@ import shlex
 import shutil
 import signal
 import subprocess
-import tempfile
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -69,6 +69,7 @@ RUN_SCOPED_ENV_VARS = {
 }
 
 TERMINATION_GRACE_SECONDS = 5.0
+RERUN_PROGRESS_INTERVAL_SECONDS = 30.0
 
 GENERATED_MONITOR_FILES = {
     "monitor-state.json",
@@ -87,6 +88,20 @@ def _read_log_tail(stream: Any) -> str:
     end = stream.seek(0, os.SEEK_END)
     stream.seek(max(0, end - 16384))
     return stream.read().decode(errors="replace")[-4000:]
+
+
+def _open_log(path: Path) -> Any:
+    fd = os.open(
+        path,
+        os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC,
+        0o600,
+    )
+    try:
+        os.fchmod(fd, 0o600)
+        return os.fdopen(fd, "w+b")
+    except Exception:
+        os.close(fd)
+        raise
 
 
 def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
@@ -179,6 +194,8 @@ def run_command(
             "duration_ms": 0,
             "stdout_summary": "",
             "stderr_summary": "",
+            "stdout_path": "",
+            "stderr_path": "",
             "skipped_reason": skipped_reason,
         }
     try:
@@ -243,10 +260,14 @@ def run_command(
     started_at = _utc_now()
     started = time.monotonic()
     timed_out = False
+    runtime_dir = run_dir / "runtime" / agent
+    stdout_path = runtime_dir / "verification-rerun.stdout.log"
+    stderr_path = runtime_dir / "verification-rerun.stderr.log"
     try:
+        runtime_dir.mkdir(parents=True, exist_ok=True)
         with (
-            tempfile.TemporaryFile() as stdout_file,
-            tempfile.TemporaryFile() as stderr_file,
+            _open_log(stdout_path) as stdout_file,
+            _open_log(stderr_path) as stderr_file,
         ):
             process = subprocess.Popen(
                 argv,
@@ -256,13 +277,30 @@ def run_command(
                 env=env,
                 start_new_session=True,
             )
-            try:
-                exit_code = process.wait(timeout=timeout_seconds)
-            except subprocess.TimeoutExpired:
-                _terminate_process_group(process)
-                _cleanup_verifier_backups(run_dir, agent)
-                exit_code = 124
-                timed_out = True
+            deadline = started + timeout_seconds
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    _terminate_process_group(process)
+                    _cleanup_verifier_backups(run_dir, agent)
+                    exit_code = 124
+                    timed_out = True
+                    break
+                try:
+                    exit_code = process.wait(
+                        timeout=min(remaining, RERUN_PROGRESS_INTERVAL_SECONDS)
+                    )
+                    break
+                except subprocess.TimeoutExpired:
+                    if deadline - time.monotonic() <= 0:
+                        continue
+                    elapsed = int(time.monotonic() - started)
+                    print(
+                        "verification rerun is still running "
+                        f"({elapsed}s elapsed); logs: {stdout_path}, {stderr_path}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
             stdout_summary = _read_log_tail(stdout_file)
             stderr_summary = _read_log_tail(stderr_file)
     except OSError as exc:
@@ -280,6 +318,8 @@ def run_command(
         "duration_ms": int((time.monotonic() - started) * 1000),
         "stdout_summary": stdout_summary,
         "stderr_summary": stderr_summary,
+        "stdout_path": str(stdout_path),
+        "stderr_path": str(stderr_path),
         "skipped_reason": "",
     }
 

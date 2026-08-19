@@ -9,6 +9,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from harbor_pi_runtime import sleep_before_retry
+
 from .agent_invocation import AgentInvoker
 from .analyzer_inputs import build_task_inputs
 from .artifact_io import write_json, write_json_atomic, write_text
@@ -74,6 +76,8 @@ def _summarize_task_with_retry(
                     previous_output=raw,
                     validation_error=last_error,
                 )
+            if attempt < max_attempts:
+                sleep_before_retry(attempt)
     return None, {
         "stage": "task_subagent",
         "task": task_input["task"],
@@ -200,6 +204,8 @@ def request_fix_plan(
                     previous_output=raw,
                     validation_error=last_error,
                 )
+            if attempt < max_attempts:
+                sleep_before_retry(attempt)
     raise ValidationError(
         f"main agent failed to emit a valid fix plan after {max_attempts} attempts: {last_error}"
     )
