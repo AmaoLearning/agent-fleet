@@ -56,8 +56,8 @@ load_existing_setup_config() {
       BASE_URL|API_KEY|AUTH_TOKEN|MODEL|TRACE_TO_OPIK|\
       OPIK_URL|OPIK_API_KEY|OPIK_WORKSPACE|OPIK_PROJECT_NAME|\
       CLAUDE_TGZ_SOURCE|CLAUDE_WHEEL_DIR_SOURCE|\
-      TB_CC_CLAUDE_TGZ_SOURCE|TB_CC_PY_WHEEL_DIR_SOURCE|\
-      RL_ENVIRONMENT_TYPE|TB_ENVIRONMENT_TYPE|AGENT_FLEET_REQUIRE_DOCKER)
+      HARBOR_CC_CLAUDE_TGZ_SOURCE|HARBOR_CC_PY_WHEEL_DIR_SOURCE|\
+      RL_ENVIRONMENT_TYPE|HARBOR_ENVIRONMENT_TYPE|AGENT_FLEET_REQUIRE_DOCKER)
         ;;
       *)
         continue
@@ -200,9 +200,78 @@ done
 ok "Config gathered (BASE_URL=${BASE_URL}, MODEL=${MODEL})"
 
 # Validate optional local Claude package config (for benchmark containers).
-# Use the repo-standard TB_CC_* names; accept the short aliases too.
-CLAUDE_TGZ_SOURCE="${CLAUDE_TGZ_SOURCE:-${TB_CC_CLAUDE_TGZ_SOURCE:-}}"
-CLAUDE_WHEEL_DIR_SOURCE="${CLAUDE_WHEEL_DIR_SOURCE:-${TB_CC_PY_WHEEL_DIR_SOURCE:-}}"
+# Use the repo-standard HARBOR_CC_* names; accept the short aliases too.
+load_legacy_managed_claude_package_config() {
+  local bashrc="$HOME/.bashrc"
+  local key value found=0
+  [[ -r "$bashrc" ]] || return 0
+
+  while IFS=$'\t' read -r key value; do
+    found=1
+    case "$key" in
+      HARBOR_CC_OPIK_ENABLE_HOOK)
+        if ! declare -p HARBOR_CC_OPIK_ENABLE_HOOK >/dev/null 2>&1; then
+          printf -v HARBOR_CC_OPIK_ENABLE_HOOK '%s' "$value"
+        fi
+        ;;
+      HARBOR_CC_CLAUDE_TGZ_SOURCE)
+        if ! declare -p CLAUDE_TGZ_SOURCE >/dev/null 2>&1 &&
+           ! declare -p HARBOR_CC_CLAUDE_TGZ_SOURCE >/dev/null 2>&1; then
+          printf -v HARBOR_CC_CLAUDE_TGZ_SOURCE '%s' "$value"
+        fi
+        ;;
+      HARBOR_CC_PY_WHEEL_DIR_SOURCE)
+        if ! declare -p CLAUDE_WHEEL_DIR_SOURCE >/dev/null 2>&1 &&
+           ! declare -p HARBOR_CC_PY_WHEEL_DIR_SOURCE >/dev/null 2>&1; then
+          printf -v HARBOR_CC_PY_WHEEL_DIR_SOURCE '%s' "$value"
+        fi
+        ;;
+    esac
+  done < <(python3 - "$bashrc" <<'PY'
+import shlex
+import sys
+from pathlib import Path
+
+begin = "# >>> agent-fleet env >>>"
+end = "# <<< agent-fleet env <<<"
+legacy_prefix = "T" + "B_CC_"
+names = {
+    legacy_prefix + "OPIK_ENABLE_HOOK": "HARBOR_CC_OPIK_ENABLE_HOOK",
+    legacy_prefix + "CLAUDE_TGZ_SOURCE": "HARBOR_CC_CLAUDE_TGZ_SOURCE",
+    legacy_prefix + "PY_WHEEL_DIR_SOURCE": "HARBOR_CC_PY_WHEEL_DIR_SOURCE",
+}
+in_block = False
+for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    stripped = line.strip()
+    if stripped == begin:
+        in_block = True
+        continue
+    if stripped == end:
+        in_block = False
+        continue
+    if not in_block:
+        continue
+    try:
+        fields = shlex.split(stripped, comments=True, posix=True)
+    except ValueError:
+        continue
+    if len(fields) != 2 or fields[0] != "export" or "=" not in fields[1]:
+        continue
+    key, value = fields[1].split("=", 1)
+    replacement = names.get(key)
+    if replacement:
+        print(f"{replacement}\t{value}")
+PY
+)
+
+  if (( found )); then
+    warn "Migrating legacy TerminalBench Claude package settings from ~/.bashrc."
+  fi
+}
+
+load_legacy_managed_claude_package_config
+CLAUDE_TGZ_SOURCE="${CLAUDE_TGZ_SOURCE:-${HARBOR_CC_CLAUDE_TGZ_SOURCE:-}}"
+CLAUDE_WHEEL_DIR_SOURCE="${CLAUDE_WHEEL_DIR_SOURCE:-${HARBOR_CC_PY_WHEEL_DIR_SOURCE:-}}"
 if [[ -n "${CLAUDE_TGZ_SOURCE:-}" || -n "${CLAUDE_WHEEL_DIR_SOURCE:-}" ]]; then
   if [[ -z "${CLAUDE_TGZ_SOURCE:-}" || -z "${CLAUDE_WHEEL_DIR_SOURCE:-}" ]]; then
     warn "Only one of CLAUDE_TGZ_SOURCE / CLAUDE_WHEEL_DIR_SOURCE is set; both are needed. Ignoring local package."
@@ -434,9 +503,9 @@ block = [
 ]
 if tgz and wheel:
     block += [
-        "export TB_CC_OPIK_ENABLE_HOOK=1",
-        f"export TB_CC_CLAUDE_TGZ_SOURCE={q(tgz)}",
-        f"export TB_CC_PY_WHEEL_DIR_SOURCE={q(wheel)}",
+        "export HARBOR_CC_OPIK_ENABLE_HOOK=1",
+        f"export HARBOR_CC_CLAUDE_TGZ_SOURCE={q(tgz)}",
+        f"export HARBOR_CC_PY_WHEEL_DIR_SOURCE={q(wheel)}",
     ]
 block.append(END)
 
@@ -448,9 +517,9 @@ ok "Env vars written to ~/.bashrc (idempotent); backup at ${BASHRC}.bak.agent-fl
 export PI_OFFLINE=1
 export AGENT_FLEET_API_KEY="${AUTH_TOKEN}"
 if [[ -n "${CLAUDE_TGZ_SOURCE:-}" && -n "${CLAUDE_WHEEL_DIR_SOURCE:-}" ]]; then
-  export TB_CC_OPIK_ENABLE_HOOK=1
-  export TB_CC_CLAUDE_TGZ_SOURCE="${CLAUDE_TGZ_SOURCE}"
-  export TB_CC_PY_WHEEL_DIR_SOURCE="${CLAUDE_WHEEL_DIR_SOURCE}"
+  export HARBOR_CC_OPIK_ENABLE_HOOK=1
+  export HARBOR_CC_CLAUDE_TGZ_SOURCE="${CLAUDE_TGZ_SOURCE}"
+  export HARBOR_CC_PY_WHEEL_DIR_SOURCE="${CLAUDE_WHEEL_DIR_SOURCE}"
 fi
 
 # ---- 7. Clone repo ----
