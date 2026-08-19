@@ -124,8 +124,6 @@ class PiAgentInvoker:
             json.dumps(result.provenance, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         )
         if result.block_reason or result.output_json is None:
-            error = result.block_reason or "pi_final_json_missing"
-            if result.stderr_tail:
-                error = f"{error}: {result.stderr_tail}"
+            error = (result.block_reason or "pi_final_json_missing").split(":", 1)[0]
             raise RuntimeError(f"pi agent failed for {label} attempt {attempt}: {error}")
         return json.dumps(result.output_json, ensure_ascii=False)

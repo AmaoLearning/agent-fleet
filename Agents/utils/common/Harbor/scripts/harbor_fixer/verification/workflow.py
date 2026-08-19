@@ -12,6 +12,7 @@ from ..validation import (
     HARBOR_AGENTS,
     TASK_VERIFICATION_STATUSES,
     ValidationError,
+    json_sha256,
     task_key,
     validate_fix_plan_set,
     validate_verification_input,
@@ -60,6 +61,9 @@ def build_verification_input(
     dataset_path: str = "",
     model: str = "",
 ) -> dict[str, Any]:
+    fix_plan_path = fix_plan_path.expanduser().resolve()
+    exec_result_path = exec_result_path.expanduser().resolve()
+    verification_run_dir = verification_run_dir.expanduser().resolve()
     fix_plan = read_json(fix_plan_path)
     exec_result = read_json(exec_result_path)
     validate_fix_plan_set(fix_plan)
@@ -289,6 +293,7 @@ def run_verification(
         "source": {
             "fix_plan_path": verification_input["fix_plan_path"],
             "exec_result_path": verification_input["exec_result_path"],
+            "exec_result_sha256": json_sha256(exec_result),
             "verification_run_dir": verification_input["verification_run_dir"],
             "analyzer_monitor_path": str(fix_plan["source"].get("monitor_path") or ""),
             "monitor_output_path": monitor_path,

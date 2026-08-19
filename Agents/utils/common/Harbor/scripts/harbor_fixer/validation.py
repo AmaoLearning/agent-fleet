@@ -65,6 +65,17 @@ INCONCLUSIVE_VERIFICATION_REASONS = {
     "rerun_failed",
 }
 REPORT_SUMMARY_STATUSES = {"success", "failed"}
+REPORT_RERUN_FIELDS = (
+    "exit_code",
+    "started_at",
+    "finished_at",
+    "duration_ms",
+    "skipped_reason",
+    "agent",
+    "monitor_policy",
+    "monitor_available",
+    "monitor_timed_out",
+)
 
 
 def json_sha256(value: Any) -> str:
@@ -102,6 +113,14 @@ def require_enum(value: Any, name: str, allowed: set[str]) -> str:
     if text not in allowed:
         raise ValidationError(f"{name} must be one of: {', '.join(sorted(allowed))}")
     return text
+
+
+def report_rerun_facts(rerun: Any) -> dict[str, Any]:
+    if not isinstance(rerun, dict):
+        return {}
+    return {
+        key: rerun[key] for key in REPORT_RERUN_FIELDS if key in rerun
+    }
 
 
 def _require_exact_fields(value: dict[str, Any], name: str, fields: set[str]) -> None:
@@ -979,3 +998,144 @@ def validate_report_summary(payload: dict[str, Any]) -> None:
     ):
         require_string(caveat, f"report summary caveats[{index}]")
     require_list(payload.get("generation_errors"), "report summary generation_errors")
+
+
+def _core_task_result(task_result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "task": task_result.get("task"),
+        "plan_id": task_result.get("plan_id"),
+        "sampled": task_result.get("sampled"),
+        "smoke_task_index": task_result.get("smoke_task_index"),
+        "exec_status": task_result.get("exec_status"),
+        "exec_failure_reason": task_result.get("exec_failure_reason"),
+        "new_run": task_result.get("new_run"),
+        "verification_status": task_result.get("verification_status"),
+    }
+
+
+def _core_run_record(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "task_index": record.get("task_index"),
+        "task_name": record.get("task_name"),
+        "task_complete_status": record.get("task_complete_status"),
+        "task_result_signals": record.get("task_result_signals"),
+        "evidence": record.get("evidence"),
+        "result_path": record.get("result_path"),
+    }
+
+
+def _require_equal(actual: Any, expected: Any, name: str) -> None:
+    if actual != expected:
+        raise ValidationError(f"{name} must match verification result")
+
+
+def _validate_report_matches_verification(
+    payload: dict[str, Any], verification_result: dict[str, Any]
+) -> None:
+    validate_verification_result(verification_result)
+    _require_equal(payload.get("agent"), verification_result.get("agent"), "agent")
+    _require_equal(payload.get("status"), verification_result.get("status"), "status")
+    _require_equal(
+        payload.get("execution"), verification_result.get("execution"), "execution"
+    )
+    _require_equal(
+        payload.get("reason_codes"),
+        verification_result.get("reason_codes"),
+        "reason_codes",
+    )
+    new_run = require_dict(payload.get("new_run"), "new_run")
+    _require_equal(
+        new_run.get("summary"),
+        verification_result.get("new_run_summary"),
+        "new_run.summary",
+    )
+    _require_equal(
+        new_run.get("rerun"),
+        report_rerun_facts(verification_result.get("rerun")),
+        "new_run.rerun",
+    )
+    _require_equal(
+        new_run.get("verification_mode"),
+        verification_result.get("verification_mode"),
+        "new_run.verification_mode",
+    )
+    if "sampling" in verification_result:
+        _require_equal(
+            new_run.get("sampling"),
+            verification_result.get("sampling"),
+            "new_run.sampling",
+        )
+    _require_equal(
+        payload.get("plan_results"),
+        verification_result.get("plan_results"),
+        "plan_results",
+    )
+    _require_equal(
+        [
+            _core_task_result(require_dict(item, "task_result"))
+            for item in require_list(payload.get("task_results"), "task_results")
+        ],
+        [
+            _core_task_result(require_dict(item, "verification_task_result"))
+            for item in require_list(
+                verification_result.get("task_results"), "verification task_results"
+            )
+        ],
+        "task_results",
+    )
+    _require_equal(
+        [
+            _core_run_record(require_dict(item, "unexpected_result"))
+            for item in require_list(
+                payload.get("unexpected_run_task_results", []),
+                "unexpected_run_task_results",
+            )
+        ],
+        [
+            _core_run_record(require_dict(item, "verification_unexpected_result"))
+            for item in require_list(
+                verification_result.get("unexpected_run_task_results", []),
+                "verification unexpected_run_task_results",
+            )
+        ],
+        "unexpected_run_task_results",
+    )
+
+
+def validate_fix_report(
+    payload: dict[str, Any], verification_result: dict[str, Any] | None = None
+) -> None:
+    _check_kind(payload, version=1, kind="harbor_fixer_report", name="fix report")
+    validate_report_summary(require_dict(payload.get("summary"), "summary"))
+    for key in ("source", "old_run", "new_run", "execution", "artifacts"):
+        require_dict(payload.get(key), key)
+    for key in (
+        "reason_codes",
+        "plan_results",
+        "task_results",
+        "unexpected_run_task_results",
+    ):
+        require_list(payload.get(key), key)
+    new_run = payload["new_run"]
+    validate_verification_result(
+        {
+            "schema_version": 2,
+            "kind": "harbor_fixer_verification_result",
+            "agent": payload.get("agent"),
+            "verification_mode": new_run.get("verification_mode"),
+            "source": {},
+            "execution": payload["execution"],
+            "status": payload.get("status"),
+            "reason_codes": payload["reason_codes"],
+            "rerun": new_run.get("rerun"),
+            "sampling": new_run.get("sampling"),
+            "new_run_summary": new_run.get("summary"),
+            "plan_results": payload["plan_results"],
+            "task_results": payload["task_results"],
+            "unexpected_run_task_results": payload[
+                "unexpected_run_task_results"
+            ],
+        }
+    )
+    if verification_result is not None:
+        _validate_report_matches_verification(payload, verification_result)
