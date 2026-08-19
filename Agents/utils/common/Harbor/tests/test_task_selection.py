@@ -1,6 +1,8 @@
+import json
 import os
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -174,6 +176,108 @@ class HarborTaskSelectionTest(unittest.TestCase):
             self.assertFalse((fixer_dir / "fix-report-latest.md").exists())
             self.assertTrue(unrelated.exists())
             self.assertTrue(fixer_unrelated.exists())
+
+    def test_reset_removes_fixer_control_state_but_keeps_fixer_results(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output, common = self.local_fixture(Path(tmp), "task-a")
+            fixer_dir = output / "fixer"
+            fixer_dir.mkdir(parents=True)
+            for name in (
+                "fixer-state.json",
+                "fixer-control-request.json",
+                "fixer-approval-request.json",
+                "fixer-user-decision.json",
+            ):
+                (fixer_dir / name).write_text("{}\n", encoding="utf-8")
+            result_file = fixer_dir / "exec-result-latest.json"
+            result_file.write_text("{}\n", encoding="utf-8")
+
+            result = self.run_env('mkdir -p "$QUEUE_DIR"; harbor_reset_run_state', **common)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for name in (
+                "fixer-state.json",
+                "fixer-control-request.json",
+                "fixer-approval-request.json",
+                "fixer-user-decision.json",
+            ):
+                self.assertFalse((fixer_dir / name).exists())
+            self.assertTrue(result_file.exists())
+
+    def test_reset_refuses_live_fixer_before_removing_run_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output, common = self.local_fixture(Path(tmp), "task-a")
+            fixer_dir = output / "fixer"
+            monitor_dir = output / "monitor"
+            fixer_dir.mkdir(parents=True)
+            monitor_dir.mkdir()
+            start_ticks = int(
+                Path(f"/proc/{os.getpid()}/stat")
+                .read_text(encoding="utf-8")
+                .rsplit(")", 1)[1]
+                .split()[19]
+            )
+            state_path = fixer_dir / "fixer-state.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "fixer_workflow_id": "fixer-live",
+                        "status": "planning",
+                        "owner": {
+                            "pid": os.getpid(),
+                            "start_ticks": start_ticks,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            monitor_marker = monitor_dir / "keep.json"
+            monitor_marker.write_text("{}\n", encoding="utf-8")
+
+            result = self.run_env(
+                'mkdir -p "$QUEUE_DIR"; harbor_reset_run_state', **common
+            )
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("refusing to reset run state", result.stderr)
+            self.assertTrue(state_path.exists())
+            self.assertTrue(monitor_marker.exists())
+
+    def test_reset_holds_fixer_lock_until_cleanup_finishes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output, common = self.local_fixture(Path(tmp), "task-a")
+            marker = output / "reset-entered"
+            env = os.environ.copy()
+            env.pop("RESET_RUN", None)
+            env.update(common)
+            command = (
+                '. "$1"; mkdir -p "$QUEUE_DIR"; '
+                "harbor_stop_analyzer_supervisor() { "
+                ': > "$OUTPUT_PATH/reset-entered"; sleep 1; }; '
+                "harbor_reset_run_state"
+            )
+            process = subprocess.Popen(
+                ["bash", "-c", command, "bash", str(ENV_SH)],
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            self.addCleanup(lambda: process.poll() is None and process.kill())
+            for _ in range(100):
+                if marker.exists():
+                    break
+                time.sleep(0.02)
+            self.assertTrue(marker.exists())
+
+            probe = subprocess.run(
+                ["flock", "-n", str(output / "fixer" / ".fixer-control.lock"), "true"],
+                check=False,
+            )
+            stdout, stderr = process.communicate(timeout=5)
+
+            self.assertEqual(probe.returncode, 1)
+            self.assertEqual(process.returncode, 0, stderr or stdout)
 
     def test_start_passes_run_id_to_analyzer(self) -> None:
         self.assertIn('--run-id "$RUN_ID"', START_SH.read_text(encoding="utf-8"))
