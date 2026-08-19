@@ -103,12 +103,34 @@ python qz_template_resolver.py materialize \
   --task adaptive-rejection-sampler
 ```
 
+## Materialize an explicit task batch
+
+Use the batch tool only during Template preparation. It requires an explicit
+task list and intentionally has no `--all` mode:
+
+```bash
+python qz_template_batch_materialize.py \
+  --mapping /path/to/terminalbench21-qz-templates.json \
+  --task-list /path/to/selected-tasks.txt \
+  --workers 8
+```
+
+The tool resolves the selected tasks before making QZ API calls, groups them by
+`template_key`, and runs at most `--workers` unique Template operations at once.
+Mapping writes stay serialized in the main process, so successful IDs are saved
+atomically without concurrent workers overwriting each other.
+
+Failures are isolated per unique Template. The command writes a JSON result to
+stdout and exits non-zero if any Template failed. Rerunning the same command
+reuses IDs already saved in the mapping and ready deterministic aliases.
+
 The write commands record `template_id` only after live status, deterministic
 alias, and QZ spec validation succeed. QZ's read API does not expose the source
 image, so the server-returned alias is the live content-identity commitment: it
 is derived from the exact image reference, image source, and spec in the
 mapping. A legacy Template without that alias must be materialized under the
 deterministic name instead of being bound by ID.
+
 Enable per-task selection in the runner with:
 
 ```bash

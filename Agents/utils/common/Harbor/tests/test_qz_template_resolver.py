@@ -177,14 +177,14 @@ class QzTemplateResolverTest(unittest.TestCase):
 
     def test_task_key_resolves_unique_nested_names_and_rejects_ambiguity(self):
         self.assertEqual(
-            resolver._task_key(
+            resolver.resolve_task_key(
                 {"tasks": {"suite/task-a": {}}},
                 "task-a",
             ),
             "suite/task-a",
         )
         self.assertEqual(
-            resolver._task_key(
+            resolver.resolve_task_key(
                 {"tasks": {"task-a": {}, "suite/task-a": {}}},
                 "benchmark/suite/task-a",
             ),
@@ -194,7 +194,7 @@ class QzTemplateResolverTest(unittest.TestCase):
             resolver.QzTemplateResolutionError,
             "ambiguously matches",
         ):
-            resolver._task_key(
+            resolver.resolve_task_key(
                 {"tasks": {"first/task-a": {}, "second/task-a": {}}},
                 "task-a",
             )

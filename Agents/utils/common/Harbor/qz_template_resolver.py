@@ -48,7 +48,8 @@ def load_mapping(path: Path) -> dict[str, Any]:
     return payload
 
 
-def _task_key(payload: Mapping[str, Any], task_name: str) -> str:
+def resolve_task_key(payload: Mapping[str, Any], task_name: str) -> str:
+    """Return the canonical mapping key for one Harbor task name."""
     tasks = payload["tasks"]
     name = task_name.strip().strip("/")
     if name in tasks:
@@ -101,7 +102,7 @@ def task_template_entry(
     task_name: str,
 ) -> tuple[str, dict[str, Any]]:
     """Return the template key and entry selected for one Harbor task."""
-    key = _task_key(payload, task_name)
+    key = resolve_task_key(payload, task_name)
     task = payload["tasks"].get(key)
     if not isinstance(task, dict):
         raise QzTemplateResolutionError(f"mapping task {key!r} must be an object")
@@ -269,7 +270,7 @@ def _write_mapping(path: Path, payload: Mapping[str, Any]) -> None:
     temporary.replace(path)
 
 
-def _record_template_id(
+def record_template_id(
     mapping_path: Path,
     template_key: str,
     template_id: str,
@@ -311,23 +312,37 @@ def bind_task_template(
         raise QzTemplateResolutionError(
             f"Template API returned {resolved_id!r} for requested ID {requested_id!r}"
         )
-    _record_template_id(mapping_path, template_key, resolved_id)
+    record_template_id(mapping_path, template_key, resolved_id)
     return resolved_id
 
 
-def materialize_task_template(
-    mapping_path: Path,
-    task_name: str,
+def materialize_template_entry(
+    template_key: str,
+    entry: Mapping[str, Any],
     client: manager.QzTemplateClient,
     *,
     timeout: float,
     stderr: TextIO = sys.stderr,
 ) -> str:
-    """Create or reuse one mapped Template, then persist its ready ID."""
-    payload = load_mapping(mapping_path)
-    template_key, entry = task_template_entry(payload, task_name)
-    if entry.get("template_id") is not None:
-        return resolve_task_template(mapping_path, task_name, client)
+    """Create or reuse one validated mapping entry without writing the mapping."""
+    cached_id = entry.get("template_id")
+    if cached_id is not None:
+        if not isinstance(cached_id, str) or not cached_id.strip():
+            raise QzTemplateResolutionError(
+                f"mapping Template {template_key!r} has an invalid template_id"
+            )
+        requested_id = cached_id.strip()
+        ready_id = _validated_ready_template_id(
+            client.get_template(requested_id),
+            entry,
+            f"mapped Template {template_key!r}",
+        )
+        if ready_id != requested_id:
+            raise QzTemplateResolutionError(
+                f"mapped Template {template_key!r} returned ID {ready_id!r} "
+                f"for requested ID {requested_id!r}"
+            )
+        return ready_id
 
     template_id = manager.create_template_from_image(
         client,
@@ -348,7 +363,28 @@ def materialize_task_template(
         raise QzTemplateResolutionError(
             f"Template API returned {ready_id!r} for materialized ID {template_id!r}"
         )
-    _record_template_id(mapping_path, template_key, ready_id)
+    return ready_id
+
+
+def materialize_task_template(
+    mapping_path: Path,
+    task_name: str,
+    client: manager.QzTemplateClient,
+    *,
+    timeout: float,
+    stderr: TextIO = sys.stderr,
+) -> str:
+    """Create or reuse one mapped Template, then persist its ready ID."""
+    payload = load_mapping(mapping_path)
+    template_key, entry = task_template_entry(payload, task_name)
+    ready_id = materialize_template_entry(
+        template_key,
+        entry,
+        client,
+        timeout=timeout,
+        stderr=stderr,
+    )
+    record_template_id(mapping_path, template_key, ready_id)
     return ready_id
 
 
