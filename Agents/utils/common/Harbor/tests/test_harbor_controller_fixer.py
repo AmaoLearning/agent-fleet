@@ -74,11 +74,18 @@ class HarborControllerFixerTest(FixerTestCase):
             "harbor_controller.fixer.run_verification_from_paths",
             return_value={"status": "fixed"},
         )
-        self.write_report = mock.patch(
-            "harbor_controller.fixer.write_fix_report",
-            side_effect=lambda *args: args[-1].write_text(
+        def write_report(*args: object, **kwargs: object) -> dict:
+            output_dir = args[2]
+            assert isinstance(output_dir, Path)
+            write_json(output_dir / "fix-report-latest.json", {"status": "fixed"})
+            (output_dir / "fix-report-latest.md").write_text(
                 "# Harbor Fixer Report\n", encoding="utf-8"
-            ),
+            )
+            return {"summary": {"status": "success"}}
+
+        self.write_report = mock.patch(
+            "harbor_controller.fixer.run_report_from_paths",
+            side_effect=write_report,
         )
         self.update_summary = mock.patch(
             "harbor_controller.fixer.update_fixer_results"
@@ -142,6 +149,21 @@ class HarborControllerFixerTest(FixerTestCase):
         self.assertEqual(self.verify_mock.call_args.kwargs["model"], "source-model")
         self.assertEqual(self.verify_mock.call_args.kwargs["rerun_timeout"], 900)
         self.write_report_mock.assert_called_once()
+        report_call = self.write_report_mock.call_args
+        self.assertEqual(
+            report_call.args[:3],
+            (
+                self.run_dir / "fixer" / "verification-result-latest.json",
+                self.run_dir / "analyzer",
+                self.run_dir / "fixer",
+            ),
+        )
+        self.assertEqual(report_call.kwargs["baseline_run_dir"], self.run_dir)
+        self.assertEqual(report_call.kwargs["baseline_monitor_policy"], "auto")
+        self.assertEqual(
+            completed["paths"]["fix_report_json"],
+            str(self.run_dir / "fixer" / "fix-report-latest.json"),
+        )
         self.update_summary_mock.assert_called_once_with(
             self.run_dir / "analyzer" / "benchmark-summary.md",
             self.run_dir / "fixer" / "fix-report-latest.md",
@@ -169,12 +191,17 @@ class HarborControllerFixerTest(FixerTestCase):
                 cancel_fixer(self.run_dir, state["fixer_workflow_id"])
             return {"status": "partially_fixed"}
 
-        def report(*args: object) -> None:
+        def report(*args: object, **kwargs: object) -> dict:
             status = fixer_status(self.run_dir)
             observed.append(str(status["status"]))
             self.assertEqual(status["verification_status"], "partially_fixed")
             self.assertEqual(status["report_status"], "running")
-            args[-1].write_text("# Harbor Fixer Report\n", encoding="utf-8")
+            output_dir = args[2]
+            assert isinstance(output_dir, Path)
+            (output_dir / "fix-report-latest.md").write_text(
+                "# Harbor Fixer Report\n", encoding="utf-8"
+            )
+            return {"summary": {"status": "success"}}
 
         self.verify_mock.side_effect = verify
         self.write_report_mock.side_effect = report
