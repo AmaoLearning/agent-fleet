@@ -9,13 +9,14 @@ from typing import Any
 
 from harbor_pi_runtime import (
     PiProcessResult,
+    models_config,
+    normalized_base_url,
     run_pi_json_process,
     write_text_atomic,
 )
 from harbor_pi_runtime import (
     load_final_json_from_event_stream as _load_final_json_from_event_stream,
 )
-from harbor_pi_runtime.process import models_config, normalized_base_url
 
 PI_EXTENSION_PATH = Path(__file__).resolve().parent / "pi_extensions" / "analyzer_path_gate.ts"
 ANALYZER_SYSTEM_PROMPT = (

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import shutil
 from pathlib import Path
 from typing import Any
+
+from harbor_runtime import json_sha256 as _json_sha256
 
 from ..agent_invocation import AgentInvoker
 from ..artifact_io import write_json_atomic
@@ -33,16 +33,6 @@ PATH_STABLE_T3_READ_COMMANDS = {
     "test",
     "wc",
 }
-
-
-def _json_sha256(value: Any) -> str:
-    serialized = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 def _resolved_cwd(action: dict[str, Any], workspace_root: Path) -> Path:

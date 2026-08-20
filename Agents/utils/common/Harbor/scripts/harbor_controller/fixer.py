@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
-import json
 import os
 import shlex
 import time
@@ -12,7 +11,6 @@ import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +30,10 @@ from harbor_fixer.plan_generation import (
 from harbor_fixer.policy import run_policy_preflight
 from harbor_fixer.report import run_report_from_paths
 from harbor_fixer.verifier import run_verification_from_paths
+from harbor_pi_runtime import base_url_from_env, model_from_env
+from harbor_runtime import ProcessIdentity
+from harbor_runtime import json_sha256 as _json_sha256
+from harbor_runtime import utc_now as _utc_now
 from write_benchmark_summary import update_fixer_results
 
 ACTIVE_STATUSES = {
@@ -44,10 +46,6 @@ ACTIVE_STATUSES = {
     "cancelling",
 }
 OWNER_STATUSES = ACTIVE_STATUSES - {"awaiting_approval"}
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _fixer_dir(run_dir: Path) -> Path:
@@ -114,32 +112,11 @@ def _state_lock(run_dir: Path, inherited_fd: int | None = None) -> Iterator[None
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def _json_sha256(payload: Any) -> str:
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def _process_start_ticks(pid: int) -> int | None:
-    try:
-        stat_fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rsplit(
-            ")", 1
-        )[1].split()
-        return int(stat_fields[19])
-    except (IndexError, OSError, ValueError):
-        return None
-
-
 def _current_owner() -> dict[str, int]:
-    pid = os.getpid()
-    start_ticks = _process_start_ticks(pid)
-    if start_ticks is None:
+    identity = ProcessIdentity.capture(os.getpid())
+    if identity is None:
         raise ValueError("cannot identify the Fixer controller process")
-    return {"pid": pid, "start_ticks": start_ticks}
+    return identity.as_dict()
 
 
 def _owner_is_live(state: dict[str, Any]) -> bool:
@@ -147,11 +124,10 @@ def _owner_is_live(state: dict[str, Any]) -> bool:
     if not isinstance(owner, dict):
         return False
     try:
-        pid = int(owner["pid"])
-        start_ticks = int(owner["start_ticks"])
+        identity = ProcessIdentity.from_mapping(owner)
     except (KeyError, TypeError, ValueError):
         return False
-    return pid > 0 and _process_start_ticks(pid) == start_ticks
+    return identity.is_live()
 
 
 def _process_record_is_live(path: Path) -> bool:
@@ -161,16 +137,15 @@ def _process_record_is_live(path: Path) -> bool:
     if process.get("status") == "launching":
         return True
     try:
-        pid = int(process["pid"])
-        start_ticks = int(process["start_ticks"])
+        identity = ProcessIdentity.from_mapping(process)
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(f"invalid active Fixer process record: {path}") from exc
-    if pid <= 0:
+    if identity.pid <= 0:
         raise ValueError("invalid active Fixer process pid")
-    if _process_start_ticks(pid) == start_ticks:
+    if identity.is_live():
         return True
     try:
-        os.killpg(pid, 0)
+        os.killpg(identity.pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
@@ -219,9 +194,8 @@ def _runtime_config(
         "benchmark_model": benchmark_config["model"],
         "pi_bin": os.environ.get("HARBOR_FIXER_PI_BIN", "pi"),
         "pi_provider": os.environ.get("HARBOR_FIXER_PI_PROVIDER", "harbor-fixer"),
-        "pi_model": os.environ.get("HARBOR_FIXER_MODEL") or os.environ.get("MODEL", ""),
-        "pi_base_url": os.environ.get("HARBOR_FIXER_BASE_URL")
-        or os.environ.get("BASE_URL", ""),
+        "pi_model": model_from_env("HARBOR_FIXER"),
+        "pi_base_url": base_url_from_env("HARBOR_FIXER"),
         "pi_api_key_env": "HARBOR_FIXER_API_KEY",
         "agent_timeout": _positive_env_int("HARBOR_FIXER_AGENT_TIMEOUT", 900),
         "execution_timeout": _positive_env_int("HARBOR_FIXER_EXECUTION_TIMEOUT", 300),
@@ -245,17 +219,14 @@ def _runtime_config(
 
 
 def _pi_config(config: dict[str, Any]) -> PiInvocationConfig:
-    api_key_env = str(config["pi_api_key_env"])
-    if not os.environ.get(api_key_env) and os.environ.get("API_KEY"):
-        os.environ[api_key_env] = os.environ["API_KEY"]
     return PiInvocationConfig(
         pi_bin=str(config["pi_bin"]),
         provider=str(config["pi_provider"]),
         model=str(config["pi_model"]),
         base_url=str(config["pi_base_url"]),
-        api_key_env=api_key_env,
+        api_key_env=str(config["pi_api_key_env"]),
         timeout_seconds=int(config["agent_timeout"]),
-    )
+    ).with_api_key_fallback()
 
 
 def _notification(run_dir: Path) -> dict[str, Any]:

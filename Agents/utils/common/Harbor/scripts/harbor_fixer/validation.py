@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import shlex
 from typing import Any
+
+from harbor_runtime import json_sha256, task_key
 
 
 class ValidationError(ValueError):
@@ -76,16 +77,6 @@ REPORT_RERUN_FIELDS = (
     "monitor_available",
     "monitor_timed_out",
 )
-
-
-def json_sha256(value: Any) -> str:
-    serialized = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 def require_dict(value: Any, name: str) -> dict[str, Any]:
@@ -196,15 +187,6 @@ def _validate_fix_action(value: Any, name: str) -> str:
     if replacements < 1:
         raise ValidationError(f"{name}.edit.expected_replacements must be positive")
     return action_id
-
-
-def task_key(task: dict[str, Any]) -> tuple[str, str, str]:
-    attempt_id = task.get("attempt_id")
-    return (
-        str(task.get("task_index") or ""),
-        str(task.get("task_name") or ""),
-        "" if attempt_id is None else str(attempt_id),
-    )
 
 
 def _require_exact_task_identity(

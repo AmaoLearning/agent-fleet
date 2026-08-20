@@ -15,6 +15,10 @@ from pathlib import Path
 from typing import Any, BinaryIO
 from urllib.parse import urlparse
 
+from harbor_runtime import ProcessIdentity, canonical_json, write_text_atomic
+
+from .config import models_config, normalized_base_url
+
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 MESSAGE_UPDATE_RE = re.compile(br'^\s*\{\s*"type"\s*:\s*"message_update"\s*[,}]')
 THINKING_LEVELS = {"off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
@@ -86,17 +90,6 @@ def _consume_compact_stream(
         state.stream_error = exc
 
 
-def canonical_json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
-def normalized_base_url(base_url: str) -> str:
-    value = base_url.strip().rstrip("/")
-    if value and not value.endswith("/v1"):
-        value = f"{value}/v1"
-    return value
-
-
 def reason_code(message: str) -> str:
     value = re.sub(r"[^A-Za-z0-9]+", "_", message.strip().lower()).strip("_")
     return value[:80] or "unknown_error"
@@ -156,48 +149,6 @@ def pi_environment(
             entries.append(hostname)
         environment[key] = ",".join(entries)
     return environment, True
-
-
-def models_config(
-    *,
-    provider: str,
-    model: str,
-    base_url: str,
-    api_key_env: str,
-    display_name: str,
-    auth_header: bool | None = None,
-) -> dict[str, Any]:
-    provider_config: dict[str, Any] = {
-        "baseUrl": base_url,
-        "api": "openai-completions",
-        "apiKey": f"${api_key_env}",
-        "compat": {
-            "supportsDeveloperRole": False,
-            "supportsReasoningEffort": False,
-            "supportsUsageInStreaming": True,
-            "maxTokensField": "max_tokens",
-            "thinkingFormat": "zai",
-        },
-        "models": [
-            {
-                "id": model,
-                "name": display_name,
-                "reasoning": True,
-                "input": ["text"],
-                "contextWindow": 204800,
-                "maxTokens": 32768,
-                "cost": {
-                    "input": 0,
-                    "output": 0,
-                    "cacheRead": 0,
-                    "cacheWrite": 0,
-                },
-            }
-        ],
-    }
-    if auth_header is not None:
-        provider_config["authHeader"] = auth_header
-    return {"providers": {provider: provider_config}}
 
 
 def parse_jsonl(raw: str) -> tuple[list[dict[str, Any]], int]:
@@ -388,31 +339,14 @@ def pi_version(binary: str, environment: dict[str, str], cwd: Path) -> str | Non
     return value or None
 
 
-def write_text_atomic(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temp_path.write_text(content, encoding="utf-8")
-    temp_path.replace(path)
-
-
-def _process_start_ticks(pid: int) -> int | None:
-    try:
-        stat_fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rsplit(
-            ")", 1
-        )[1].split()
-        return int(stat_fields[19])
-    except (IndexError, OSError, ValueError):
-        return None
-
-
 def _write_process_record(path: Path, process: subprocess.Popen[Any]) -> None:
-    start_ticks = _process_start_ticks(process.pid)
-    if start_ticks is None:
+    identity = ProcessIdentity.capture(process.pid)
+    if identity is None:
         raise OSError("cannot identify the Pi process")
     write_text_atomic(
         path,
         json.dumps(
-            {"status": "running", "pid": process.pid, "start_ticks": start_ticks},
+            {"status": "running", **identity.as_dict()},
             sort_keys=True,
         )
         + "\n",

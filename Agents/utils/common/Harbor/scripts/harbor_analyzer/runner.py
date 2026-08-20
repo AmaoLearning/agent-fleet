@@ -15,6 +15,8 @@ from harbor_pi_runtime import sleep_before_retry
 
 from . import PROMPT_VERSION, SCHEMA_VERSION, TAXONOMY_VERSION
 from .contract import validate_handover
+from .identity import task_identity as _task_identity
+from .identity import task_key as _task_key
 from .io import load_json, stable_hash, utc_now, write_json_atomic, write_text_atomic
 from .pi import dispatch_to_child
 from .prompt import (
@@ -111,24 +113,6 @@ def _retry_timeout_seconds(reason: str, timeout_seconds: int) -> int:
     if reason == "pi_dispatch_timeout":
         return _timeout_retry_seconds(timeout_seconds)
     return timeout_seconds
-
-
-def _task_identity(task: dict[str, Any] | None) -> dict[str, Any]:
-    task = task or {}
-    return {
-        "task_index": str(task.get("task_index") or ""),
-        "task_name": str(task.get("task_name") or ""),
-        "attempt_id": task.get("attempt_id"),
-    }
-
-
-def _task_key(task: dict[str, Any] | None) -> tuple[str, str, str]:
-    identity = _task_identity(task)
-    return (
-        identity["task_index"],
-        identity["task_name"],
-        "" if identity["attempt_id"] is None else str(identity["attempt_id"]),
-    )
 
 
 def _task_slug(task: dict[str, Any]) -> str:

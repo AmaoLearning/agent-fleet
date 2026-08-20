@@ -9,9 +9,10 @@ import signal
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from harbor_runtime import utc_now as _utc_now
 
 from ..validation import ValidationError, task_key
 from .run_state import generate_monitor_snapshot
@@ -78,10 +79,6 @@ GENERATED_MONITOR_FILES = {
     "analyzer-handover-latest.json",
     "runner-action-latest.json",
 }
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _read_log_tail(stream: Any) -> str:

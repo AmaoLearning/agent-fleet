@@ -23,19 +23,18 @@ from harbor_fixer.report import run_report_from_paths
 from harbor_fixer.report.prompt import REPORT_MAIN_AGENT_PROMPT
 from harbor_fixer.validation import HARBOR_AGENTS, ValidationError
 from harbor_fixer.verifier import run_verification_from_paths
+from harbor_pi_runtime import base_url_from_env, model_from_env
 
 
 def _default_model() -> str:
-    return os.environ.get("HARBOR_FIXER_MODEL") or os.environ.get("MODEL") or ""
+    return model_from_env("HARBOR_FIXER")
 
 
 def _default_base_url() -> str:
-    return os.environ.get("HARBOR_FIXER_BASE_URL") or os.environ.get("BASE_URL") or ""
+    return base_url_from_env("HARBOR_FIXER")
 
 
 def build_pi_config(args: argparse.Namespace) -> PiInvocationConfig:
-    if not os.environ.get(args.pi_api_key_env) and os.environ.get("API_KEY"):
-        os.environ[args.pi_api_key_env] = os.environ["API_KEY"]
     return PiInvocationConfig(
         pi_bin=args.pi_bin,
         provider=args.pi_provider,
@@ -43,7 +42,7 @@ def build_pi_config(args: argparse.Namespace) -> PiInvocationConfig:
         base_url=args.pi_base_url,
         api_key_env=args.pi_api_key_env,
         timeout_seconds=args.timeout,
-    )
+    ).with_api_key_fallback()
 
 
 def parse_args() -> argparse.Namespace:

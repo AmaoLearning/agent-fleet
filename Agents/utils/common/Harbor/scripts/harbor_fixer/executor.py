@@ -8,9 +8,11 @@ import signal
 import stat
 import subprocess
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from harbor_runtime import ProcessIdentity
+from harbor_runtime import utc_now as _utc_now
 
 from .agent_invocation import AgentInvoker
 from .artifact_io import read_json, write_json_atomic
@@ -54,20 +56,6 @@ def _safe_label(value: str, prefix: str) -> str:
     safe = safe[:60] or prefix
     digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
     return f"{safe}-{digest}"
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _process_start_ticks(pid: int) -> int | None:
-    try:
-        stat_fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rsplit(
-            ")", 1
-        )[1].split()
-        return int(stat_fields[19])
-    except (IndexError, OSError, ValueError):
-        return None
 
 
 def _tail_summary(value: str, *, limit: int) -> str:
@@ -380,8 +368,8 @@ def _run_command_action(
                     stderr=stderr_handle,
                     start_new_session=True,
                 )
-                start_ticks = _process_start_ticks(process.pid)
-                if start_ticks is None:
+                identity = ProcessIdentity.capture(process.pid)
+                if identity is None:
                     _terminate_process_group(process)
                     raise OSError("cannot identify the action process")
                 try:
@@ -389,8 +377,7 @@ def _run_command_action(
                         active_action_path,
                         {
                             "status": "running",
-                            "pid": process.pid,
-                            "start_ticks": start_ticks,
+                            **identity.as_dict(),
                         },
                     )
                 except OSError:

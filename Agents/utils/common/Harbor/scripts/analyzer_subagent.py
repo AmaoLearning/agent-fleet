@@ -24,6 +24,7 @@ from harbor_analyzer.runner import (
     run_handover,
     task_analysis_timeout_budget_seconds,
 )
+from harbor_pi_runtime import base_url_from_env, inherit_api_key, model_from_env
 
 FOLLOW_MAX_BACKOFF_SECONDS = 300.0
 FOLLOW_MAX_FAILURE_ATTEMPTS = 3
@@ -37,21 +38,11 @@ def _follow_backoff_seconds(attempt_count: int, poll_interval: float) -> float:
 
 
 def _default_base_url() -> str:
-    value = (
-        os.environ.get("HARBOR_ANALYZER_BASE_URL") or os.environ.get("BASE_URL") or ""
-    ).rstrip("/")
-    if value and not value.endswith("/v1"):
-        value += "/v1"
-    return value
+    return base_url_from_env("HARBOR_ANALYZER", normalize=True)
 
 
 def _default_model() -> str:
-    return os.environ.get("HARBOR_ANALYZER_MODEL") or os.environ.get("MODEL") or ""
-
-
-def _ensure_analyzer_env_defaults() -> None:
-    if not os.environ.get("HARBOR_ANALYZER_API_KEY") and os.environ.get("API_KEY"):
-        os.environ["HARBOR_ANALYZER_API_KEY"] = os.environ["API_KEY"]
+    return model_from_env("HARBOR_ANALYZER")
 
 
 def parse_args() -> argparse.Namespace:
@@ -340,7 +331,7 @@ def _write_ready_file(path: Path | None) -> None:
 
 
 def main() -> int:
-    _ensure_analyzer_env_defaults()
+    inherit_api_key("HARBOR_ANALYZER_API_KEY")
     args = parse_args()
     config = _config(args)
     _write_ready_file(args.ready_file)
