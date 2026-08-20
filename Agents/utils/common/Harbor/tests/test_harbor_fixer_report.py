@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -503,3 +504,47 @@ class HarborFixerReportTest(FixerTestCase):
             os.stat(output_dir / "fix-report-latest.json").st_mode & 0o777,
             0o600,
         )
+
+    def test_cli_routes_report_mode_and_returns_clean_validation_error(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            analyzer_dir = root_path / "analyzer"
+            analyzer_dir.mkdir()
+            verification_path = root_path / "verification.json"
+            output_dir = root_path / "output"
+            write_json(verification_path, {})
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "fixer.py"),
+                    "--report-only",
+                    "--verification-result",
+                    str(verification_path),
+                    "--analyzer-output",
+                    str(analyzer_dir),
+                    "--output-dir",
+                    str(output_dir),
+                    "--write-prompts",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+                env={
+                    "PATH": "/usr/bin:/bin",
+                    "HARBOR_FIXER_EXECUTION_TIMEOUT": "invalid",
+                    "HARBOR_FIXER_MAX_CONCURRENCY": "0",
+                    "HARBOR_FIXER_MAX_TASK_SUMMARIES_CHARS": "invalid",
+                    "HARBOR_FIXER_MAX_TASK_SUMMARY_CHARS": "invalid",
+                    "HARBOR_FIXER_RERUN_TIMEOUT": "invalid",
+                    "HARBOR_FIXER_SUMMARY_LIMIT": "invalid",
+                },
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("verification result schema_version must be 2", result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
+            self.assertTrue(
+                (output_dir / "prompts" / "report-main-agent-prompt.md").is_file()
+            )
+            self.assertFalse((output_dir / "prompts" / "main-agent-prompt.md").exists())

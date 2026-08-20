@@ -428,13 +428,28 @@ Verification writes
 `verification-result-latest.json`. If the Fix Plan was generated without a
 local monitor, select `claude-code`, `opencode`, or `oracle` with `--agent`.
 
-### Human-readable Fixer result
+### Generate a report
 
-After Controller-approved execution and verification, Fixer writes a
-deterministic `fix-report-latest.md` from the validated Fix Plan, execution
-result, and verification result. The report contains the summary, successfully
-applied changes, and remaining issues. Controller then replaces only the
-existing `## Fixer Results` section in `benchmark-summary.md`; it does not
+```bash
+python3 Agents/utils/common/Harbor/scripts/fixer.py \
+  --report-only \
+  --verification-result /path/to/fixer-output/verification-result-latest.json \
+  --analyzer-output /path/to/analyzer-output \
+  --output-dir /path/to/fixer-output \
+  --pi-model "$HARBOR_FIXER_MODEL" \
+  --pi-base-url "$BASE_URL" \
+  --baseline-run-dir /path/to/old-harbor-run
+```
+
+Reporter keeps task, execution, and verification observations code-owned. A
+no-tool Pi agent may generate only the bounded human-readable summary. The
+Markdown view presents observed results and unavailable data before attributed
+Analyzer findings and Fix Plan reasoning. Smoke-test outcomes remain scoped to
+sampled tasks. The machine contract is written to `fix-report-latest.json`; the
+deterministic, secret-redacted view is written to `fix-report-latest.md`.
+
+After Controller-approved execution and verification, Controller replaces only
+the existing `## Fixer Results` section in `benchmark-summary.md`; it does not
 regenerate the Monitor or Analyzer summary.
 
 ## More Details
