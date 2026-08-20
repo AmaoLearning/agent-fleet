@@ -24,6 +24,8 @@ class PrepareLocalDepsTest(unittest.TestCase):
                 "CLAUDE_CODE_VERSION": "1.2.3",
                 "OPENCODE_VERSION": "4.5.6",
                 "PREPARE_OPENCODE_CACHE": "1",
+                "PI_VERSION": "0.81.1",
+                "PREPARE_PI_CACHE": "1",
                 "NPM_CONFIG_REGISTRY": "https://npm.example.invalid/",
                 "CACHE_SCHEMA": "9",
             },
@@ -35,6 +37,11 @@ class PrepareLocalDepsTest(unittest.TestCase):
         self.assertEqual(config.claude_code_version, "1.2.3")
         self.assertEqual(config.opencode_version, "4.5.6")
         self.assertTrue(config.prepare_opencode_cache)
+        self.assertEqual(config.pi_version, "0.81.1")
+        self.assertTrue(config.prepare_pi_cache)
+        self.assertEqual(
+            config.pi_runtime_tarball, self.root / "wheels" / "pi-runtime-0.81.1.tar.gz"
+        )
         self.assertEqual(config.npm_registry_url, "https://npm.example.invalid/")
         self.assertEqual(config.cache_schema, "9")
 
@@ -87,6 +94,8 @@ class PrepareLocalDepsTest(unittest.TestCase):
                 "CLAUDE_CODE_VERSION": "1.2.3",
                 "OPENCODE_VERSION": "4.5.6",
                 "PREPARE_OPENCODE_CACHE": "0",
+                "PI_VERSION": "0.81.1",
+                "PREPARE_PI_CACHE": "1",
                 "CACHE_SCHEMA": "3",
             },
             script_dir=self.root,
@@ -102,6 +111,36 @@ class PrepareLocalDepsTest(unittest.TestCase):
         self.assertIn("claude_code_version=1.2.3\n", manifest)
         self.assertIn("prepare_opencode_cache=0\n", manifest)
         self.assertNotIn("opencode-ai@4.5.6", manifest)
+        self.assertIn("prepare_pi_cache=1\n", manifest)
+        self.assertIn("pi_runtime_version=0.81.1\n", manifest)
+        self.assertIn("@earendil-works/pi-coding-agent@0.81.1", manifest)
+
+    def test_pi_portable_node_runtime_recompresses_node_tarball(self):
+        wheel_dir = self.root / "wheels"
+        wheel_dir.mkdir()
+        source = wheel_dir / "node-runtime.tar.xz"
+        with tarfile.open(source, "w:xz") as archive:
+            payload = b"fixture-node"
+            info = tarfile.TarInfo("node-v22/bin/node")
+            info.mode = 0o755
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+        config = prepare_local_deps.Config.from_environment(
+            {
+                "WHEEL_DIR": str(wheel_dir),
+                "PREPARE_PI_CACHE": "1",
+            },
+            script_dir=self.root,
+        )
+
+        prepare_local_deps.DependencyPreparer(config)._prepare_pi_node_runtime_tarball()
+
+        self.assertTrue(prepare_local_deps.tarball_ready(config.pi_node_runtime_tarball))
+        with tarfile.open(config.pi_node_runtime_tarball, "r:gz") as archive:
+            member = archive.extractfile("node-v22/bin/node")
+            self.assertIsNotNone(member)
+            assert member is not None
+            self.assertEqual(member.read(), b"fixture-node")
 
     def test_shell_wrapper_only_selects_and_executes_python(self):
         wrapper = Path(__file__).resolve().parents[1] / "prepare_local_deps.sh"

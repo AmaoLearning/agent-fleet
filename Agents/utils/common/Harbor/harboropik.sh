@@ -221,7 +221,14 @@ append_harbor_unprivileged_docker_compose() {
 
 validate_environment_backend() {
   case "$HARBOR_ENVIRONMENT_TYPE" in
-    docker|e2b)
+    docker)
+      ;;
+    e2b)
+      if harbor_agent_is_pi; then
+        echo "[ERROR] AGENT=pi with HARBOR_ENVIRONMENT_TYPE=e2b is unsupported: Pi's pinned Node and runtime archives are delivered from the host dependency cache." >&2
+        echo "[ERROR] use HARBOR_ENVIRONMENT_TYPE=docker or opensandbox for AGENT=pi." >&2
+        exit 1
+      fi
       ;;
     opensandbox)
       local name
@@ -419,8 +426,7 @@ ensure_trace_plugin_source_if_needed() {
     if [[ "$trace_enabled" == "true" || "$trace_enabled" == "1" ]]; then
       required=("$TRACE_PLUGIN_OPENCODE_PLUGIN_SOURCE" "$TRACE_PLUGIN_OPENCODE_HOOK_SOURCE")
     fi
-  elif harbor_trace_to_opik_enabled &&
-    [[ "$AGENT" == "claude-code" ]] &&
+  elif harbor_agent_is_claude_code && harbor_trace_to_opik_enabled &&
     [[ "$HARBOR_ENVIRONMENT_TYPE" == "docker" ]] &&
     [[ "$trace_enabled" == "true" || "$trace_enabled" == "1" || "$HARBOR_CC_OPIK_ENABLE_HOOK" == "1" ]]; then
     # With tracing off the realtime hook is forced off at command
@@ -965,33 +971,8 @@ run_harbor() {
     --max-retries "$HARBOR_MAX_RETRIES"
     -o "$out_dir"
     -k "$HARBOR_RUNS"
-    --ak "version=$CLAUDE_CODE_VERSION"
-    --ak "disallowed_tools=$HARBOR_DISALLOWED_TOOLS"
-    --ak "append_system_prompt=$HARBOR_APPEND_SYSTEM_PROMPT"
-    --ak "api_base=$HARBOR_API_BASE"
-    --ak "llm_kwargs=$normalized_llm_kwargs"
-    --ak "max_new_tokens=$HARBOR_MAX_NEW_TOKENS"
-    --ak "model_info=$HARBOR_MODEL_INFO"
-    --ae "ANTHROPIC_BASE_URL=$HARBOR_ANTHROPIC_BASE_URL"
-    --ae "ANTHROPIC_AUTH_TOKEN=$HARBOR_ANTHROPIC_AUTH_TOKEN"
-    --ae "ANTHROPIC_CUSTOM_HEADERS=$HARBOR_ANTHROPIC_CUSTOM_HEADERS"
-    --ae "ANTHROPIC_MODEL=$HARBOR_ANTHROPIC_MODEL"
-    --ae "ANTHROPIC_DEFAULT_OPUS_MODEL=$HARBOR_ANTHROPIC_DEFAULT_OPUS_MODEL"
-    --ae "ANTHROPIC_DEFAULT_SONNET_MODEL=$HARBOR_ANTHROPIC_DEFAULT_SONNET_MODEL"
-    --ae "ANTHROPIC_DEFAULT_HAIKU_MODEL=$HARBOR_ANTHROPIC_DEFAULT_HAIKU_MODEL"
-    --ae "CLAUDE_CODE_SUBAGENT_MODEL=$HARBOR_CLAUDE_CODE_SUBAGENT_MODEL"
-    --ae "CLAUDE_CODE_EFFORT_LEVEL=$HARBOR_CLAUDE_CODE_EFFORT_LEVEL"
-    --ae "CLAUDE_CODE_MAX_OUTPUT_TOKENS=$HARBOR_CLAUDE_CODE_MAX_OUTPUT_TOKENS"
-    --ae "CLAUDE_CODE_DISABLE_AUTOUPDATER=$HARBOR_CLAUDE_CODE_DISABLE_AUTOUPDATER"
     --ae "TRACE_TO_OPIK=$TRACE_TO_OPIK"
-    --ae "CC_OPIK_DEBUG=$HARBOR_CC_OPIK_DEBUG"
-    --ae "CC_OPIK_INSTALL_DEPS=$HARBOR_CC_OPIK_INSTALL_DEPS"
-    --ae "CC_OPIK_HOOK_MOUNT_PATH=$HARBOR_CC_HOOK_MOUNT_PATH"
-    --ae "CC_OPIK_CLAUDE_TGZ_PATH=$HARBOR_CC_CLAUDE_TGZ_MOUNT_PATH"
-    --ae "CC_OPIK_PY_WHEEL_DIR=$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH"
-    --ae "CC_OPIK_NPM_CACHE_DIR=$HARBOR_CC_NPM_CACHE_MOUNT_PATH"
     --ae "HARBOR_LOCAL_WHEEL_SERVER_URL=${HARBOR_LOCAL_WHEEL_SERVER_URL:-}"
-    --ae "HARBOR_LOCAL_CLAUDE_TGZ_URL=${HARBOR_LOCAL_CLAUDE_TGZ_URL:-}"
     --ae "PIP_DEFAULT_TIMEOUT=$HARBOR_PIP_DEFAULT_TIMEOUT"
     --ae "PIP_RETRIES=$HARBOR_PIP_RETRIES"
     --ae "PIP_DISABLE_PIP_VERSION_CHECK=1"
@@ -1003,6 +984,48 @@ run_harbor() {
     --timeout-multiplier "$HARBOR_TIMEOUT_MULTIPLIER"
     --agent-setup-timeout-multiplier "$HARBOR_AGENT_SETUP_TIMEOUT_MULTIPLIER"
   )
+  if harbor_agent_is_pi; then
+    # Pi's thinking level is rendered into PI_SETTINGS_CONFIG. It is not an
+    # agent kwarg, and Pi setup consumes only the cached runtime archives.
+    cmd+=(
+      --ak "version=$PI_VERSION"
+      --ae "AGENT_FLEET_API_KEY=$HARBOR_ANTHROPIC_AUTH_TOKEN"
+      --ae "PI_OFFLINE=1"
+      --ae "PI_CACHE_DIR=$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH"
+      --ae "PI_NODE_RUNTIME_PATH=$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH/$PI_NODE_RUNTIME_BASENAME"
+      --ae "PI_RUNTIME_TAR_PATH=$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH/$PI_RUNTIME_BASENAME"
+      --ae "PI_MODELS_CONFIG=$PI_MODELS_CONFIG"
+      --ae "PI_SETTINGS_CONFIG=$PI_SETTINGS_CONFIG"
+    )
+  else
+    cmd+=(
+      --ak "version=$CLAUDE_CODE_VERSION"
+      --ak "disallowed_tools=$HARBOR_DISALLOWED_TOOLS"
+      --ak "append_system_prompt=$HARBOR_APPEND_SYSTEM_PROMPT"
+      --ak "api_base=$HARBOR_API_BASE"
+      --ak "llm_kwargs=$normalized_llm_kwargs"
+      --ak "max_new_tokens=$HARBOR_MAX_NEW_TOKENS"
+      --ak "model_info=$HARBOR_MODEL_INFO"
+      --ae "ANTHROPIC_BASE_URL=$HARBOR_ANTHROPIC_BASE_URL"
+      --ae "ANTHROPIC_AUTH_TOKEN=$HARBOR_ANTHROPIC_AUTH_TOKEN"
+      --ae "ANTHROPIC_CUSTOM_HEADERS=$HARBOR_ANTHROPIC_CUSTOM_HEADERS"
+      --ae "ANTHROPIC_MODEL=$HARBOR_ANTHROPIC_MODEL"
+      --ae "ANTHROPIC_DEFAULT_OPUS_MODEL=$HARBOR_ANTHROPIC_DEFAULT_OPUS_MODEL"
+      --ae "ANTHROPIC_DEFAULT_SONNET_MODEL=$HARBOR_ANTHROPIC_DEFAULT_SONNET_MODEL"
+      --ae "ANTHROPIC_DEFAULT_HAIKU_MODEL=$HARBOR_ANTHROPIC_DEFAULT_HAIKU_MODEL"
+      --ae "CLAUDE_CODE_SUBAGENT_MODEL=$HARBOR_CLAUDE_CODE_SUBAGENT_MODEL"
+      --ae "CLAUDE_CODE_EFFORT_LEVEL=$HARBOR_CLAUDE_CODE_EFFORT_LEVEL"
+      --ae "CLAUDE_CODE_MAX_OUTPUT_TOKENS=$HARBOR_CLAUDE_CODE_MAX_OUTPUT_TOKENS"
+      --ae "CLAUDE_CODE_DISABLE_AUTOUPDATER=$HARBOR_CLAUDE_CODE_DISABLE_AUTOUPDATER"
+      --ae "CC_OPIK_DEBUG=$HARBOR_CC_OPIK_DEBUG"
+      --ae "CC_OPIK_INSTALL_DEPS=$HARBOR_CC_OPIK_INSTALL_DEPS"
+      --ae "CC_OPIK_HOOK_MOUNT_PATH=$HARBOR_CC_HOOK_MOUNT_PATH"
+      --ae "CC_OPIK_CLAUDE_TGZ_PATH=$HARBOR_CC_CLAUDE_TGZ_MOUNT_PATH"
+      --ae "CC_OPIK_PY_WHEEL_DIR=$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH"
+      --ae "CC_OPIK_NPM_CACHE_DIR=$HARBOR_CC_NPM_CACHE_MOUNT_PATH"
+      --ae "HARBOR_LOCAL_CLAUDE_TGZ_URL=${HARBOR_LOCAL_CLAUDE_TGZ_URL:-}"
+    )
+  fi
   # Task code can read its own environment. With tracing disabled nothing in
   # the container consumes the Opik connection fields, so do not expose the
   # endpoint or credentials there.
@@ -1032,23 +1055,29 @@ run_harbor() {
     cmd+=( --agent-timeout-multiplier "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" )
   fi
 
-  if [[ -n "$HARBOR_AK_MAX_TURNS" ]]; then
-    cmd+=( --ak "max_turns=$HARBOR_AK_MAX_TURNS" )
-  fi
-  if [[ -n "$HARBOR_AK_COLLECT_ROLLOUT_DETAILS" ]]; then
-    cmd+=( --ak "collect_rollout_details=$HARBOR_AK_COLLECT_ROLLOUT_DETAILS" )
-  fi
-  if [[ -n "$HARBOR_AK_ENABLE_SUMMARIZE" ]]; then
-    cmd+=( --ak "enable_summarize=$HARBOR_AK_ENABLE_SUMMARIZE" )
+  if harbor_agent_is_claude_code; then
+    if [[ -n "$HARBOR_AK_MAX_TURNS" ]]; then
+      cmd+=( --ak "max_turns=$HARBOR_AK_MAX_TURNS" )
+    fi
+    if [[ -n "$HARBOR_AK_COLLECT_ROLLOUT_DETAILS" ]]; then
+      cmd+=( --ak "collect_rollout_details=$HARBOR_AK_COLLECT_ROLLOUT_DETAILS" )
+    fi
+    if [[ -n "$HARBOR_AK_ENABLE_SUMMARIZE" ]]; then
+      cmd+=( --ak "enable_summarize=$HARBOR_AK_ENABLE_SUMMARIZE" )
+    fi
   fi
 
-  local opik_host wheel_host no_proxy_value
+  local opik_host wheel_host model_host no_proxy_value
   opik_host="$(
     python3 "$SCRIPT_DIR/harbor_shell_utils.py" url-hostname "$OPIK_URL_OVERRIDE"
   )"
   wheel_host="$(
     python3 "$SCRIPT_DIR/harbor_shell_utils.py" url-hostname \
       "${HARBOR_LOCAL_WHEEL_SERVER_URL:-}"
+  )"
+  model_host="$(
+    python3 "$SCRIPT_DIR/harbor_shell_utils.py" url-hostname \
+      "$HARBOR_ANTHROPIC_BASE_URL"
   )"
   no_proxy_value="127.0.0.1,localhost,host.docker.internal"
   if [[ -n "$opik_host" ]]; then
@@ -1057,13 +1086,19 @@ run_harbor() {
   if [[ -n "$wheel_host" ]]; then
     no_proxy_value="$no_proxy_value,$wheel_host"
   fi
+  if harbor_agent_is_pi && [[ -n "$model_host" ]]; then
+    # Pi sends its OpenAI-compatible request straight to the gateway.
+    no_proxy_value="$no_proxy_value,$model_host"
+  fi
   cmd+=( --ae "NO_PROXY=$no_proxy_value" --ae "no_proxy=$no_proxy_value" )
 
   local hook_mount_enabled=0
   # The hook has no Opik server to talk to when tracing is off, so an
   # exported HARBOR_CC_OPIK_ENABLE_HOOK=1 (e.g. persisted by setup.sh) must not
   # re-enable it.
-  if [[ "$HARBOR_CC_OPIK_ENABLE_HOOK" == "1" && "$HARBOR_ENVIRONMENT_TYPE" == "docker" ]] &&
+  if harbor_agent_is_claude_code \
+    && [[ "$HARBOR_CC_OPIK_ENABLE_HOOK" == "1" ]] \
+    && [[ "$HARBOR_ENVIRONMENT_TYPE" == "docker" ]] &&
     harbor_trace_to_opik_enabled; then
     if [[ -f "$HARBOR_CC_HOOK_SOURCE" ]]; then
       hook_mount_enabled=1
@@ -1079,14 +1114,17 @@ run_harbor() {
     cmd+=( --ae "CC_OPIK_ENABLE_HOOK=false" )
   fi
 
-  local mounts_json="[]"
+  local mounts_json="[]" agent_package_source="$HARBOR_CC_CLAUDE_TGZ_SOURCE"
+  if harbor_agent_is_pi; then
+    agent_package_source=""
+  fi
   if [[ "$HARBOR_ENVIRONMENT_TYPE" == "docker" || "$HARBOR_ENVIRONMENT_TYPE" == "opensandbox" ]]; then
     local -a mount_args=()
     if [[ "$hook_mount_enabled" == "1" ]]; then
       mount_args+=( --mount "$HARBOR_CC_HOOK_SOURCE" "$HARBOR_CC_HOOK_MOUNT_PATH" always )
     fi
-    if [[ -n "$HARBOR_CC_CLAUDE_TGZ_SOURCE" ]]; then
-      mount_args+=( --mount "$HARBOR_CC_CLAUDE_TGZ_SOURCE" "$HARBOR_CC_CLAUDE_TGZ_MOUNT_PATH" exists )
+    if [[ -n "$agent_package_source" ]]; then
+      mount_args+=( --mount "$agent_package_source" "$HARBOR_CC_CLAUDE_TGZ_MOUNT_PATH" exists )
     fi
     if [[ -n "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" ]]; then
       mount_args+=( --mount "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" "$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH" exists )
@@ -1156,7 +1194,7 @@ run_harbor() {
     cmd+=( --debug )
   fi
 
-  if [[ -n "$AGENT" ]]; then
+  if [[ -n "$AGENT" ]] && ! harbor_agent_is_pi; then
     cmd+=( -a "$AGENT" )
   fi
 
@@ -1231,16 +1269,24 @@ run_harbor() {
   fi
   echo "[INFO] model: $HARBOR_MODEL"
   echo "[INFO] environment: $HARBOR_ENVIRONMENT_TYPE"
-  echo "[INFO] claude max_turns: ${HARBOR_AK_MAX_TURNS:-<default>}"
+  if harbor_agent_is_pi; then
+    echo "[INFO] pi version: $PI_VERSION | thinking: $PI_THINKING_LEVEL"
+  else
+    echo "[INFO] claude max_turns: ${HARBOR_AK_MAX_TURNS:-<default>}"
+  fi
   echo "[INFO] n_concurrent: $HARBOR_N_CONCURRENT | max_retries: $HARBOR_MAX_RETRIES"
   echo "[INFO] retry_include_exceptions: ${HARBOR_RETRY_INCLUDE_EXCEPTIONS:-<all-except-excludes>}"
   echo "[INFO] retry_exclude_exceptions: ${HARBOR_RETRY_EXCLUDE_EXCEPTIONS:-<none>}"
-  echo "[INFO] realtime_hook_enabled: $HARBOR_CC_OPIK_ENABLE_HOOK | hook_source: $HARBOR_CC_HOOK_SOURCE"
+  if harbor_agent_is_claude_code; then
+    echo "[INFO] realtime_hook_enabled: $HARBOR_CC_OPIK_ENABLE_HOOK | hook_source: $HARBOR_CC_HOOK_SOURCE"
+  fi
   echo "[INFO] pip_index_url: ${PIP_INDEX_URL:-<default>} | pip_timeout: $HARBOR_PIP_DEFAULT_TIMEOUT | pip_retries: $HARBOR_PIP_RETRIES"
   echo "[INFO] api_base: ${HARBOR_API_BASE:-<empty>}"
   echo "[INFO] timeout_multiplier: $HARBOR_TIMEOUT_MULTIPLIER | agent_setup_timeout_multiplier: $HARBOR_AGENT_SETUP_TIMEOUT_MULTIPLIER"
-  echo "[INFO] disallowed_tools: $HARBOR_DISALLOWED_TOOLS"
-  echo "[INFO] append_system_prompt configured: yes"
+  if harbor_agent_is_claude_code; then
+    echo "[INFO] disallowed_tools: $HARBOR_DISALLOWED_TOOLS"
+    echo "[INFO] append_system_prompt configured: yes"
+  fi
   if [[ "$normalized_llm_kwargs" == *'"api_key":"="'* || "$normalized_llm_kwargs" == *'"api_key": "="'* ]]; then
     echo "[WARN] llm_kwargs is using placeholder api_key='='; this often yields all-zero scores"
   fi
@@ -1251,7 +1297,11 @@ run_harbor() {
     return 0
   fi
 
-  export PYTHONPATH="$HARBOR_CLAUDE_CODE_DIR:$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+  if harbor_agent_is_pi; then
+    export PYTHONPATH="$HARBOR_PI_DIR:$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+  else
+    export PYTHONPATH="$HARBOR_CLAUDE_CODE_DIR:$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+  fi
   "${cmd[@]}"
 
   echo "[INFO] completed"

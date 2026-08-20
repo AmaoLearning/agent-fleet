@@ -3,6 +3,11 @@ set -euo pipefail
 
 RL_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HARBOR_SCRIPT_DIR="${HARBOR_SCRIPT_DIR:-$(cd "$RL_SCRIPT_DIR/../common/Harbor" && pwd)}"
+# The cache and Harbor adapter must follow the rollout agent even when this
+# server is invoked directly rather than through the Harbor start wrapper.
+if [[ -n "${RL_AGENT:-}" ]]; then
+  export AGENT="$RL_AGENT"
+fi
 . "$HARBOR_SCRIPT_DIR/env.sh"
 
 # Prevent a failed long-lived rollout UI process from filling the run disk.
@@ -60,7 +65,8 @@ validate_trace_plugin_source() {
     # including when trace emission is disabled for the task.
     require_trace_plugin_source "$TRACE_PLUGIN_OPENCODE_PLUGIN_SOURCE" || return 1
     require_trace_plugin_source "$TRACE_PLUGIN_OPENCODE_HOOK_SOURCE" || return 1
-  elif [[ "$trace_enabled" == "true" || "$trace_enabled" == "1" || "$HARBOR_CC_OPIK_ENABLE_HOOK" == "1" ]]; then
+  elif [[ "$RL_AGENT" == "claude-code" ]] \
+    && [[ "$trace_enabled" == "true" || "$trace_enabled" == "1" || "$HARBOR_CC_OPIK_ENABLE_HOOK" == "1" ]]; then
     require_trace_plugin_source "$TRACE_PLUGIN_CLAUDE_HOOK_SOURCE"
   fi
 }

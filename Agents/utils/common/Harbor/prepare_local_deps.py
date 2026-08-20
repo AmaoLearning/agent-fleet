@@ -32,13 +32,19 @@ class Config:
     claude_code_version: str
     opencode_version: str
     prepare_opencode_cache: bool
+    pi_version: str
+    prepare_pi_cache: bool
     npm_registry_url: str
     claude_code_npm_spec: str
+    pi_npm_spec: str
     claude_code_tgz_basename: str
     opencode_tgz_basename: str
     opencode_linux_x64_tgz_basename: str
+    pi_tgz_basename: str
     py312_runtime_tarball: Path
     node_runtime_tarball: Path
+    pi_node_runtime_tarball: Path
+    pi_runtime_tarball: Path
     claude_npm_cache_dir: Path
     cache_schema: str
 
@@ -54,6 +60,13 @@ class Config:
         wheel_dir = Path(_value(values, "WHEEL_DIR", str(root / "python-wheels")))
         claude_version = _value(values, "CLAUDE_CODE_VERSION", "latest")
         opencode_version = _value(values, "OPENCODE_VERSION", "latest")
+        pi_version = _value(values, "PI_VERSION", "0.81.1")
+        pi_node_runtime_basename = _value(
+            values, "PI_NODE_RUNTIME_BASENAME", "pi-node-runtime.tar.gz"
+        )
+        pi_runtime_basename = _value(
+            values, "PI_RUNTIME_BASENAME", f"pi-runtime-{pi_version}.tar.gz"
+        )
         return cls(
             script_dir=root,
             wheel_dir=wheel_dir,
@@ -61,12 +74,15 @@ class Config:
             claude_code_version=claude_version,
             opencode_version=opencode_version,
             prepare_opencode_cache=values.get("PREPARE_OPENCODE_CACHE", "0") == "1",
+            pi_version=pi_version,
+            prepare_pi_cache=values.get("PREPARE_PI_CACHE", "0") == "1",
             npm_registry_url=_value(
                 values,
                 "NPM_REGISTRY_URL",
                 _value(values, "NPM_CONFIG_REGISTRY", "https://registry.npmjs.org"),
             ),
             claude_code_npm_spec=f"@anthropic-ai/claude-code@{claude_version}",
+            pi_npm_spec=f"@earendil-works/pi-coding-agent@{pi_version}",
             claude_code_tgz_basename=_value(
                 values,
                 "CLAUDE_CODE_TGZ_BASENAME",
@@ -82,6 +98,9 @@ class Config:
                 "OPENCODE_LINUX_X64_TGZ_BASENAME",
                 f"opencode-linux-x64-{opencode_version}.tgz",
             ),
+            pi_tgz_basename=_value(
+                values, "PI_TGZ_BASENAME", f"pi-coding-agent-{pi_version}.tgz"
+            ),
             py312_runtime_tarball=Path(
                 _value(
                     values,
@@ -94,6 +113,20 @@ class Config:
                     values,
                     "NODE_RUNTIME_TARBALL",
                     str(wheel_dir / "node-runtime.tar.xz"),
+                )
+            ),
+            pi_node_runtime_tarball=Path(
+                _value(
+                    values,
+                    "PI_NODE_RUNTIME_TARBALL",
+                    str(wheel_dir / pi_node_runtime_basename),
+                )
+            ),
+            pi_runtime_tarball=Path(
+                _value(
+                    values,
+                    "PI_RUNTIME_TARBALL",
+                    str(wheel_dir / pi_runtime_basename),
                 )
             ),
             claude_npm_cache_dir=Path(
@@ -140,6 +173,12 @@ def _manifest_packages(config: Config) -> str:
             f",opencode-ai@{config.opencode_version},"
             f"opencode-linux-x64@{config.opencode_version}"
         )
+    if config.prepare_pi_cache:
+        packages += (
+            f",{config.pi_node_runtime_tarball.name},"
+            f"{config.pi_runtime_tarball.name},"
+            f"@earendil-works/pi-coding-agent@{config.pi_version}"
+        )
     return packages
 
 
@@ -147,6 +186,7 @@ def render_manifest(config: Config, generated_at: datetime | None = None) -> str
     timestamp = generated_at or datetime.now(timezone.utc)
     utc_timestamp = timestamp.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     enabled = "1" if config.prepare_opencode_cache else "0"
+    pi_enabled = "1" if config.prepare_pi_cache else "0"
     return (
         f"generated_at={utc_timestamp}\n"
         f"cache_schema={config.cache_schema}\n"
@@ -154,6 +194,9 @@ def render_manifest(config: Config, generated_at: datetime | None = None) -> str
         f"claude_code_version={config.claude_code_version}\n"
         f"opencode_version={config.opencode_version}\n"
         f"prepare_opencode_cache={enabled}\n"
+        f"pi_version={config.pi_version}\n"
+        f"prepare_pi_cache={pi_enabled}\n"
+        f"pi_runtime_version={config.pi_version if config.prepare_pi_cache else ''}\n"
         f"claude_npm_cache_version={config.claude_code_version}\n"
         "local_deps_minimal=false\n"
         f"packages={_manifest_packages(config)}\n"
@@ -256,6 +299,7 @@ class DependencyPreparer:
 
         self._build_py312_runtime_tarball()
         self._prepare_node_runtime_tarball()
+        self._prepare_pi_node_runtime_tarball()
         self._prepare_get_pip()
 
         claude_meta_url = self._metadata_url(
@@ -294,6 +338,8 @@ class DependencyPreparer:
             )
         else:
             print("[prepare] skip OpenCode npm cache (PREPARE_OPENCODE_CACHE=0)")
+
+        self._prepare_pi_runtime_tarball()
 
         (self.config.wheel_dir / "manifest.txt").write_text(
             render_manifest(self.config), encoding="utf-8"
@@ -452,6 +498,39 @@ class DependencyPreparer:
         )
         print(f"downloaded node runtime tarball: {downloaded}")
 
+    def _prepare_pi_node_runtime_tarball(self) -> None:
+        if not self.config.prepare_pi_cache:
+            print("[prepare] skip Pi portable node tar (PREPARE_PI_CACHE=0)")
+            return
+        target = self.config.pi_node_runtime_tarball
+        if tarball_ready(target):
+            print("[prepare] skip Pi portable node tar (cached)")
+            return
+        if not tarball_ready(self.config.node_runtime_tarball):
+            raise RuntimeError(
+                "cannot build Pi portable Node runtime: node runtime tarball is invalid"
+            )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        file_descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
+        )
+        os.close(file_descriptor)
+        temporary = Path(temporary_name)
+        try:
+            with (
+                tarfile.open(self.config.node_runtime_tarball) as source,
+                tarfile.open(temporary, "w:gz") as destination,
+            ):
+                for member in source.getmembers():
+                    file_object = source.extractfile(member) if member.isfile() else None
+                    destination.addfile(member, file_object)
+            if not tarball_ready(temporary):
+                raise RuntimeError("generated Pi portable Node runtime is invalid")
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        print(f"[prepare] built Pi portable node tarball: {target}")
+
     def _ensure_prepare_npm(self) -> bool:
         if shutil.which("npm"):
             return True
@@ -580,6 +659,76 @@ class DependencyPreparer:
                 cwd=temporary_name,
                 check=True,
             )
+
+    def _prepare_pi_runtime_tarball(self) -> None:
+        if not self.config.prepare_pi_cache:
+            print("[prepare] skip Pi runtime tar (PREPARE_PI_CACHE=0)")
+            return
+        pi_metadata_url = self._metadata_url(
+            "@earendil-works/pi-coding-agent", self.config.pi_version
+        )
+        self._pack_npm_to_cache(
+            self.config.pi_npm_spec,
+            self.config.pi_tgz_basename,
+            pi_metadata_url,
+            "earendil-works-pi-coding-agent-*.tgz",
+        )
+        target = self.config.pi_runtime_tarball
+        if tarball_ready(target) and self._manifest_has(
+            f"pi_runtime_version={self.config.pi_version}"
+        ):
+            print("[prepare] skip Pi runtime tar (cached)")
+            return
+        if not self._ensure_prepare_npm() or not shutil.which("npm"):
+            raise RuntimeError("npm not found; cannot prepare Pi runtime")
+        with tempfile.TemporaryDirectory(prefix="tb-prepare-pi-", dir="/tmp") as temporary_name:
+            runtime_prefix = Path(temporary_name) / "pi-runtime"
+            subprocess.run(
+                [
+                    "npm",
+                    "install",
+                    "--global",
+                    "--prefix",
+                    str(runtime_prefix),
+                    "--registry",
+                    self.config.npm_registry_url,
+                    "--cache",
+                    str(self.config.claude_npm_cache_dir),
+                    "--ignore-scripts",
+                    "--no-audit",
+                    "--fund=false",
+                    str(self.config.wheel_dir / self.config.pi_tgz_basename),
+                ],
+                check=True,
+            )
+            completed = subprocess.run(
+                [str(runtime_prefix / "bin" / "pi"), "--version"],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            runtime_version = completed.stdout.strip()
+            if runtime_version != self.config.pi_version:
+                raise RuntimeError(
+                    "prepared Pi runtime version mismatch: "
+                    f"expected {self.config.pi_version}, got {runtime_version}"
+                )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            file_descriptor, temporary_tar_name = tempfile.mkstemp(
+                prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
+            )
+            os.close(file_descriptor)
+            temporary_tar = Path(temporary_tar_name)
+            try:
+                with tarfile.open(temporary_tar, "w:gz") as archive:
+                    for child in runtime_prefix.iterdir():
+                        archive.add(child, arcname=child.name)
+                if not tarball_ready(temporary_tar):
+                    raise RuntimeError("generated Pi runtime archive is invalid")
+                os.replace(temporary_tar, target)
+            finally:
+                temporary_tar.unlink(missing_ok=True)
+        print(f"[prepare] built Pi runtime tarball: {target}")
 
 
 def main() -> int:
