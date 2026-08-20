@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from harbor_runtime import task_identity as _task_identity
+from harbor_runtime import utc_now as _utc_now
 
 from ..agent_invocation import AgentInvoker
 from ..analyzer_inputs import resolve_analyzer_paths
@@ -29,10 +31,6 @@ from ..verification.run_state import (
 from .runtime import generate_report_summary
 
 
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
 def _prepare_report_output(output_dir: Path) -> None:
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -40,14 +38,6 @@ def _prepare_report_output(output_dir: Path) -> None:
         (output_dir / "fix-report-latest.md").unlink(missing_ok=True)
     except OSError as exc:
         raise ValidationError(f"cannot prepare report output: {exc}") from None
-
-
-def _task_identity(task: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "task_index": str(task.get("task_index") or ""),
-        "task_name": str(task.get("task_name") or ""),
-        "attempt_id": task.get("attempt_id"),
-    }
 
 
 def _explicit_status(env_task: dict[str, Any]) -> tuple[str, str]:

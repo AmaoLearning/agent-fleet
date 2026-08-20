@@ -16,8 +16,13 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from harbor_analyzer.pi import dispatch_to_child
-from harbor_pi_runtime import load_final_json_from_event_stream, run_pi_json_process
-from harbor_pi_runtime.process import models_config
+from harbor_pi_runtime import (
+    PiRuntimeConfig,
+    base_url_from_env,
+    load_final_json_from_event_stream,
+    models_config,
+    run_pi_json_process,
+)
 
 
 def write_fixture_pi(path: Path) -> Path:
@@ -121,6 +126,16 @@ class HarborPiRuntimeTest(unittest.TestCase):
 
         self.assertTrue(explicit["providers"]["analyzer"]["authHeader"])
         self.assertNotIn("authHeader", omitted["providers"]["fixer"])
+
+    def test_connection_config_reuses_environment_fallbacks(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"BASE_URL": "https://example.test", "API_KEY": "fake"},
+            clear=True,
+        ):
+            config = PiRuntimeConfig(api_key_env="FIXTURE_API_KEY").with_api_key_fallback()
+            self.assertEqual(base_url_from_env("HARBOR_FIXER"), "https://example.test")
+            self.assertEqual(os.environ[config.api_key_env], "fake")
 
     def test_compact_events_and_stdin_prompt(self) -> None:
         result = self.run_runtime(

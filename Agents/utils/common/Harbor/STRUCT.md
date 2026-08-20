@@ -33,7 +33,13 @@ Agents/utils/common/Harbor/
     ├── controller.py           # Submit benchmark decisions and user-controlled Fixer actions
     ├── analyzer_subagent.py    # Analyzer entrypoint for Pi/GLM-5.2 root-cause analysis
     ├── harbor_analyzer/        # Analyzer policy, Pi adapter, contracts, and output validation
-    ├── harbor_pi_runtime/      # Shared isolated Pi process and JSON-event helper
+    ├── harbor_pi_runtime/
+    │   ├── config.py           # Shared Pi connection and provider configuration
+    │   └── process.py          # Isolated Pi process and JSON-event helper
+    ├── harbor_runtime/
+    │   ├── artifacts.py        # Shared serialization and atomic artifact writes
+    │   ├── identity.py         # Cross-stage task identity
+    │   └── process_identity.py # Stable process ownership identity
     ├── harbor_monitor/
     │   ├── artifacts.py        # Queue, result, manifest, environment, and state I/O
     │   ├── classification.py   # Task and benchmark status classification

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from harbor_pi_runtime import run_pi_json_process, write_text_atomic
+from harbor_pi_runtime import PiRuntimeConfig, run_pi_json_process, write_text_atomic
 
 FIXER_INPUT_MARKER = "HARBOR_FIXER_INPUT_JSON:"
 FIXER_SYSTEM_PROMPT = (
@@ -25,14 +25,9 @@ class AgentInvoker(Protocol):
 
 
 @dataclass(frozen=True)
-class PiInvocationConfig:
-    pi_bin: str = "pi"
+class PiInvocationConfig(PiRuntimeConfig):
     provider: str = "harbor-fixer"
-    model: str = ""
-    base_url: str = ""
     api_key_env: str = "HARBOR_FIXER_API_KEY"
-    timeout_seconds: int = 900
-    thinking_level: str | None = None
 
 
 def _safe_path_component(value: str) -> str:

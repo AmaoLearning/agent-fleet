@@ -6,20 +6,13 @@ import json
 from pathlib import Path
 
 from . import PROMPT_VERSION, TAXONOMY_VERSION
+from .identity import task_identity as _task_identity
 from .taxonomy import (
     FAILURE_STAGES,
     FINAL_CLASSES,
     SCOPES,
     UNMAPPED_ROOT_CAUSE_BY_CLASS,
 )
-
-
-def _task_identity(task: dict) -> dict[str, object]:
-    return {
-        "task_index": str(task.get("task_index") or ""),
-        "task_name": str(task.get("task_name") or ""),
-        "attempt_id": task.get("attempt_id"),
-    }
 
 
 def build_task_prompt(
