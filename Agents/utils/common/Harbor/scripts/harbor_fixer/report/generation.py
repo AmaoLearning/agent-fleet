@@ -193,7 +193,14 @@ def _build_old_run(
             handover.get("run_id") != analyzer_paths["run_id"]
             or handover.get("agent") != agent
         ):
-            raise ValidationError("baseline monitor does not match analyzer run")
+            if baseline_monitor_policy == "on":
+                raise ValidationError("baseline monitor does not match analyzer run")
+            snapshot, monitor_output_path, monitor_records, monitor_summary = (
+                None,
+                "",
+                {},
+                None,
+            )
     by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
     monitor_task_keys: dict[tuple[str, str], set[tuple[str, str, str]]] = {}
     handover_ids: list[str] = []

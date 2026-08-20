@@ -747,6 +747,49 @@ class HarborAnalyzerRuntimeTest(unittest.TestCase):
                 self.assertIn(f"/{HANDOVER_ID}/{publication_id}/", provenance["stderr_path"])
                 self.assertIn(f"/{HANDOVER_ID}/{publication_id}/", provenance["tool_access_audit_path"])
 
+    def test_run_handover_uses_backoff_before_agent_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            run_dir = Path(root) / "run"
+            queue_dir = run_dir / "queue"
+            output_dir = Path(root) / "analyzer"
+            payload = handover(run_dir, queue_dir)
+            source_path = run_dir / "handover.json"
+            config = AnalyzerConfig(run_dir=run_dir, queue_dir=queue_dir, output_dir=output_dir)
+            dispatches = [
+                SimpleNamespace(
+                    report=None,
+                    block_reason="pi_provider_request_failed:timeout",
+                    provenance={},
+                ),
+                SimpleNamespace(
+                    report=task_analysis(HANDOVER_ID, RUN_ID, payload["tasks"][0]),
+                    block_reason=None,
+                    provenance={
+                        "tool_access_audit_path": str(output_dir / "tool-access.jsonl")
+                    },
+                ),
+            ]
+
+            with (
+                mock.patch.object(
+                    analyzer_runner, "dispatch_to_child", side_effect=dispatches
+                ),
+                mock.patch.object(analyzer_runner, "sleep_before_retry", return_value=2.0) as backoff,
+            ):
+                result, exit_code = run_handover(
+                    payload,
+                    handover_path=source_path,
+                    config=config,
+                )
+
+            self.assertEqual(exit_code, 0)
+            backoff.assert_called_once_with(1)
+            task_slug = _task_slug(task())
+            attempts = result["analyzer_metadata"]["agent_provenance"]["per_task"][task_slug][
+                "attempts"
+            ]
+            self.assertEqual(attempts[0]["retry_delay_seconds"], 2.0)
+
     def test_write_outputs_publishes_one_latest_artifact_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             output_dir = Path(root) / "analyzer"

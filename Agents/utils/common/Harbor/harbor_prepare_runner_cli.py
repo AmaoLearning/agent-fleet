@@ -126,6 +126,14 @@ def main() -> int:
 
     status_file.write_text("failed\n", encoding="utf-8")
     workers_failed_file.touch()
+    details = log_file.read_text(encoding="utf-8").strip()
+    if details:
+        print(details, file=sys.stderr)
+    print(
+        "configured Harbor runner is not ready; rerun the repository's "
+        f"./scripts/setup.sh or inspect {log_file}",
+        file=sys.stderr,
+    )
     return 1
 
 

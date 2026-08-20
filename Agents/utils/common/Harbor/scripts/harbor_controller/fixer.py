@@ -30,7 +30,7 @@ from harbor_fixer.plan_generation import (
     run_plan_generation,
 )
 from harbor_fixer.policy import run_policy_preflight
-from harbor_fixer.report import write_fix_report
+from harbor_fixer.report import run_report_from_paths
 from harbor_fixer.verifier import run_verification_from_paths
 from write_benchmark_summary import update_fixer_results
 
@@ -225,7 +225,7 @@ def _runtime_config(
         "pi_api_key_env": "HARBOR_FIXER_API_KEY",
         "agent_timeout": _positive_env_int("HARBOR_FIXER_AGENT_TIMEOUT", 900),
         "execution_timeout": _positive_env_int("HARBOR_FIXER_EXECUTION_TIMEOUT", 300),
-        "rerun_timeout": _positive_env_int("HARBOR_FIXER_RERUN_TIMEOUT", 600),
+        "rerun_timeout": _positive_env_int("HARBOR_FIXER_RERUN_TIMEOUT", 3600),
         "summary_limit": _positive_env_int(
             "HARBOR_FIXER_SUMMARY_LIMIT",
             4000,
@@ -639,6 +639,7 @@ def start_fixer(
                 "verification_result": str(
                     output_dir / "verification-result-latest.json"
                 ),
+                "fix_report_json": str(output_dir / "fix-report-latest.json"),
                 "fix_report": str(output_dir / "fix-report-latest.md"),
                 "benchmark_summary": str(analyzer_output / "benchmark-summary.md"),
             },
@@ -736,6 +737,7 @@ def _finish_execution(
     workflow_id = str(state["fixer_workflow_id"])
     exec_result_path = output_dir / "exec-result-latest.json"
     verification_result_path = output_dir / "verification-result-latest.json"
+    report_json_path = output_dir / "fix-report-latest.json"
     report_path = output_dir / "fix-report-latest.md"
     config = state["config"]
     summary_path = Path(config["analyzer_output"]) / "benchmark-summary.md"
@@ -743,6 +745,7 @@ def _finish_execution(
         **state["paths"],
         "exec_result": str(exec_result_path),
         "verification_result": str(verification_result_path),
+        "fix_report_json": str(report_json_path),
         "fix_report": str(report_path),
         "benchmark_summary": str(summary_path),
     }
@@ -804,12 +807,13 @@ def _finish_execution(
         paths=paths,
     )
     try:
-        write_fix_report(
-            str(state["run_id"]),
-            fix_plan,
-            result,
-            verification,
-            report_path,
+        run_report_from_paths(
+            verification_result_path,
+            Path(config["analyzer_output"]),
+            output_dir,
+            PiAgentInvoker(output_dir, _pi_config(config)),
+            baseline_run_dir=run_dir,
+            baseline_monitor_policy="auto",
         )
         update_fixer_results(summary_path, report_path)
     except Exception as exc:
@@ -981,6 +985,7 @@ def fixer_status(run_dir: Path) -> dict[str, Any]:
         "approval_request": str(_approval_request_path(run_dir)),
         "decision": str(_decision_path(run_dir)),
         "benchmark_summary": str(run_dir / "analyzer" / "benchmark-summary.md"),
+        "fix_report_json": str(_fixer_dir(run_dir) / "fix-report-latest.json"),
         "fix_report": str(_fixer_dir(run_dir) / "fix-report-latest.md"),
     }
     try:

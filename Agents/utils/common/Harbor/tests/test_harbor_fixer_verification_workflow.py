@@ -138,7 +138,7 @@ class HarborFixerVerificationWorkflowTest(FixerTestCase):
 
         self.assertEqual(result["rerun"]["command"], "")
         self.assertEqual(result["source"]["analyzer_monitor_path"], "")
-        self.assertEqual(verification_input["rerun_timeout"], 600)
+        self.assertEqual(verification_input["rerun_timeout"], 3600)
 
     def test_clears_stale_result_before_input_validation(self) -> None:
         result_path = self.root / "verification-output" / "verification-result-latest.json"

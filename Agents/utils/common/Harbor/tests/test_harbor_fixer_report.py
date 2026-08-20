@@ -346,15 +346,26 @@ class HarborFixerReportTest(FixerTestCase):
         with mock.patch(
             "harbor_fixer.report.generation.read_monitor_snapshot",
             return_value=(wrong_snapshot, "snapshot.json"),
-        ), self.assertRaisesRegex(ValidationError, "baseline monitor"):
-            generate_report_from_paths(
+        ):
+            report = run_report_from_paths(
                 verification_path,
                 analyzer_dir,
                 output_dir,
                 _FailingInvoker(),
                 baseline_run_dir=self.root / "baseline",
-                baseline_monitor_policy="on",
+                baseline_monitor_policy="auto",
             )
+            self.assertFalse(report["old_run"]["monitor_available"])
+            self.assertTrue((output_dir / "fix-report-latest.md").is_file())
+            with self.assertRaisesRegex(ValidationError, "baseline monitor"):
+                generate_report_from_paths(
+                    verification_path,
+                    analyzer_dir,
+                    output_dir,
+                    _FailingInvoker(),
+                    baseline_run_dir=self.root / "baseline",
+                    baseline_monitor_policy="on",
+                )
 
     def test_markdown_is_deterministic_redacted_view_of_report_artifacts(self) -> None:
         output_dir = self.root / "markdown"
