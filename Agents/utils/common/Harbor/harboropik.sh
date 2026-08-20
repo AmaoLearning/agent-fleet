@@ -223,9 +223,9 @@ validate_environment_backend() {
   case "$HARBOR_ENVIRONMENT_TYPE" in
     docker)
       ;;
-    e2b)
+    e2b|qz)
       if harbor_agent_is_pi; then
-        echo "[ERROR] AGENT=pi with HARBOR_ENVIRONMENT_TYPE=e2b is unsupported: Pi's pinned Node and runtime archives are delivered from the host dependency cache." >&2
+        echo "[ERROR] AGENT=pi with HARBOR_ENVIRONMENT_TYPE=$HARBOR_ENVIRONMENT_TYPE is unsupported: Pi's pinned Node/runtime archives and local extensions require host bind mounts." >&2
         echo "[ERROR] use HARBOR_ENVIRONMENT_TYPE=docker or opensandbox for AGENT=pi." >&2
         exit 1
       fi
@@ -996,6 +996,7 @@ run_harbor() {
       --ae "PI_RUNTIME_TAR_PATH=$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH/$PI_RUNTIME_BASENAME"
       --ae "PI_MODELS_CONFIG=$PI_MODELS_CONFIG"
       --ae "PI_SETTINGS_CONFIG=$PI_SETTINGS_CONFIG"
+      --ae "PI_EXTENSION_DIR=$PI_EXTENSION_DIR"
     )
   else
     cmd+=(
@@ -1131,6 +1132,14 @@ run_harbor() {
     fi
     if [[ -n "$VERIFIER_UV_BIN_DIR_SOURCE" ]]; then
       mount_args+=( --mount "$VERIFIER_UV_BIN_DIR_SOURCE" "$HARBOR_VERIFIER_UV_BIN_DIR_MOUNT_PATH" uv-bin )
+    fi
+    if harbor_agent_is_pi && [[ -n "${PI_EXTENSION_SOURCE:-}" && -d "$PI_EXTENSION_SOURCE" ]]; then
+      local pi_extension_file
+      for pi_extension_file in "$PI_EXTENSION_SOURCE"/*.ts; do
+        [[ -e "$pi_extension_file" ]] || continue
+        mount_args+=( --mount "$PI_EXTENSION_SOURCE" "$PI_EXTENSION_DIR" always )
+        break
+      done
     fi
     mounts_json="$(
       python3 "$SCRIPT_DIR/harbor_shell_utils.py" readonly-mounts \

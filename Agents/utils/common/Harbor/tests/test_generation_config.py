@@ -11,7 +11,13 @@ HARBOR_DIR = Path(__file__).parents[1]
 
 
 class HarborGenerationConfigTests(unittest.TestCase):
-    def _run_validation(self, agent: str, **overrides: str) -> subprocess.CompletedProcess[str]:
+    def _run_validation(
+        self,
+        agent: str,
+        *,
+        validation_function: str = "harbor_validate_generation_controls",
+        **overrides: str,
+    ) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as temp_dir:
             env = {
                 "PATH": os.environ["PATH"],
@@ -28,7 +34,7 @@ class HarborGenerationConfigTests(unittest.TestCase):
                 [
                     "bash",
                     "-c",
-                    'source "$1"; harbor_validate_generation_controls',
+                    f'source "$1"; {validation_function}',
                     "bash",
                     str(HARBOR_DIR / "env.sh"),
                 ],
@@ -311,6 +317,21 @@ PY
         )
         self.assertEqual(provider["models"][0]["id"], "test-model")
         self.assertEqual(provider["models"][0]["maxTokens"], 8192)
+        # Thinking levels flow through to the gateway as reasoning_effort by
+        # default, so max is actually emitted instead of collapsing to enabled.
+        self.assertTrue(provider["compat"]["supportsReasoningEffort"])
+        self.assertEqual(
+            provider["models"][0]["thinkingLevelMap"]["max"],
+            "max",
+        )
+        self.assertEqual(
+            provider["models"][0]["thinkingLevelMap"]["xhigh"],
+            "max",
+        )
+        self.assertEqual(
+            provider["models"][0]["thinkingLevelMap"]["minimal"],
+            "low",
+        )
         self.assertEqual(
             config["pi_settings_config"],
             {
@@ -322,6 +343,28 @@ PY
         )
         self.assertNotIn("fake-key", json.dumps(config["pi_models_config"]))
 
+    def test_pi_can_disable_reasoning_effort_channel(self) -> None:
+        config = self._load_config(
+            "pi",
+            MODEL="test-model",
+            BASE_URL="https://llm.example/v1",
+            PI_SUPPORTS_REASONING_EFFORT="0",
+        )
+        provider = config["pi_models_config"]["providers"]["llm.example"]
+        self.assertFalse(provider["compat"]["supportsReasoningEffort"])
+
+    def test_pi_thinking_level_map_override(self) -> None:
+        config = self._load_config(
+            "pi",
+            MODEL="test-model",
+            BASE_URL="https://llm.example/v1",
+            PI_THINKING_LEVEL_MAP=json.dumps(
+                {"off": None, "max": "high"}
+            ),
+        )
+        provider = config["pi_models_config"]["providers"]["llm.example"]
+        self.assertEqual(provider["models"][0]["thinkingLevelMap"]["max"], "high")
+
     def test_pi_rejects_unsupported_sampling_settings(self) -> None:
         result = self._run_validation(
             "pi",
@@ -331,6 +374,19 @@ PY
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(
             "Pi does not expose temperature or top_p controls",
+            result.stderr,
+        )
+
+    def test_pi_rejects_unsupported_thinking_level(self) -> None:
+        result = self._run_validation(
+            "pi",
+            validation_function="harbor_validate_agent",
+            PI_THINKING_LEVEL="ultra",
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "PI_THINKING_LEVEL must be off, minimal, low, medium, high, xhigh, or max",
             result.stderr,
         )
 
