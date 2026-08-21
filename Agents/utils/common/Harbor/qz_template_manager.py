@@ -222,6 +222,7 @@ class QzTemplateClient:
         build_id: str,
         image: str,
         image_source: str,
+        build_steps: Sequence[Mapping[str, Any]] = (),
     ) -> None:
         encoded_template_id = urllib.parse.quote(template_id, safe="")
         encoded_build_id = urllib.parse.quote(build_id, safe="")
@@ -231,7 +232,7 @@ class QzTemplateClient:
             {
                 "fromImage": image,
                 "imageSource": image_source,
-                "steps": [],
+                "steps": [dict(step) for step in build_steps],
             },
         )
 
@@ -312,6 +313,7 @@ def create_template_from_image(
     image_source: str,
     timeout: float,
     exists_ok: bool,
+    build_steps: Sequence[Mapping[str, Any]] = (),
     stderr: TextIO | None = None,
     clock: Callable[[], float] | None = None,
     sleep: Callable[[float], None] | None = None,
@@ -356,6 +358,7 @@ def create_template_from_image(
             build_id=build_id,
             image=image,
             image_source=image_source,
+            build_steps=build_steps,
         )
     except QzTemplateError as exc:
         raise QzTemplateError(

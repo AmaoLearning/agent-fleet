@@ -7,6 +7,7 @@ import json
 import os
 import sys
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -14,15 +15,26 @@ import qz_template_manager as manager
 import qz_template_mapping as mapping
 
 MAPPING_ENV_VAR = "QZ_SANDBOX_TEMPLATE_MAP"
-SUPPORTED_SCHEMA_VERSION = mapping.SCHEMA_VERSION
+SUPPORTED_MAPPING_VERSIONS = {
+    (mapping.LEGACY_SCHEMA_VERSION, mapping.LEGACY_IDENTITY_VERSION),
+    (mapping.SCHEMA_VERSION, mapping.IDENTITY_VERSION),
+}
 
 
 class QzTemplateResolutionError(RuntimeError):
     """Raised when a task cannot resolve to one ready QZ Template."""
 
 
+@dataclass(frozen=True)
+class ResolvedTaskEnvironment:
+    """A ready Template plus commands required for this task's fresh Sandbox."""
+
+    template_id: str
+    init_steps: tuple[dict[str, str], ...]
+
+
 def load_mapping(path: Path) -> dict[str, Any]:
-    """Load and minimally validate a schema-v1 QZ Template mapping."""
+    """Load and minimally validate a supported QZ Template mapping."""
     try:
         payload = json.loads(path.expanduser().read_text(encoding="utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -31,15 +43,15 @@ def load_mapping(path: Path) -> dict[str, Any]:
         ) from exc
     if not isinstance(payload, dict):
         raise QzTemplateResolutionError("QZ Template mapping must be a JSON object")
-    if payload.get("schema_version") != SUPPORTED_SCHEMA_VERSION:
+    version_pair = (
+        payload.get("schema_version"),
+        payload.get("identity_version"),
+    )
+    if version_pair not in SUPPORTED_MAPPING_VERSIONS:
         raise QzTemplateResolutionError(
-            "unsupported QZ Template mapping schema_version: "
-            f"{payload.get('schema_version')!r}"
-        )
-    if payload.get("identity_version") != mapping.IDENTITY_VERSION:
-        raise QzTemplateResolutionError(
-            "unsupported QZ Template mapping identity_version: "
-            f"{payload.get('identity_version')!r}"
+            "unsupported QZ Template mapping version pair: "
+            f"schema_version={version_pair[0]!r}, "
+            f"identity_version={version_pair[1]!r}"
         )
     if not isinstance(payload.get("tasks"), dict):
         raise QzTemplateResolutionError("QZ Template mapping is missing tasks")
@@ -97,11 +109,29 @@ def _required_string(
     return value.strip()
 
 
-def task_template_entry(
+def _normalized_plan_steps(
+    payload: Mapping[str, Any],
+    task: Mapping[str, Any],
+    template: Mapping[str, Any],
+    context: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    if payload.get("schema_version") == mapping.LEGACY_SCHEMA_VERSION:
+        return [], []
+    try:
+        build_steps = mapping.normalize_build_steps(template.get("build_steps", []))
+        init_steps = mapping.normalize_init_steps(task.get("init_steps", []))
+    except mapping.QzTemplateMappingError as exc:
+        raise QzTemplateResolutionError(
+            f"{context} has an invalid plan: {exc}"
+        ) from exc
+    return build_steps, init_steps
+
+
+def _task_environment_entries(
     payload: Mapping[str, Any],
     task_name: str,
-) -> tuple[str, dict[str, Any]]:
-    """Return the template key and entry selected for one Harbor task."""
+) -> tuple[str, dict[str, Any], list[dict[str, str]]]:
+    """Return validated Template and init entries selected for one task."""
     key = resolve_task_key(payload, task_name)
     task = payload["tasks"].get(key)
     if not isinstance(task, dict):
@@ -140,7 +170,23 @@ def task_template_entry(
         raise QzTemplateResolutionError(
             f"mapping task {key!r} image does not match Template {template_key!r}"
         )
-    identity = mapping.template_identity(image, spec, image_source)
+    build_steps, init_steps = _normalized_plan_steps(
+        payload,
+        task,
+        template,
+        f"mapping task {key!r}",
+    )
+    identity = mapping.template_identity(
+        image,
+        spec,
+        image_source,
+        build_steps,
+        identity_version=_required_string(
+            payload,
+            "identity_version",
+            "QZ Template mapping",
+        ),
+    )
     expected_key = f"sha256:{identity}"
     if template_key != expected_key:
         raise QzTemplateResolutionError(
@@ -152,6 +198,15 @@ def task_template_entry(
             f"mapping Template {template_key!r} does not use its "
             "content-derived template_name"
         )
+    return template_key, template, init_steps
+
+
+def task_template_entry(
+    payload: Mapping[str, Any],
+    task_name: str,
+) -> tuple[str, dict[str, Any]]:
+    """Return the template key and entry selected for one Harbor task."""
+    template_key, template, _ = _task_environment_entries(payload, task_name)
     return template_key, template
 
 
@@ -198,14 +253,11 @@ def _validated_ready_template_id(
     return template_id
 
 
-def resolve_task_template(
-    mapping_path: Path,
-    task_name: str,
+def _resolve_template_entry(
+    template_key: str,
+    entry: Mapping[str, Any],
     client: manager.QzTemplateClient,
 ) -> str:
-    """Resolve one task to a live, ready Template ID without creating it."""
-    payload = load_mapping(mapping_path)
-    template_key, entry = task_template_entry(payload, task_name)
     cached_id = entry.get("template_id")
     if cached_id is not None:
         if not isinstance(cached_id, str) or not cached_id.strip():
@@ -243,6 +295,31 @@ def resolve_task_template(
     )
 
 
+def resolve_task_template(
+    mapping_path: Path,
+    task_name: str,
+    client: manager.QzTemplateClient,
+) -> str:
+    """Resolve one task to a live, ready Template ID without creating it."""
+    payload = load_mapping(mapping_path)
+    template_key, entry = task_template_entry(payload, task_name)
+    return _resolve_template_entry(template_key, entry, client)
+
+
+def resolve_task_environment(
+    mapping_path: Path,
+    task_name: str,
+    client: manager.QzTemplateClient,
+) -> ResolvedTaskEnvironment:
+    """Resolve the ready Template and per-Sandbox init steps for one task."""
+    payload = load_mapping(mapping_path)
+    template_key, entry, init_steps = _task_environment_entries(payload, task_name)
+    return ResolvedTaskEnvironment(
+        template_id=_resolve_template_entry(template_key, entry, client),
+        init_steps=tuple(init_steps),
+    )
+
+
 def resolve_task_template_from_environment(
     mapping_path: Path,
     task_name: str,
@@ -250,6 +327,23 @@ def resolve_task_template_from_environment(
     """Resolve using QZ credentials held only in the process environment."""
     try:
         return resolve_task_template(
+            mapping_path,
+            task_name,
+            manager.client_from_environment(),
+        )
+    except manager.QzTemplateError as exc:
+        raise QzTemplateResolutionError(
+            f"live QZ Template lookup failed for task {task_name!r}: {exc}"
+        ) from exc
+
+
+def resolve_task_environment_from_environment(
+    mapping_path: Path,
+    task_name: str,
+) -> ResolvedTaskEnvironment:
+    """Resolve a task environment using credentials held only in the process."""
+    try:
+        return resolve_task_environment(
             mapping_path,
             task_name,
             manager.client_from_environment(),
@@ -350,6 +444,7 @@ def materialize_template_entry(
         image=_required_string(entry, "image", template_key),
         spec=_required_string(entry, "spec", template_key),
         image_source=_required_string(entry, "image_source", template_key),
+        build_steps=entry.get("build_steps", []),
         timeout=timeout,
         exists_ok=True,
         stderr=stderr,

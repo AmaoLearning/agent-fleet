@@ -248,6 +248,11 @@ class CreateTemplateTest(unittest.TestCase):
 
         template_id = self.create(
             opener,
+            build_steps=[
+                {"type": "USER", "args": ["root"]},
+                {"type": "WORKDIR", "args": ["/testbed"]},
+                {"type": "RUN", "args": ["mkdir -p /logs"]},
+            ],
             stderr=stderr,
             clock=clock,
             sleep=sleeps.append,
@@ -268,7 +273,11 @@ class CreateTemplateTest(unittest.TestCase):
             {
                 "fromImage": "registry.example/task:tag",
                 "imageSource": "official",
-                "steps": [],
+                "steps": [
+                    {"type": "USER", "args": ["root"]},
+                    {"type": "WORKDIR", "args": ["/testbed"]},
+                    {"type": "RUN", "args": ["mkdir -p /logs"]},
+                ],
             },
         )
         self.assertIn("templateID=template-1 buildID=build-1", stderr.getvalue())

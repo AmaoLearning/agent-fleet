@@ -401,6 +401,8 @@ class CreateRetryTest(unittest.TestCase):
         succeeds_after_failure: bool,
         prepare_failure_name: str | None = None,
         prepare_exit_code: int = 0,
+        init_steps: tuple[dict[str, str], ...] = (),
+        init_exit_code: int = 0,
     ) -> tuple[int, Exception | None, list[tuple[str, dict]]]:
         dependency_modules, error_types = retry_dependency_stubs()
         expected_error_types = (*error_types.values(), RuntimeError)
@@ -411,9 +413,12 @@ class CreateRetryTest(unittest.TestCase):
                 command_calls.append((command, kwargs))
                 if prepare_failure_name is not None:
                     raise error_types[prepare_failure_name]("prepare failed")
+                exit_code = (
+                    init_exit_code if len(command_calls) > 1 else prepare_exit_code
+                )
                 return types.SimpleNamespace(
-                    exit_code=prepare_exit_code,
-                    stderr="prepare stderr" if prepare_exit_code else "",
+                    exit_code=exit_code,
+                    stderr="command stderr" if exit_code else "",
                     stdout="",
                 )
 
@@ -448,6 +453,7 @@ class CreateRetryTest(unittest.TestCase):
             module = load_module()
             environment = module.QzSandboxEnvironment(template="test_template")
             environment._workdir = Path("/app")
+            environment._task_init_steps = init_steps
             try:
                 asyncio.run(environment._create_sandbox())
             except expected_error_types as exc:
@@ -511,7 +517,40 @@ class CreateRetryTest(unittest.TestCase):
         self.assertEqual(calls, 1)
         self.assertIsInstance(error, RuntimeError)
         self.assertIn("failed to prepare task workdir /app", str(error))
-        self.assertIn("exit 23: prepare stderr", str(error))
+        self.assertIn("exit 23: command stderr", str(error))
+
+    def test_runs_task_init_after_workdir_preparation(self):
+        calls, error, command_calls = self.run_create(
+            None,
+            succeeds_after_failure=True,
+            init_steps=(
+                {"run": "git fetch && git checkout instance-a", "cwd": "/testbed"},
+            ),
+        )
+
+        self.assertEqual(calls, 1)
+        self.assertIsNone(error)
+        self.assertEqual(
+            command_calls[1],
+            (
+                "git fetch && git checkout instance-a",
+                {"cwd": "/testbed", "timeout": 600},
+            ),
+        )
+
+    def test_task_init_failure_does_not_retry_allocation(self):
+        calls, error, command_calls = self.run_create(
+            None,
+            succeeds_after_failure=True,
+            init_steps=({"run": "git checkout missing", "cwd": "/testbed"},),
+            init_exit_code=7,
+        )
+
+        self.assertEqual(calls, 1)
+        self.assertEqual(len(command_calls), 2)
+        self.assertIsInstance(error, RuntimeError)
+        self.assertIn("QZ task init step 1 failed", str(error))
+        self.assertIn("exit 7: command stderr", str(error))
 
 
 class TemplateResolutionTest(unittest.TestCase):
@@ -557,13 +596,20 @@ class TemplateResolutionTest(unittest.TestCase):
         self.env_vars["QZ_SANDBOX_TEMPLATE_MAP"] = "/tmp/qz-map.json"
         with patch.object(
             self.module,
-            "resolve_task_template_from_environment",
-            return_value="mapped-template-id",
+            "resolve_task_environment_from_environment",
+            return_value=types.SimpleNamespace(
+                template_id="mapped-template-id",
+                init_steps=({"run": "git checkout task", "cwd": "/testbed"},),
+            ),
         ) as resolve:
             env = self.make_env()
 
         self.assertEqual(env._template_name, "mapped-template-id")
         self.assertEqual(env._template_override, "mapped-template-id")
+        self.assertEqual(
+            env._task_init_steps,
+            ({"run": "git checkout task", "cwd": "/testbed"},),
+        )
         resolve.assert_called_once_with(
             Path("/tmp/qz-map.json"),
             "test-environment",

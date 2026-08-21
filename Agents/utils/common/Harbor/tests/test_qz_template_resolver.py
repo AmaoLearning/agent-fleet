@@ -175,6 +175,71 @@ class QzTemplateResolverTest(unittest.TestCase):
         self.assertEqual(template_id, "template-1")
         self.assertEqual(client.get_by_name_calls, [entry["template_name"]])
 
+    def test_resolve_task_environment_returns_task_init_steps(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path, _, entry = self.make_mapping(Path(temporary))
+            payload = resolver.load_mapping(path)
+            payload["tasks"]["task-a"]["init_steps"] = [
+                {"run": "git checkout task-a", "cwd": "/testbed"}
+            ]
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            client = FakeClient()
+            client.by_name[entry["template_name"]] = self.ready("template-1")
+
+            environment = resolver.resolve_task_environment(
+                path,
+                "task-a",
+                client,
+            )
+
+        self.assertEqual(environment.template_id, "template-1")
+        self.assertEqual(
+            environment.init_steps,
+            ({"run": "git checkout task-a", "cwd": "/testbed"},),
+        )
+
+    def test_schema_v1_resolves_as_an_empty_environment_plan(self):
+        legacy_identity = mapping.template_identity(
+            TEST_IMAGE,
+            TEST_SPEC,
+            TEST_IMAGE_SOURCE,
+            identity_version=mapping.LEGACY_IDENTITY_VERSION,
+        )
+        legacy_name = mapping.template_name(TEST_IMAGE, legacy_identity)
+        payload = {
+            "benchmark": "legacy",
+            "schema_version": mapping.LEGACY_SCHEMA_VERSION,
+            "identity_version": mapping.LEGACY_IDENTITY_VERSION,
+            "tasks": {
+                "task-a": {
+                    "docker_image": TEST_IMAGE,
+                    "template_key": f"sha256:{legacy_identity}",
+                }
+            },
+            "templates": {
+                f"sha256:{legacy_identity}": {
+                    "image": TEST_IMAGE,
+                    "image_source": TEST_IMAGE_SOURCE,
+                    "spec": TEST_SPEC,
+                    "template_name": legacy_name,
+                    "template_id": None,
+                }
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "mapping.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            client = FakeClient()
+            client.by_name[legacy_name] = self.ready(
+                "template-legacy",
+                template_name=legacy_name,
+            )
+
+            environment = resolver.resolve_task_environment(path, "task-a", client)
+
+        self.assertEqual(environment.template_id, "template-legacy")
+        self.assertEqual(environment.init_steps, ())
+
     def test_task_key_resolves_unique_nested_names_and_rejects_ambiguity(self):
         self.assertEqual(
             resolver.resolve_task_key(
@@ -308,6 +373,7 @@ class QzTemplateResolverTest(unittest.TestCase):
             image=entry["image"],
             spec=entry["spec"],
             image_source=entry["image_source"],
+            build_steps=[],
             timeout=30,
             exists_ok=True,
             stderr=stderr,

@@ -46,7 +46,7 @@ from qz_template_resolver import (
     MAPPING_ENV_VAR,
     QzTemplateResolutionError,
     load_mapping,
-    resolve_task_template_from_environment,
+    resolve_task_environment_from_environment,
 )
 
 try:
@@ -95,6 +95,7 @@ QZ_DEFAULT_HOST_PREFIX = "sbx-"
 # greater than 4 hours"), while Harbor's E2B backend hardcodes 24h.
 QZ_MAX_SANDBOX_TIMEOUT_SEC = 4 * 60 * 60
 QZ_DEFAULT_SANDBOX_TIMEOUT_SEC = QZ_MAX_SANDBOX_TIMEOUT_SEC
+QZ_TASK_INIT_TIMEOUT_SEC = 600
 _API_VERSION_SUFFIX = "/v1"
 # These settings describe a particular cloud-E2B data plane rather than the
 # shared SDK API surface. Letting them leak into a qz process can create the
@@ -232,9 +233,10 @@ class QzSandboxEnvironment(E2BEnvironment):
     binding); qz does not mount the e2b remote build API. An explicit
     ``template`` kwarg or ``QZ_SANDBOX_TEMPLATE`` selects one fixed Template.
     Alternatively, ``QZ_SANDBOX_TEMPLATE_MAP`` resolves each task through a
-    schema-v1 mapping and verifies that the selected Template is live and
-    ready. Without either mode, Harbor's auto-generated per-task alias is
-    folded onto qz's allowed name alphabet.
+    mapping and verifies that the selected Template is live and ready. A
+    schema-v2 mapping may also provide commands to initialize each fresh
+    Sandbox before Harbor starts the agent. Without either mode, Harbor's
+    auto-generated per-task alias is folded onto qz's allowed name alphabet.
     """
 
     def __init__(self, *args, template: str | None = None, **kwargs) -> None:
@@ -251,12 +253,13 @@ class QzSandboxEnvironment(E2BEnvironment):
                 f"set only one of QZ_SANDBOX_TEMPLATE or {MAPPING_ENV_VAR}, not both"
             )
         self._template_override = fixed_template
+        self._task_init_steps: tuple[dict[str, str], ...] = ()
         super().__init__(*args, **kwargs)
         if self._template_override:
             self._template_name = self._template_override
         elif mapping_path:
             try:
-                self._template_override = resolve_task_template_from_environment(
+                environment_plan = resolve_task_environment_from_environment(
                     Path(mapping_path),
                     self.environment_name,
                 )
@@ -265,6 +268,8 @@ class QzSandboxEnvironment(E2BEnvironment):
                     "failed to resolve QZ Template for task "
                     f"{self.environment_name!r}: {exc}"
                 ) from exc
+            self._template_override = environment_plan.template_id
+            self._task_init_steps = environment_plan.init_steps
             self._template_name = self._template_override
         else:
             self._template_name = sanitize_template_name(self._template_name)
@@ -361,6 +366,19 @@ class QzSandboxEnvironment(E2BEnvironment):
                 f"failed to prepare task workdir {self._workdir}: "
                 f"exit {result.exit_code}: {result.stderr or result.stdout}"
             )
+
+        for index, step in enumerate(self._task_init_steps, start=1):
+            result = await self._sandbox.commands.run(
+                step["run"],
+                cwd=step.get("cwd") or str(self._workdir),
+                timeout=QZ_TASK_INIT_TIMEOUT_SEC,
+            )
+            if result.exit_code != 0:
+                raise RuntimeError(
+                    f"QZ task init step {index} failed for "
+                    f"{self.environment_name!r}: exit {result.exit_code}: "
+                    f"{result.stderr or result.stdout}"
+                )
 
     @classmethod
     def preflight(cls) -> None:
