@@ -245,9 +245,10 @@ validate_environment_backend() {
         exit 1
       fi
       echo "[INFO] OpenSandbox environment binding: id=${YICLOUD_SANDBOX_ENVIRONMENT_ID:-<resolved-by-name>} name=${YICLOUD_SANDBOX_ENVIRONMENT_NAME:-<lookup-by-id>}"
-      if [[ -z "$HARBOR_OPENSANDBOX_IMAGE_REF" ]]; then
-        if [[ -z "$HARBOR_OPENSANDBOX_IMAGE_REPOSITORY" ]]; then
-          echo "[ERROR] HARBOR_OPENSANDBOX_IMAGE_REPOSITORY is required when HARBOR_OPENSANDBOX_IMAGE_REF is unset" >&2
+      if [[ -z "$HARBOR_OPENSANDBOX_IMAGE_REF" \
+        && -z "$HARBOR_OPENSANDBOX_BUNDLE_MANIFEST" ]]; then
+        if [[ -z "$YICLOUD_HARBOR_PROJECT" ]]; then
+          echo "[ERROR] YICLOUD_HARBOR_PROJECT is required when HARBOR_OPENSANDBOX_IMAGE_REF is unset" >&2
           exit 1
         fi
         if [[ ! -f "$HARBOR_OPENSANDBOX_IMAGE_MANAGER" ]]; then
@@ -345,7 +346,43 @@ ensure_environment_backend() {
 }
 
 prepare_opensandbox_image_ref() {
-  if [[ "$HARBOR_ENVIRONMENT_TYPE" != "opensandbox" || -n "$HARBOR_OPENSANDBOX_IMAGE_REF" ]]; then
+  local automatic_bundle_manifest="$1"
+  if [[ "$HARBOR_ENVIRONMENT_TYPE" != "opensandbox" ]]; then
+    return 0
+  fi
+  if [[ -n "$HARBOR_OPENSANDBOX_BUNDLE_MANIFEST" ]]; then
+    if [[ ! -f "$HARBOR_OPENSANDBOX_BUNDLE_MANIFEST" ]]; then
+      echo "[ERROR] OpenSandbox Bundle Manifest not found: $HARBOR_OPENSANDBOX_BUNDLE_MANIFEST" >&2
+      exit 1
+    fi
+    if [[ -z "$HARBOR_OPENSANDBOX_IMAGE_REF" ]]; then
+      local bundle_python="${HARBOR_OPIK_PYTHON:-}"
+      if [[ -z "$bundle_python" || ! -x "$bundle_python" ]]; then
+        bundle_python="$(command -v python3)"
+      fi
+      if ! HARBOR_OPENSANDBOX_IMAGE_REF="$("$bundle_python" -c '
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+bundle = json.loads(path.read_text(encoding="utf-8"))
+main = bundle.get("main") if bundle.get("schema_version") == 2 else bundle.get("main_service")
+services = bundle.get("services") or {}
+image = (services.get(main) or {}).get("image") or {}
+ref = image.get("digest_ref") if bundle.get("schema_version") == 2 else image.get("sandbox_ref")
+if not isinstance(main, str) or not isinstance(ref, str) or not ref:
+    raise SystemExit("Bundle Manifest has no valid main image sandbox_ref")
+print(ref)
+' "$HARBOR_OPENSANDBOX_BUNDLE_MANIFEST")"; then
+        echo "[ERROR] failed to resolve main image from OpenSandbox Bundle Manifest" >&2
+        exit 1
+      fi
+    fi
+    export HARBOR_OPENSANDBOX_IMAGE_REF HARBOR_OPENSANDBOX_BUNDLE_MANIFEST
+    echo "[INFO] using OpenSandbox Bundle Manifest: $HARBOR_OPENSANDBOX_BUNDLE_MANIFEST" >&2
+    return 0
+  fi
+  if [[ -n "$HARBOR_OPENSANDBOX_IMAGE_REF" ]]; then
+    # Legacy explicit single-image mode remains supported until the runtime
+    # environment consumes Bundle Manifests exclusively.
     return 0
   fi
   # DATASET_NAME can have a Harbor Registry alias (for example, seta ->
@@ -365,9 +402,9 @@ prepare_opensandbox_image_ref() {
     "$manager_python" "$HARBOR_OPENSANDBOX_IMAGE_MANAGER"
     --dataset-root "$DATASET_PATH"
     --include "$INCLUDE_TASKS"
-    --registry "$HARBOR_OPENSANDBOX_REGISTRY"
-    --repository "$HARBOR_OPENSANDBOX_IMAGE_REPOSITORY"
-    --sandbox-image-prefix "$HARBOR_OPENSANDBOX_SANDBOX_IMAGE_PREFIX"
+    --registry "$YICLOUD_HARBOR_HOST"
+    --project "$YICLOUD_HARBOR_PROJECT"
+    --benchmark-name "$HARBOR_OPENSANDBOX_BENCHMARK"
     --docker-config "$HARBOR_OPENSANDBOX_DOCKER_CONFIG"
     --cache-root "$HARBOR_OPENSANDBOX_IMAGE_CACHE_ROOT"
     --platform "$HARBOR_OPENSANDBOX_IMAGE_PLATFORM"
@@ -375,7 +412,12 @@ prepare_opensandbox_image_ref() {
     --dockerhub-mirror-prefix "$HARBOR_OPENSANDBOX_DOCKERHUB_MIRROR_PREFIX"
     --apt-mirror "$HARBOR_OPENSANDBOX_APT_MIRROR"
     --build-args-json "$HARBOR_OPENSANDBOX_BUILD_ARGS_JSON"
+    --build-network "$HARBOR_OPENSANDBOX_BUILD_NETWORK"
+    --bundle-manifest-output "$automatic_bundle_manifest"
   )
+  if [[ "$YICLOUD_HARBOR_TLS_VERIFY" == "1" ]]; then
+    manager_cmd+=( --registry-tls-verify )
+  fi
   if [[ "${HARBOR_FORCE_BUILD:-0}" == "1" || "${HARBOR_FORCE_BUILD:-0}" == "true" ]]; then
     manager_cmd+=( --force )
   fi
@@ -397,8 +439,14 @@ prepare_opensandbox_image_ref() {
     echo "[ERROR] OpenSandbox image manager returned an empty image reference" >&2
     exit 1
   fi
-  export HARBOR_OPENSANDBOX_IMAGE_REF
+  HARBOR_OPENSANDBOX_BUNDLE_MANIFEST="$automatic_bundle_manifest"
+  if [[ ! -f "$HARBOR_OPENSANDBOX_BUNDLE_MANIFEST" ]]; then
+    echo "[ERROR] OpenSandbox image manager did not write Bundle Manifest: $HARBOR_OPENSANDBOX_BUNDLE_MANIFEST" >&2
+    exit 1
+  fi
+  export HARBOR_OPENSANDBOX_IMAGE_REF HARBOR_OPENSANDBOX_BUNDLE_MANIFEST
   echo "[INFO] OpenSandbox image ready: $HARBOR_OPENSANDBOX_IMAGE_REF" >&2
+  echo "[INFO] OpenSandbox Bundle Manifest ready: $HARBOR_OPENSANDBOX_BUNDLE_MANIFEST" >&2
 }
 
 append_environment_backend_args() {
@@ -406,6 +454,7 @@ append_environment_backend_args() {
   if [[ "$HARBOR_ENVIRONMENT_TYPE" == "opensandbox" ]]; then
     cmd+=(
       --ek "image_ref=$HARBOR_OPENSANDBOX_IMAGE_REF"
+      --ek "bundle_manifest_path=$HARBOR_OPENSANDBOX_BUNDLE_MANIFEST"
       --ek "lifecycle_minutes=$YICLOUD_SANDBOX_LIFECYCLE_MINUTES"
     )
   else
@@ -761,7 +810,7 @@ run_oracle_task() {
   if [[ "$HARBOR_DRY_RUN" != "1" ]]; then
     harbor_validate_runner_cli
   fi
-  prepare_opensandbox_image_ref
+  prepare_opensandbox_image_ref "$out_dir/opensandbox-bundle.json"
 
   local cmd=(
     "$HARBOR_CLI_BIN" run
@@ -1046,7 +1095,7 @@ run_harbor() {
   else
     cmd+=( --path "$DATASET_PATH" )
   fi
-  prepare_opensandbox_image_ref
+  prepare_opensandbox_image_ref "$out_dir/opensandbox-bundle.json"
   append_environment_backend_args
   if [[ -n "${HARBOR_VERIFIER_UV_HOME:-}" ]]; then
     cmd+=( --ve "HOME=$HARBOR_VERIFIER_UV_HOME" )
@@ -1435,7 +1484,7 @@ run_opencode_task() {
     else
       cmd+=( --path "$DATASET_PATH" )
     fi
-    prepare_opensandbox_image_ref
+    prepare_opensandbox_image_ref "$out_dir/opensandbox-bundle.json"
     append_environment_backend_args
 
     if [[ -n "${HARBOR_AGENT_TIMEOUT_MULTIPLIER:-}" ]]; then
