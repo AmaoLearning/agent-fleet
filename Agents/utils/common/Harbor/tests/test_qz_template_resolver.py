@@ -182,6 +182,7 @@ class QzTemplateResolverTest(unittest.TestCase):
             payload["tasks"]["task-a"]["init_steps"] = [
                 {"run": "git checkout task-a", "cwd": "/testbed"}
             ]
+            payload["tasks"]["task-a"]["workdir"] = "/root/repository"
             path.write_text(json.dumps(payload), encoding="utf-8")
             client = FakeClient()
             client.by_name[entry["template_name"]] = self.ready("template-1")
@@ -197,6 +198,20 @@ class QzTemplateResolverTest(unittest.TestCase):
             environment.init_steps,
             ({"run": "git checkout task-a", "cwd": "/testbed"},),
         )
+        self.assertEqual(environment.workdir, "/root/repository")
+
+    def test_resolve_task_environment_rejects_relative_workdir(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path, _, _ = self.make_mapping(Path(temporary))
+            payload = resolver.load_mapping(path)
+            payload["tasks"]["task-a"]["workdir"] = "relative/path"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                resolver.QzTemplateResolutionError,
+                "workdir must be absolute",
+            ):
+                resolver.resolve_task_environment(path, "task-a", FakeClient())
 
     def test_schema_v1_resolves_as_an_empty_environment_plan(self):
         legacy_identity = mapping.template_identity(
@@ -239,6 +254,22 @@ class QzTemplateResolverTest(unittest.TestCase):
 
         self.assertEqual(environment.template_id, "template-legacy")
         self.assertEqual(environment.init_steps, ())
+        self.assertIsNone(environment.workdir)
+
+    def test_schema_v2_environment_mapping_remains_readable(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path, _, entry = self.make_mapping(Path(temporary))
+            payload = resolver.load_mapping(path)
+            payload["schema_version"] = mapping.PREVIOUS_SCHEMA_VERSION
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            client = FakeClient()
+            client.by_name[entry["template_name"]] = self.ready("template-v2")
+
+            environment = resolver.resolve_task_environment(path, "task-a", client)
+
+        self.assertEqual(environment.template_id, "template-v2")
+        self.assertEqual(environment.init_steps, ())
+        self.assertIsNone(environment.workdir)
 
     def test_task_key_resolves_unique_nested_names_and_rejects_ambiguity(self):
         self.assertEqual(

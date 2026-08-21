@@ -17,6 +17,7 @@ import qz_template_mapping as mapping
 MAPPING_ENV_VAR = "QZ_SANDBOX_TEMPLATE_MAP"
 SUPPORTED_MAPPING_VERSIONS = {
     (mapping.LEGACY_SCHEMA_VERSION, mapping.LEGACY_IDENTITY_VERSION),
+    (mapping.PREVIOUS_SCHEMA_VERSION, mapping.IDENTITY_VERSION),
     (mapping.SCHEMA_VERSION, mapping.IDENTITY_VERSION),
 }
 
@@ -31,6 +32,7 @@ class ResolvedTaskEnvironment:
 
     template_id: str
     init_steps: tuple[dict[str, str], ...]
+    workdir: str | None
 
 
 def load_mapping(path: Path) -> dict[str, Any]:
@@ -98,6 +100,24 @@ def resolve_task_key(payload: Mapping[str, Any], task_name: str) -> str:
     )
 
 
+def task_instruction_prefix(payload: Mapping[str, Any], task_name: str) -> str:
+    """Return exact setup text removed from a schema-v3 task instruction."""
+    if payload.get("schema_version") != mapping.SCHEMA_VERSION:
+        return ""
+    key = resolve_task_key(payload, task_name)
+    task = payload["tasks"].get(key)
+    if not isinstance(task, dict):
+        raise QzTemplateResolutionError(f"mapping task {key!r} must be an object")
+    try:
+        return mapping.normalize_instruction_prefix(
+            task.get("instruction_prefix", "")
+        )
+    except mapping.QzTemplateMappingError as exc:
+        raise QzTemplateResolutionError(
+            f"mapping task {key!r} has an invalid instruction_prefix: {exc}"
+        ) from exc
+
+
 def _required_string(
     payload: Mapping[str, Any],
     key: str,
@@ -130,7 +150,7 @@ def _normalized_plan_steps(
 def _task_environment_entries(
     payload: Mapping[str, Any],
     task_name: str,
-) -> tuple[str, dict[str, Any], list[dict[str, str]]]:
+) -> tuple[str, dict[str, Any], list[dict[str, str]], str | None]:
     """Return validated Template and init entries selected for one task."""
     key = resolve_task_key(payload, task_name)
     task = payload["tasks"].get(key)
@@ -176,6 +196,17 @@ def _task_environment_entries(
         template,
         f"mapping task {key!r}",
     )
+    task_instruction_prefix(payload, key)
+    try:
+        workdir = (
+            mapping.normalize_workdir(task.get("workdir"))
+            if payload.get("schema_version") == mapping.SCHEMA_VERSION
+            else None
+        )
+    except mapping.QzTemplateMappingError as exc:
+        raise QzTemplateResolutionError(
+            f"mapping task {key!r} has an invalid workdir: {exc}"
+        ) from exc
     identity = mapping.template_identity(
         image,
         spec,
@@ -198,7 +229,7 @@ def _task_environment_entries(
             f"mapping Template {template_key!r} does not use its "
             "content-derived template_name"
         )
-    return template_key, template, init_steps
+    return template_key, template, init_steps, workdir
 
 
 def task_template_entry(
@@ -206,7 +237,7 @@ def task_template_entry(
     task_name: str,
 ) -> tuple[str, dict[str, Any]]:
     """Return the template key and entry selected for one Harbor task."""
-    template_key, template, _ = _task_environment_entries(payload, task_name)
+    template_key, template, _, _ = _task_environment_entries(payload, task_name)
     return template_key, template
 
 
@@ -313,10 +344,14 @@ def resolve_task_environment(
 ) -> ResolvedTaskEnvironment:
     """Resolve the ready Template and per-Sandbox init steps for one task."""
     payload = load_mapping(mapping_path)
-    template_key, entry, init_steps = _task_environment_entries(payload, task_name)
+    template_key, entry, init_steps, workdir = _task_environment_entries(
+        payload,
+        task_name,
+    )
     return ResolvedTaskEnvironment(
         template_id=_resolve_template_entry(template_key, entry, client),
         init_steps=tuple(init_steps),
+        workdir=workdir,
     )
 
 

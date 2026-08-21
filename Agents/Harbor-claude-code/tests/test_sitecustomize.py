@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import os
 import shlex
 import subprocess
 import sys
@@ -178,6 +179,41 @@ class ClaudeInstallCommandTest(unittest.TestCase):
             check=False,
         )
         self.assertEqual(bash_check.returncode, 0, bash_check.stderr)
+
+
+class QzInstructionHookGateTest(unittest.TestCase):
+    def run_hook(self, environment_type: str) -> mock.Mock:
+        patch_instruction = mock.Mock()
+        qz_task_instruction = types.ModuleType("qz_task_instruction")
+        qz_task_instruction.patch_harbor_task_instruction = patch_instruction
+        e2b_runtime = types.ModuleType("e2b_runtime")
+        e2b_runtime.patch_e2b_runtime_from_env = mock.Mock()
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "HARBOR_ENVIRONMENT_TYPE": environment_type,
+                    "QZ_SANDBOX_TEMPLATE_MAP": "/tmp/qz-map.json",
+                },
+                clear=True,
+            ),
+            mock.patch.dict(
+                sys.modules,
+                {
+                    "e2b_runtime": e2b_runtime,
+                    "qz_task_instruction": qz_task_instruction,
+                },
+            ),
+        ):
+            load_module()
+        return patch_instruction
+
+    def test_instruction_patch_is_applied_for_qz(self) -> None:
+        self.run_hook("qz").assert_called_once_with()
+
+    def test_instruction_patch_is_not_applied_for_docker(self) -> None:
+        self.run_hook("docker").assert_not_called()
 
 
 if __name__ == "__main__":

@@ -343,7 +343,10 @@ RUN mkdir -p /logs
             inventory["tasks"]["reset"]["template_key"],
         )
         template = next(iter(inventory["templates"].values()))
-        self.assertEqual(template["build_steps"][0], {"type": "USER", "args": ["root"]})
+        self.assertEqual(
+            template["build_steps"][0],
+            {"type": "USER", "args": ["root"]},
+        )
         self.assertIn(
             "git reset --hard",
             inventory["tasks"]["reset"]["init_steps"][0]["run"],
@@ -352,6 +355,65 @@ RUN mkdir -p /logs
             "git clone",
             inventory["tasks"]["clone"]["init_steps"][0]["run"],
         )
+
+    def test_schema_v2_manifest_carries_an_absolute_task_workdir(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "tasks"
+            root.mkdir()
+            task = self.make_task(root, "task-a", None)
+            plan_path = Path(temporary) / "environment-plan.json"
+            plan_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "tasks": {
+                            "task-a": {
+                                "image": "example/final:v1",
+                                "workdir": "/root/repository",
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            plans = mapping.load_environment_plan_manifest(plan_path)
+
+            inventory = mapping.build_inventory(
+                benchmark="repository",
+                tasks=[("task-a", task)],
+                plan_loader=lambda task_key, task_dir: (
+                    mapping.environment_plan_for_task(plans, task_key, task_dir)
+                ),
+            )
+
+        self.assertEqual(
+            inventory["tasks"]["task-a"]["workdir"],
+            "/root/repository",
+        )
+
+    def test_manifest_rejects_relative_task_workdir(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "environment-plan.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "tasks": {
+                            "task-a": {
+                                "image": "example/final:v1",
+                                "workdir": "relative/path",
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                mapping.QzTemplateMappingError,
+                "workdir must be absolute",
+            ):
+                mapping.load_environment_plan_manifest(path)
 
     def test_template_name_is_stable_and_qz_safe(self):
         identity = mapping.template_identity(
@@ -423,6 +485,7 @@ RUN mkdir -p /logs
             payload = json.loads(output.read_text(encoding="utf-8"))
             template_key = payload["tasks"]["task-a"]["template_key"]
             payload["templates"][template_key]["template_id"] = "template-1"
+            payload["schema_version"] = mapping.PREVIOUS_SCHEMA_VERSION
             output.write_text(json.dumps(payload), encoding="utf-8")
 
             self.assertEqual(mapping.main(arguments, stderr=io.StringIO()), 0)
@@ -432,6 +495,7 @@ RUN mkdir -p /logs
             regenerated["templates"][template_key]["template_id"],
             "template-1",
         )
+        self.assertEqual(regenerated["schema_version"], mapping.SCHEMA_VERSION)
 
     def test_regeneration_refuses_invalid_existing_binding(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -485,7 +549,7 @@ RUN mkdir -p /logs
             payload = json.loads(output.read_text(encoding="utf-8"))
 
         self.assertEqual(result, 0)
-        self.assertEqual(payload["schema_version"], 2)
+        self.assertEqual(payload["schema_version"], mapping.SCHEMA_VERSION)
         self.assertEqual(payload["identity_version"], "qz-template-environment-v2")
         template = next(iter(payload["templates"].values()))
         self.assertIsNone(template["template_id"])

@@ -33,7 +33,7 @@ keys; the mapping tool does not need dataset-specific code:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "tasks": {
     "task-a": {
       "image": "example/shared-base:v1",
@@ -51,7 +51,9 @@ keys; the mapping tool does not need dataset-specific code:
       "build_steps": [],
       "init_steps": [
         {"run": "git clone https://github.com/org/repo.git /testbed", "cwd": "/"}
-      ]
+      ],
+      "workdir": "/testbed",
+      "instruction_prefix": "exact leading setup text removed before agent run"
     }
   }
 }
@@ -68,7 +70,54 @@ python qz_template_mapping.py \
 
 This is the generic integration surface for checkout, reset, clone, or other
 image-backed task initialization. The resolver and QZ provider only consume the
-resulting schema-v2 mapping and do not branch on dataset name.
+resulting schema-v3 mapping and do not branch on dataset name.
+
+Environment-plan schema v2 may additionally carry an absolute `workdir` and an
+exact `instruction_prefix`. The QZ provider uses the task workdir as the
+default execution directory. Harbor removes the prefix before the task reaches
+any agent and fails if the task text no longer starts with the same text.
+Schema v1 plans remain accepted when neither handoff is required.
+
+### Repository tasks backed by final images
+
+`qz_repository_environment_plan.py` adapts task archives whose instruction
+starts with a strict `Environment Setup` shell block. It joins the block's
+repository and checked-out revision to an explicit catalog of authoritative
+final images. The final image must already contain the repository and its
+dependencies at that revision; the setup block is therefore removed instead
+of executed twice. Its leading absolute `cd` target is preserved as the QZ
+task workdir so the agent starts in the repository contained by the image.
+
+The catalog can be a JSON array or JSON Lines. By default it reads the common
+`instance_id`, `repo`, `base_commit`, and `image_name` fields:
+
+```json
+{"instance_id":"org__project-123","repo":"org/project","base_commit":"0123456789abcdef","image_name":"registry.example/final:task"}
+```
+
+```bash
+python qz_repository_environment_plan.py \
+  --dataset-root /path/to/materialized/harbor/tasks \
+  --task-list /path/to/selected-tasks.txt \
+  --image-catalog /path/to/final-images.jsonl \
+  --output /tmp/repository-environment-plan.json
+
+python qz_template_mapping.py \
+  --dataset-root /path/to/materialized/harbor/tasks \
+  --benchmark repository-benchmark \
+  --task-list /path/to/selected-tasks.txt \
+  --environment-plan-file /tmp/repository-environment-plan.json \
+  --output /tmp/repository-qz-templates.json
+```
+
+The producer first resolves the selected Harbor task name against the explicit
+catalog task ID, then verifies that the catalog repository and revision match
+the setup block. This stays unambiguous even when multiple tasks share one base
+commit. Use `--task-field`, `--repository-field`, `--revision-field`, and
+`--image-field` for another catalog schema. The parser deliberately accepts
+only the documented leading heading, fenced shell block, absolute `cd`, and
+`git clone ... . && git checkout ...` shape. It does not infer setup from
+arbitrary prose or execute commands from the prompt.
 
 ### SWE-Smith convenience producer
 
@@ -113,7 +162,7 @@ python qz_template_mapping.py \
 These tasks already use task-specific final images, so all Dockerfile steps
 remain Template build steps and the generated task initialization is empty.
 
-## Schema v2
+## Schema v3
 
 The output is deterministic: it contains no generation timestamp, absolute
 dataset path, credentials, or live platform state.
@@ -122,7 +171,7 @@ dataset path, credentials, or live platform state.
 {
   "benchmark": "terminalbench21",
   "identity_version": "qz-template-environment-v2",
-  "schema_version": 2,
+  "schema_version": 3,
   "tasks": {
     "adaptive-rejection-sampler": {
       "docker_image": "example/task-image:tag",
@@ -132,6 +181,8 @@ dataset path, credentials, or live platform state.
           "run": "git fetch && git checkout instance-id"
         }
       ],
+      "instruction_prefix": "optional exact setup prefix",
+      "workdir": "/testbed",
       "template_key": "sha256:..."
     }
   },
@@ -167,7 +218,8 @@ same v2 key. Resolving a registry tag to a manifest digest is outside this
 inventory phase.
 
 Existing schema-v1 mappings remain readable and behave as empty `build_steps`
-plus empty `init_steps`. New inventory output always uses schema v2.
+plus empty `init_steps`; schema-v2 environment mappings remain readable without
+instruction handoff. New inventory output uses schema v3.
 
 ## Resolve or materialize one task
 
@@ -175,7 +227,7 @@ plus empty `init_steps`. New inventory output always uses schema v2.
 runs are read-only: they resolve the cached ID or deterministic alias through
 the live QZ API and reject missing, non-ready, or identity-mismatched
 Templates. The live Template must expose the mapping's content-derived alias
-and QZ spec. After a fresh Sandbox is created, schema-v2 `init_steps` run in
+and QZ spec. After a fresh Sandbox is created, mapped `init_steps` run in
 order as the Template's default user before agent setup/run; any non-zero step
 aborts the trial. Benchmark runs never create a Template implicitly.
 

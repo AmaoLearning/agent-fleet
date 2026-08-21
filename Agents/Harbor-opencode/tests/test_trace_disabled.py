@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 import importlib.util
 import os
 import subprocess
@@ -38,12 +40,18 @@ class FakeOpenCode:
         self.root_commands: list[dict[str, object]] = []
         self.agent_commands: list[dict[str, object]] = []
 
+    @property
+    def extra_env(self) -> dict[str, str]:
+        return self._extra_env
+
     async def exec_as_root(self, environment, **kwargs) -> None:
         self.root_commands.append(kwargs)
 
     async def exec_as_agent(self, environment, **kwargs) -> None:
         self.agent_commands.append(kwargs)
         command = str(kwargs.get("command", ""))
+        if hasattr(environment, "exec"):
+            await environment.exec(command=command, env=kwargs.get("env"))
         if not self.fake_opencode_present and "node --version" in command:
             raise RuntimeError("opencode is not installed")
 
@@ -244,6 +252,107 @@ class OpenCodeTraceDisabledTests(unittest.TestCase):
             run_env.get("OPIK_URL"),
             "http://host.docker.internal:5173/api/",
         )
+
+    def test_runtime_secrets_use_trial_scope_not_per_command_env(self) -> None:
+        runtime_secrets = {
+            "ANTHROPIC_API_KEY": "fake-runtime-secret",
+            "AGENT_FLEET_OPENCODE_SECRET_0123456789ABCDEF": (
+                "fake-runtime-secret"
+            ),
+        }
+        with mock.patch.object(
+            self.module,
+            "OPENCODE_RUNTIME_SECRETS",
+            runtime_secrets,
+        ):
+            agent = self.make_agent("false")
+
+        self.assertEqual(
+            {key: agent._extra_env[key] for key in runtime_secrets},
+            runtime_secrets,
+        )
+
+        asyncio.run(agent.run("solve the task", FakeEnvironment(), object()))
+
+        for command in agent.agent_commands:
+            command_env = command.get("env", {})
+            self.assertTrue(runtime_secrets.keys().isdisjoint(command_env))
+            self.assertNotIn(
+                "fake-runtime-secret",
+                str(command.get("command", "")),
+            )
+            self.assertNotIn("fake-runtime-secret", command_env.values())
+
+    def test_runtime_secrets_reach_environment_exec_through_harbor_scope(self) -> None:
+        try:
+            from harbor.environments.base import BaseEnvironment
+            from harbor.trial.single_step import SingleStepTrial
+        except ImportError:
+            self.skipTest("Harbor runner dependency is not installed")
+
+        class CapturingEnvironment(FakeEnvironment):
+            scoped_exec_env = BaseEnvironment.scoped_exec_env
+            _merge_env = BaseEnvironment._merge_env
+
+            def __init__(self) -> None:
+                super().__init__()
+                self._persistent_env: dict[str, str] = {}
+                self._exec_env_overlays = contextvars.ContextVar(
+                    "test_opencode_exec_env_overlays",
+                    default=(),
+                )
+                self.executed_envs: list[dict[str, str]] = []
+
+            async def exec(self, command, env=None) -> None:
+                del command
+                self.executed_envs.append(self._merge_env(env) or {})
+
+            def with_default_user(self, user):
+                del user
+                return contextlib.nullcontext()
+
+        runtime_secrets = {
+            "ANTHROPIC_API_KEY": "fake-runtime-secret",
+            "AGENT_FLEET_OPENCODE_SECRET_0123456789ABCDEF": (
+                "fake-runtime-secret"
+            ),
+        }
+        with mock.patch.object(
+            self.module,
+            "OPENCODE_RUNTIME_SECRETS",
+            runtime_secrets,
+        ):
+            agent = self.make_agent("false")
+        environment = CapturingEnvironment()
+        trial = object.__new__(SingleStepTrial)
+        trial.agent = agent
+        trial.agent_environment = environment
+        trial._emit = mock.AsyncMock()
+        trial._network_plan = lambda _step: types.SimpleNamespace(
+            agent_env_baseline=None,
+            agent_phase=None,
+        )
+
+        @contextlib.asynccontextmanager
+        async def phase_network_policy(_environment, **_kwargs):
+            yield
+
+        trial._phase_network_policy = phase_network_policy
+        trial._log_context = lambda *_args, **_kwargs: contextlib.nullcontext()
+        target = types.SimpleNamespace()
+
+        asyncio.run(
+            trial._run_agent_phase(
+                target=target,
+                instruction="solve the task",
+                timeout_sec=30,
+                user=None,
+            )
+        )
+
+        self.assertTrue(environment.executed_envs)
+        for key, value in runtime_secrets.items():
+            self.assertEqual(environment.executed_envs[-1][key], value)
 
 
 class EnableTrackHarborTests(unittest.TestCase):

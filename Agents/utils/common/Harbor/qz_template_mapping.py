@@ -12,7 +12,7 @@ import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, TextIO
 
 try:
@@ -21,15 +21,17 @@ except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.9/3.10
     tomllib = None
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 IDENTITY_VERSION = "qz-template-environment-v2"
+PREVIOUS_SCHEMA_VERSION = 2
 LEGACY_SCHEMA_VERSION = 1
 LEGACY_IDENTITY_VERSION = "qz-template-image-v1"
 DEFAULT_SPEC = "g.c1"
 DEFAULT_IMAGE_SOURCE = "official"
 SPEC_CHOICES = ("g.c1", "g.c2", "g.c4")
 DATASET_KINDS = ("image", "smith", "sweverify")
-ENVIRONMENT_PLAN_SCHEMA_VERSION = 1
+ENVIRONMENT_PLAN_SCHEMA_VERSION = 2
+LEGACY_ENVIRONMENT_PLAN_SCHEMA_VERSION = 1
 TEMPLATE_NAME_MAX_LENGTH = 63
 TEMPLATE_LABEL_MAX_LENGTH = 32
 TEMPLATE_NAME_PATTERN = re.compile(r"[A-Za-z0-9_]+")
@@ -46,6 +48,8 @@ class TaskEnvironmentPlan:
     image: str
     build_steps: tuple[dict[str, Any], ...] = ()
     init_steps: tuple[dict[str, str], ...] = ()
+    workdir: str | None = None
+    instruction_prefix: str = ""
 
 
 def _fallback_toml_string(path: Path, wanted_section: str, wanted_key: str) -> str:
@@ -139,7 +143,11 @@ def load_environment_plan_manifest(path: Path) -> dict[str, TaskEnvironmentPlan]
         ) from exc
     if not isinstance(payload, dict):
         raise QzTemplateMappingError("environment plan must be a JSON object")
-    if payload.get("schema_version") != ENVIRONMENT_PLAN_SCHEMA_VERSION:
+    schema_version = payload.get("schema_version")
+    if schema_version not in {
+        LEGACY_ENVIRONMENT_PLAN_SCHEMA_VERSION,
+        ENVIRONMENT_PLAN_SCHEMA_VERSION,
+    }:
         raise QzTemplateMappingError(
             "unsupported environment plan schema_version: "
             f"{payload.get('schema_version')!r}"
@@ -159,6 +167,8 @@ def load_environment_plan_manifest(path: Path) -> dict[str, TaskEnvironmentPlan]
         image = entry.get("image")
         build_steps = entry.get("build_steps", [])
         init_steps = entry.get("init_steps", [])
+        workdir = entry.get("workdir")
+        instruction_prefix = entry.get("instruction_prefix", "")
         if not isinstance(image, str) or not image.strip():
             raise QzTemplateMappingError(
                 f"environment plan task {task_key!r} is missing image"
@@ -171,10 +181,27 @@ def load_environment_plan_manifest(path: Path) -> dict[str, TaskEnvironmentPlan]
             raise QzTemplateMappingError(
                 f"environment plan task {task_key!r} init_steps must be a list"
             )
+        if schema_version == LEGACY_ENVIRONMENT_PLAN_SCHEMA_VERSION:
+            unsupported_fields = {
+                field for field in ("instruction_prefix", "workdir") if field in entry
+            }
+            if unsupported_fields:
+                raise QzTemplateMappingError(
+                    f"environment plan task {task_key!r} uses "
+                    f"{', '.join(sorted(unsupported_fields))} with legacy "
+                    "schema_version"
+                )
+        elif not isinstance(instruction_prefix, str):
+            raise QzTemplateMappingError(
+                f"environment plan task {task_key!r} instruction_prefix "
+                "must be a string"
+            )
         plans[task_key] = TaskEnvironmentPlan(
             image=image.strip(),
             build_steps=tuple(build_steps),
             init_steps=tuple(init_steps),
+            workdir=normalize_workdir(workdir),
+            instruction_prefix=instruction_prefix,
         )
     return plans
 
@@ -428,6 +455,25 @@ def normalize_init_steps(steps: Iterable[Mapping[str, Any]]) -> list[dict[str, s
     return normalized
 
 
+def normalize_instruction_prefix(value: Any) -> str:
+    """Validate the exact leading instruction text removed before agent run."""
+    if not isinstance(value, str):
+        raise QzTemplateMappingError("instruction_prefix must be a string")
+    return value
+
+
+def normalize_workdir(value: Any) -> str | None:
+    """Validate an optional absolute task execution directory."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise QzTemplateMappingError("workdir must be a non-empty string")
+    workdir = value.strip()
+    if not PurePosixPath(workdir).is_absolute():
+        raise QzTemplateMappingError(f"workdir must be absolute: {workdir!r}")
+    return workdir
+
+
 def template_identity(
     image: str,
     spec: str,
@@ -484,7 +530,7 @@ def build_inventory(
     image_source: str = DEFAULT_IMAGE_SOURCE,
     plan_loader: Callable[[str, Path], TaskEnvironmentPlan] | None = None,
 ) -> dict[str, Any]:
-    """Build a deterministic schema-v2 task-to-Template inventory."""
+    """Build a deterministic schema-v3 task-to-Template inventory."""
     benchmark = benchmark.strip()
     image_source = image_source.strip()
     if not benchmark:
@@ -511,6 +557,10 @@ def build_inventory(
                 )
             build_steps = normalize_build_steps(plan.build_steps)
             init_steps = normalize_init_steps(plan.init_steps)
+            workdir = normalize_workdir(plan.workdir)
+            instruction_prefix = normalize_instruction_prefix(
+                plan.instruction_prefix
+            )
         except QzTemplateMappingError as exc:
             failures.append(f"{task_key}: {exc}")
             continue
@@ -532,6 +582,10 @@ def build_inventory(
             "init_steps": init_steps,
             "template_key": template_key,
         }
+        if workdir is not None:
+            task_map[task_key]["workdir"] = workdir
+        if instruction_prefix:
+            task_map[task_key]["instruction_prefix"] = instruction_prefix
 
     if failures:
         details = "\n".join(f"- {failure}" for failure in failures)
@@ -576,7 +630,10 @@ def preserve_template_ids(
         raise QzTemplateMappingError(
             f"existing mapping must be a JSON object: {existing_path}"
         )
-    if existing.get("schema_version") != SCHEMA_VERSION:
+    if existing.get("schema_version") not in {
+        PREVIOUS_SCHEMA_VERSION,
+        SCHEMA_VERSION,
+    }:
         raise QzTemplateMappingError(
             f"existing mapping has unsupported schema_version: {existing_path}"
         )

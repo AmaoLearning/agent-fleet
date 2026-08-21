@@ -77,13 +77,29 @@ class HarborEnvHelperTests(unittest.TestCase):
         )
 
         result = run_env_helper("opencode-config", environment=environment)
+        runtime_result = run_env_helper(
+            "opencode-runtime-secrets", environment=environment
+        )
 
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(runtime_result.returncode, 0, runtime_result.stderr)
         config = json.loads(result.stdout)
-        self.assertEqual(
-            config["provider"]["custom"]["options"]["headers"],
-            {"X-Route-Key": "deployment-a"},
+        runtime_secrets = json.loads(runtime_result.stdout)
+        options = config["provider"]["custom"]["options"]
+        self.assertRegex(
+            options["apiKey"],
+            r"^\{env:AGENT_FLEET_OPENCODE_SECRET_[0-9A-F]{16}\}$",
         )
+        self.assertRegex(
+            options["headers"]["X-Route-Key"],
+            r"^\{env:AGENT_FLEET_OPENCODE_SECRET_[0-9A-F]{16}\}$",
+        )
+        self.assertEqual(
+            set(runtime_secrets.values()),
+            {"test-key", "deployment-a"},
+        )
+        self.assertNotIn("test-key", result.stdout)
+        self.assertNotIn("deployment-a", result.stdout)
 
     def test_generate_task_file_lists_supported_tasks_in_sorted_order(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

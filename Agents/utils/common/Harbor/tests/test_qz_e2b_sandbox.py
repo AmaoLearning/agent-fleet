@@ -47,6 +47,10 @@ def install_harbor_stubs() -> None:
             self.environment_name = "test-environment"
             self.session_id = "test-session"
             self.network_policy = types.SimpleNamespace(network_mode="allow")
+            self._workdir = Path("/dockerfile-workdir")
+            self.task_env_config = types.SimpleNamespace(
+                workdir="/task-config-workdir"
+            )
 
         async def start(self, force_build: bool) -> None:
             type(self).start_calls.append(force_build)
@@ -600,6 +604,7 @@ class TemplateResolutionTest(unittest.TestCase):
             return_value=types.SimpleNamespace(
                 template_id="mapped-template-id",
                 init_steps=({"run": "git checkout task", "cwd": "/testbed"},),
+                workdir="/root/repository",
             ),
         ) as resolve:
             env = self.make_env()
@@ -610,6 +615,8 @@ class TemplateResolutionTest(unittest.TestCase):
             env._task_init_steps,
             ({"run": "git checkout task", "cwd": "/testbed"},),
         )
+        self.assertEqual(env._workdir, Path("/root/repository"))
+        self.assertEqual(env.task_env_config.workdir, "/root/repository")
         resolve.assert_called_once_with(
             Path("/tmp/qz-map.json"),
             "test-environment",

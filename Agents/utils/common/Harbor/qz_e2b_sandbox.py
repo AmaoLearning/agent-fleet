@@ -234,7 +234,7 @@ class QzSandboxEnvironment(E2BEnvironment):
     ``template`` kwarg or ``QZ_SANDBOX_TEMPLATE`` selects one fixed Template.
     Alternatively, ``QZ_SANDBOX_TEMPLATE_MAP`` resolves each task through a
     mapping and verifies that the selected Template is live and ready. A
-    schema-v2 mapping may also provide commands to initialize each fresh
+    environment mapping may also provide commands to initialize each fresh
     Sandbox before Harbor starts the agent. Without either mode, Harbor's
     auto-generated per-task alias is folded onto qz's allowed name alphabet.
     """
@@ -270,6 +270,9 @@ class QzSandboxEnvironment(E2BEnvironment):
                 ) from exc
             self._template_override = environment_plan.template_id
             self._task_init_steps = environment_plan.init_steps
+            if environment_plan.workdir is not None:
+                self._workdir = Path(environment_plan.workdir)
+                self.task_env_config.workdir = environment_plan.workdir
             self._template_name = self._template_override
         else:
             self._template_name = sanitize_template_name(self._template_name)

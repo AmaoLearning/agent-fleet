@@ -15,6 +15,7 @@ The realtime hook itself runs entirely inside the container (TS plugin
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shlex
 from collections.abc import Awaitable, Callable
@@ -54,6 +55,30 @@ FINALIZER_PY = ROOT / "finalize_opencode_sessions.py"
 
 CONTAINER_PLUGIN_REL = ".config/opencode/plugins"
 CONTAINER_STATE_REL = ".opencode/state"
+OPENCODE_RUNTIME_SECRETS_ENV = "OPENCODE_RUNTIME_SECRETS_JSON"
+
+
+def _load_opencode_runtime_secrets() -> dict[str, str]:
+    raw = os.environ.get(OPENCODE_RUNTIME_SECRETS_ENV, "")
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"{OPENCODE_RUNTIME_SECRETS_ENV} must be a JSON object"
+        ) from exc
+    if not isinstance(payload, dict) or not all(
+        isinstance(key, str) and isinstance(value, str) and value
+        for key, value in payload.items()
+    ):
+        raise ValueError(
+            f"{OPENCODE_RUNTIME_SECRETS_ENV} must be a non-empty string map"
+        )
+    return payload
+
+
+OPENCODE_RUNTIME_SECRETS = _load_opencode_runtime_secrets()
 
 
 def _trace_to_opik_enabled(extra_env: dict[str, str] | None = None) -> bool:
@@ -192,6 +217,17 @@ class OpikOpenCodeHarbor(OpenCode):
         OPIK_URL host rewritten from localhost to host.docker.internal
         before opencode is invoked.
     """
+
+    def __init__(
+        self,
+        *args: object,
+        extra_env: dict[str, str] | None = None,
+        **kwargs: object,
+    ) -> None:
+        merged_extra_env = dict(extra_env or {})
+        merged_extra_env.update(OPENCODE_RUNTIME_SECRETS)
+        self._runtime_secret_keys = frozenset(OPENCODE_RUNTIME_SECRETS)
+        super().__init__(*args, extra_env=merged_extra_env, **kwargs)
 
     async def install(self, environment: BaseEnvironment) -> None:
         async def _prepare_python_runtime() -> None:
@@ -539,12 +575,12 @@ class OpikOpenCodeHarbor(OpenCode):
 
         env: dict[str, str] = {}
 
-        # Replace upstream's provider-specific env handling with explicit
-        # forwarding of everything the runner already injected via `--ae`.
-        # `_extra_env` is also merged inside `_exec`, so this is mostly for
-        # clarity.
+        # Harbor's Trial scopes `_extra_env` over every environment exec during
+        # agent setup/run. Forward only non-secrets explicitly because `_exec`
+        # records this per-command env in the trial log.
         for key, value in self._extra_env.items():
-            env[key] = value
+            if key not in self._runtime_secret_keys:
+                env[key] = value
 
         if trace_enabled:
             # Localhost OPIK_URL on the host needs to become

@@ -44,7 +44,13 @@ class HarborGenerationConfigTests(unittest.TestCase):
                 text=True,
             )
 
-    def _load_config(self, agent: str, **overrides: str) -> dict[str, object]:
+    def _load_config(
+        self,
+        agent: str,
+        *,
+        load_count: int = 1,
+        **overrides: str,
+    ) -> dict[str, object]:
         with tempfile.TemporaryDirectory() as temp_dir:
             env = {
                 "PATH": os.environ["PATH"],
@@ -62,7 +68,9 @@ class HarborGenerationConfigTests(unittest.TestCase):
                     "bash",
                     "-c",
                     """
-source "$1"
+for ((load_index = 0; load_index < $2; load_index++)); do
+  source "$1"
+done
 python3 - <<'PY'
 import json
 import os
@@ -76,6 +84,9 @@ print(json.dumps({
         json.loads(os.environ["OPENCODE_CONFIG_CONTENT"])
         if os.environ["OPENCODE_CONFIG_CONTENT"]
         else None
+    ),
+    "opencode_runtime_secrets": json.loads(
+        os.environ["OPENCODE_RUNTIME_SECRETS_JSON"]
     ),
     "harbor_model": os.environ["HARBOR_MODEL"],
     "agent_import_path": os.environ["HARBOR_AGENT_IMPORT_PATH"],
@@ -103,6 +114,7 @@ PY
 """,
                     "bash",
                     str(HARBOR_DIR / "env.sh"),
+                    str(load_count),
                 ],
                 check=True,
                 capture_output=True,
@@ -148,6 +160,12 @@ PY
             ]["output"],
             8192,
         )
+        self.assertRegex(
+            config["opencode_config"]["provider"]["custom"]["options"]["apiKey"],
+            r"^\{env:AGENT_FLEET_OPENCODE_SECRET_[0-9A-F]{16}\}$",
+        )
+        self.assertIn("fake-key", config["opencode_runtime_secrets"].values())
+        self.assertNotIn("fake-key", json.dumps(config["opencode_config"]))
 
     def test_opencode_applies_settings_to_named_provider_model(self) -> None:
         config = self._load_config(
@@ -273,14 +291,62 @@ PY
             ),
         )
 
-        self.assertEqual(
-            config["opencode_config"]["provider"]["hosted_vllm"]["options"],
-            {
-                "baseURL": "https://llm.example/v1",
-                "headers": {"X-Route-Key": "deployment-a"},
-            },
+        options = config["opencode_config"]["provider"]["hosted_vllm"]["options"]
+        self.assertEqual(options["baseURL"], "https://llm.example/v1")
+        self.assertRegex(
+            options["headers"]["X-Route-Key"],
+            r"^\{env:AGENT_FLEET_OPENCODE_SECRET_[0-9A-F]{16}\}$",
         )
+        self.assertIn(
+            "deployment-a",
+            config["opencode_runtime_secrets"].values(),
+        )
+        self.assertNotIn("deployment-a", json.dumps(config["opencode_config"]))
         self.assertNotIn("agent", config["opencode_config"])
+
+    def test_opencode_sanitizes_explicit_config_credentials(self) -> None:
+        config = self._load_config(
+            "opencode",
+            MODEL="anthropic/test-model",
+            OPENCODE_CONFIG_CONTENT=(
+                '{"provider":{"anthropic":{"options":{'
+                '"apiKey":"explicit-key","headers":{'
+                '"Authorization":"Bearer explicit-token"}}}}}'
+            ),
+        )
+
+        serialized_config = json.dumps(config["opencode_config"])
+        self.assertNotIn("explicit-key", serialized_config)
+        self.assertNotIn("explicit-token", serialized_config)
+        self.assertIn(
+            "explicit-key",
+            config["opencode_runtime_secrets"].values(),
+        )
+        self.assertIn(
+            "Bearer explicit-token",
+            config["opencode_runtime_secrets"].values(),
+        )
+
+    def test_opencode_runtime_secrets_survive_repeated_env_loading(self) -> None:
+        config = self._load_config(
+            "opencode",
+            load_count=2,
+            MODEL="anthropic/test-model",
+            OPENCODE_CONFIG_CONTENT=(
+                '{"provider":{"anthropic":{"options":{'
+                '"apiKey":"explicit-key","headers":{'
+                '"Authorization":"Bearer explicit-token"}}}}}'
+            ),
+        )
+
+        self.assertIn(
+            "explicit-key",
+            config["opencode_runtime_secrets"].values(),
+        )
+        self.assertIn(
+            "Bearer explicit-token",
+            config["opencode_runtime_secrets"].values(),
+        )
 
     def test_claude_code_rejects_unsupported_sampling_settings(self) -> None:
         result = self._run_validation(

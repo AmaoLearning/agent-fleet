@@ -447,6 +447,8 @@ main() {
     "--ae" \
     "HARBOR_DATASET=terminal-bench/terminal-bench-2-1"
   assert_arg_pair "$opencode_capture" "-i" "terminal-bench/fix-git"
+  assert_arg_absent "$opencode_capture" "fake-llm-key"
+  assert_arg_absent "$opencode_capture" "OPENCODE_RUNTIME_SECRETS_JSON"
   assert_structured_mount_arg \
     "$opencode_capture" \
     "$tmp/opencode-default/wheels" \

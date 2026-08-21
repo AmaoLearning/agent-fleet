@@ -223,7 +223,7 @@ validate_environment_backend() {
   case "$HARBOR_ENVIRONMENT_TYPE" in
     docker)
       ;;
-    e2b|qz)
+    e2b)
       if harbor_agent_is_pi; then
         echo "[ERROR] AGENT=pi with HARBOR_ENVIRONMENT_TYPE=$HARBOR_ENVIRONMENT_TYPE is unsupported: Pi's pinned Node/runtime archives and local extensions require host bind mounts." >&2
         echo "[ERROR] use HARBOR_ENVIRONMENT_TYPE=docker or opensandbox for AGENT=pi." >&2
@@ -258,6 +258,11 @@ validate_environment_backend() {
       fi
       ;;
     qz)
+      if harbor_agent_is_pi; then
+        echo "[ERROR] AGENT=pi with HARBOR_ENVIRONMENT_TYPE=$HARBOR_ENVIRONMENT_TYPE is unsupported: Pi's pinned Node/runtime archives and local extensions require host bind mounts." >&2
+        echo "[ERROR] use HARBOR_ENVIRONMENT_TYPE=docker or opensandbox for AGENT=pi." >&2
+        exit 1
+      fi
       if [[ -z "${SBX_API_KEY:-}" && -z "${QZ_SANDBOX_API_KEY:-}" \
         && "${E2B_API_KEY:-}" != sbx_* ]]; then
         echo '[ERROR] qz sandbox requires SBX_API_KEY (or QZ_SANDBOX_API_KEY / an sbx_-prefixed E2B_API_KEY)' >&2
@@ -1494,14 +1499,9 @@ run_opencode_task() {
     if [[ -n "${OPENCODE_CONFIG_CONTENT:-}" ]]; then
       cmd+=( --ak "opencode_config=$OPENCODE_CONFIG_CONTENT" )
     fi
-    if [[ -z "${OPENCODE_CONFIG_CONTENT:-}" || "${HARBOR_MODEL%%/*}" != "custom" ]]; then
-      if [[ -n "${HARBOR_ANTHROPIC_BASE_URL:-}" ]]; then
-        cmd+=( --ae "ANTHROPIC_BASE_URL=$HARBOR_ANTHROPIC_BASE_URL" )
-      fi
-      if [[ -n "${HARBOR_ANTHROPIC_AUTH_TOKEN:-}" ]]; then
-        cmd+=( --ae "ANTHROPIC_AUTH_TOKEN=$HARBOR_ANTHROPIC_AUTH_TOKEN" )
-        cmd+=( --ae "ANTHROPIC_API_KEY=$HARBOR_ANTHROPIC_AUTH_TOKEN" )
-      fi
+    if [[ -z "${OPENCODE_CONFIG_CONTENT:-}" || "${HARBOR_MODEL%%/*}" != "custom" ]] \
+      && [[ -n "${HARBOR_ANTHROPIC_BASE_URL:-}" ]]; then
+      cmd+=( --ae "ANTHROPIC_BASE_URL=$HARBOR_ANTHROPIC_BASE_URL" )
     fi
 
     local mounts_json="[]"
@@ -1633,13 +1633,13 @@ main() {
   harbor_validate_generation_controls
   validate_environment_backend
   configure_trace_disabled_runtime
+  harbor_init_run_dirs
   if ! harbor_agent_is_oracle && harbor_trace_to_opik_enabled; then
     normalize_opik_url_override
   fi
   if [[ "$AGENT" == "oracle" ]]; then
     need_cmd python3
     need_cmd uv
-    harbor_init_run_dirs
     apply_min_test_defaults
     if [[ "$HARBOR_DRY_RUN" != "1" ]]; then
       ensure_environment_backend

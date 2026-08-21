@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -9,6 +12,103 @@ import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import urlparse
+
+OPENCODE_RUNTIME_SECRET_PREFIX = "AGENT_FLEET_OPENCODE_SECRET_"
+OPENCODE_RUNTIME_SECRETS_ENV = "OPENCODE_RUNTIME_SECRETS_JSON"
+OPENCODE_SENSITIVE_KEYS = {
+    "accesstoken",
+    "apikey",
+    "authorization",
+    "authtoken",
+    "clientsecret",
+    "password",
+    "secret",
+    "token",
+}
+
+
+def _opencode_secret_env_name(path: tuple[str, ...]) -> str:
+    encoded_path = json.dumps(
+        path,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode()
+    digest = hashlib.sha256(encoded_path).hexdigest()[:16].upper()
+    return f"{OPENCODE_RUNTIME_SECRET_PREFIX}{digest}"
+
+
+def _opencode_reference(value: str) -> tuple[str, str] | None:
+    if not (value.startswith("{") and value.endswith("}")):
+        return None
+    kind, separator, target = value[1:-1].partition(":")
+    if not separator or kind not in {"env", "file"} or not target:
+        return None
+    return kind, target
+
+
+def sanitize_opencode_config_payload(
+    payload: dict[str, object],
+) -> tuple[dict[str, object], dict[str, str]]:
+    """Replace literal OpenCode credentials with runtime environment refs."""
+
+    runtime_secrets: dict[str, str] = {}
+
+    def sanitize(
+        value: object,
+        path: tuple[str, ...],
+        *,
+        secret_value: bool = False,
+    ) -> object:
+        if isinstance(value, dict):
+            sanitized: dict[str, object] = {}
+            for raw_key, child in value.items():
+                key = str(raw_key)
+                normalized_key = "".join(
+                    character
+                    for character in key.lower()
+                    if character.isalnum()
+                )
+                sanitized[key] = sanitize(
+                    child,
+                    (*path, key),
+                    secret_value=(
+                        secret_value
+                        or normalized_key == "headers"
+                        or normalized_key in OPENCODE_SENSITIVE_KEYS
+                    ),
+                )
+            return sanitized
+        if isinstance(value, list):
+            return [
+                sanitize(child, (*path, str(index)), secret_value=secret_value)
+                for index, child in enumerate(value)
+            ]
+        if not secret_value or not isinstance(value, str) or not value:
+            return value
+
+        reference = _opencode_reference(value)
+        if reference is not None:
+            kind, target = reference
+            if kind == "env" and (secret := os.environ.get(target)):
+                runtime_secrets[target] = secret
+            return value
+
+        env_name = _opencode_secret_env_name(path)
+        runtime_secrets[env_name] = value
+        return f"{{env:{env_name}}}"
+
+    sanitized = sanitize(payload, ())
+    if not isinstance(sanitized, dict):
+        raise TypeError("OpenCode config must remain a JSON object")
+    return sanitized, runtime_secrets
+
+
+def _opencode_config_from_env() -> dict[str, object]:
+    raw = os.environ.get("OPENCODE_CONFIG_CONTENT", "")
+    payload = json.loads(raw) if raw else {}
+    if not isinstance(payload, dict):
+        raise ValueError("OPENCODE_CONFIG_CONTENT must be a JSON object")  # noqa: TRY004
+    return payload
 
 
 def parse_finite_float(name: str, value: str) -> float:
@@ -59,18 +159,13 @@ def model_request_headers() -> dict[str, str]:
 
 def build_opencode_config() -> dict[str, object]:
     base_url = os.environ.get("HARBOR_ANTHROPIC_BASE_URL", "").rstrip("/") + "/v1"
-    api_key = os.environ.get("HARBOR_ANTHROPIC_AUTH_TOKEN", "")
     provider, separator, model = os.environ.get("HARBOR_MODEL", "").partition("/")
     if not separator:
         model = provider
     temperature = os.environ.get("HARBOR_TEMPERATURE", "")
     top_p = os.environ.get("HARBOR_TOP_P", "")
     max_tokens = os.environ.get("HARBOR_MAX_TOKENS", "")
-    existing_config = os.environ.get("OPENCODE_CONFIG_CONTENT", "")
-
-    payload = json.loads(existing_config) if existing_config else {}
-    if not isinstance(payload, dict):
-        raise ValueError("OPENCODE_CONFIG_CONTENT must be a JSON object")  # noqa: TRY004
+    payload = _opencode_config_from_env()
 
     provider_config = payload.setdefault("provider", {}).setdefault(provider, {})
     options = provider_config.setdefault("options", {})
@@ -83,7 +178,13 @@ def build_opencode_config() -> dict[str, object]:
 
     if provider == "custom":
         provider_config.setdefault("npm", "@ai-sdk/openai-compatible")
-        options.setdefault("apiKey", api_key)
+        api_key_env = _opencode_secret_env_name(
+            ("provider", provider, "options", "apiKey")
+        )
+        options.setdefault(
+            "apiKey",
+            f"{{env:{api_key_env}}}",
+        )
         model_config = provider_config.setdefault("models", {}).setdefault(model, {})
         model_config.setdefault("name", model)
     elif max_tokens:
@@ -112,7 +213,74 @@ def build_opencode_config() -> dict[str, object]:
         if not payload["agent"]:
             payload.pop("agent")
 
-    return payload
+    sanitized, _ = sanitize_opencode_config_payload(payload)
+    return sanitized
+
+
+def build_sanitized_opencode_config() -> dict[str, object]:
+    sanitized, _ = sanitize_opencode_config_payload(_opencode_config_from_env())
+    return sanitized
+
+
+def build_opencode_runtime_secrets() -> dict[str, str]:
+    existing_raw = os.environ.get(OPENCODE_RUNTIME_SECRETS_ENV, "")
+    existing = json.loads(existing_raw) if existing_raw else {}
+    if not isinstance(existing, dict) or not all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in existing.items()
+    ):
+        raise ValueError(f"{OPENCODE_RUNTIME_SECRETS_ENV} must be a string map")
+
+    payload = _opencode_config_from_env()
+    _, discovered_secrets = sanitize_opencode_config_payload(payload)
+    runtime_secrets = dict(existing)
+    runtime_secrets.update(discovered_secrets)
+
+    provider, separator, _ = os.environ.get("HARBOR_MODEL", "").partition("/")
+    if not separator:
+        provider = "custom"
+
+    api_key = os.environ.get("HARBOR_ANTHROPIC_AUTH_TOKEN", "")
+    if not api_key:
+        raw_llm_kwargs = os.environ.get("HARBOR_LLM_KWARGS", "")
+        llm_kwargs = json.loads(raw_llm_kwargs) if raw_llm_kwargs else {}
+        if not isinstance(llm_kwargs, dict):
+            raise TypeError("HARBOR_LLM_KWARGS must be a JSON object")
+        configured_api_key = llm_kwargs.get("api_key", "")
+        if isinstance(configured_api_key, str):
+            api_key = configured_api_key
+
+    if api_key:
+        runtime_secrets.update(
+            {
+                "ANTHROPIC_API_KEY": api_key,
+                "ANTHROPIC_AUTH_TOKEN": api_key,
+            }
+        )
+        provider_configs = payload.get("provider", {})
+        if not isinstance(provider_configs, dict):
+            provider_configs = {}
+        configured_provider = provider_configs.get(provider, {})
+        if not isinstance(configured_provider, dict):
+            configured_provider = {}
+        configured_options = configured_provider.get("options", {})
+        if not isinstance(configured_options, dict):
+            configured_options = {}
+        if provider == "custom" and "apiKey" not in configured_options:
+            runtime_secrets[
+                _opencode_secret_env_name(
+                    ("provider", provider, "options", "apiKey")
+                )
+            ] = api_key
+
+    for header, value in model_request_headers().items():
+        runtime_secrets[
+            _opencode_secret_env_name(
+                ("provider", provider, "options", "headers", header)
+            )
+        ] = value
+
+    return runtime_secrets
 
 
 def _pi_base_url_from_env() -> str:
@@ -384,6 +552,8 @@ def parse_args() -> argparse.Namespace:
         "llm-kwargs",
         "model-info",
         "opencode-config",
+        "opencode-runtime-secrets",
+        "opencode-sanitize-config",
         "pi-models-config",
         "pi-settings-config",
         "has-model-request-headers",
@@ -437,6 +607,8 @@ def main() -> None:
         "llm-kwargs": build_llm_kwargs,
         "model-info": build_model_info,
         "opencode-config": build_opencode_config,
+        "opencode-runtime-secrets": build_opencode_runtime_secrets,
+        "opencode-sanitize-config": build_sanitized_opencode_config,
         "pi-models-config": build_pi_models_config,
         "pi-settings-config": build_pi_settings_config,
     }

@@ -56,6 +56,7 @@ run_dry() {
     HARBOR_RUNNER_PREPARE=0 \
     HARBOR_OPIK_BIN="$tmp/bin/opik" \
     HARBOR_CLI_BIN="$tmp/bin/harbor" \
+    HARBOR_OPIK_PYTHON="$tmp/bin/harbor" \
     HARBOR_ENVIRONMENT_TYPE=qz \
     SBX_API_KEY="$sbx_api_key" \
     E2B_API_KEY="$e2b_api_key" \
@@ -91,6 +92,16 @@ fi
 # A per-task mapping is an alternative to the fixed Template mode.
 mapping_run="$(run_dry sbx_fake_key '' '' oracle 0 '' 1 '' '' "$tmp/qz-map.json")"
 grep -F -- "qz sandbox template map: $tmp/qz-map.json" <<< "$mapping_run" >/dev/null
+
+# Pi requires host bind mounts and must fail in the reachable qz validation
+# branch before Harbor starts.
+if pi_run="$(run_dry sbx_fake_key fake_template '' pi)"; then
+  echo 'qz launch unexpectedly accepted AGENT=pi' >&2
+  exit 1
+else
+  grep -F -- 'AGENT=pi with HARBOR_ENVIRONMENT_TYPE=qz is unsupported' \
+    <<< "$pi_run" >/dev/null
+fi
 
 # A missing key must fail launch validation before Harbor runs.
 if missing_key="$(run_dry '' fake_template)"; then
@@ -184,6 +195,23 @@ if grep -F -- 'HARBOR_LOCAL_OPENCODE_TGZ_URL=http' <<< "$oc_run" >/dev/null; the
 fi
 grep -F -- 'HARBOR_VERIFIER_UV_BIN_DIR=/opt/tb-uv-backup/bin' <<< "$oc_run" >/dev/null
 grep -F -- "$verifier_path" <<< "$oc_run" >/dev/null
+if grep -F -- 'fake_token' <<< "$oc_run" >/dev/null; then
+  echo 'qz opencode command unexpectedly contains the model API key' >&2
+  exit 1
+fi
+
+# Direct opencode runs must initialize their own queue/runtime directories
+# before local task selection, rather than relying on start.sh or a worker.
+rm -rf -- "$tmp/queue" "$tmp/runtime"
+direct_oc_run="$(run_dry sbx_fake_key fake_template '' opencode 0 '' 0)"
+if [[ ! -f "$tmp/queue/next_index" ]]; then
+  echo 'direct qz opencode run did not initialize queue/next_index' >&2
+  exit 1
+fi
+if grep -F -- 'fake_token' <<< "$direct_oc_run" >/dev/null; then
+  echo 'direct qz opencode run unexpectedly contains the model API key' >&2
+  exit 1
+fi
 
 # Public upstream sources remain an explicit supported choice; npmmirror is a
 # regional default rather than the only accepted route.
