@@ -136,15 +136,13 @@ def update_bashrc(path: Path, environ: Mapping[str, str]) -> None:
 
 
 def merge_local_config(path: Path, environ: Mapping[str, str]) -> None:
+    opik_url = environ.get("OPIK_URL", "").strip()
     managed = {
         "BASE_URL": environ["BASE_URL"].rstrip("/"),
         "API_KEY": environ["AUTH_TOKEN"],
         "MODEL": environ["MODEL"],
+        "OPIK_URL": opik_url,
     }
-    trace_to_opik = environ.get("TRACE_TO_OPIK", "").strip()
-    if trace_to_opik:
-        managed["TRACE_TO_OPIK"] = trace_to_opik
-    opik_url = environ.get("OPIK_URL", "").strip()
     if opik_url:
         managed.update(
             {
@@ -168,6 +166,9 @@ def merge_local_config(path: Path, environ: Mapping[str, str]) -> None:
                 order.append(("kv", key))
             else:
                 order.append(("raw", line))
+    if not opik_url:
+        for key in ("OPIK_API_KEY", "OPIK_WORKSPACE", "OPIK_PROJECT_NAME"):
+            existing.pop(key, None)
     existing.update(managed)
 
     seen: set[str] = set()
