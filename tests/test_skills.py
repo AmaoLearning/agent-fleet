@@ -85,7 +85,7 @@ class SkillDocsTest(unittest.TestCase):
         self.assertIsNotNone(agent_row)
         self.assertEqual(
             set(re.findall(r"`([^`]+)`", agent_row.group(1))),
-            {"claude-code", "opencode", "pi", "openclaw"},
+            {"claude-code", "opencode", "pi", "ante", "openclaw"},
         )
         self.assertNotIn("Terminus-2", root_readme)
 
