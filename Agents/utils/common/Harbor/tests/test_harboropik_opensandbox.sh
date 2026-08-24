@@ -28,6 +28,7 @@ SH
 chmod +x "$tmp/bin/docker"
 cat >"$tmp/bin/fake-harbor" <<'SH'
 #!/usr/bin/env bash
+printf 'FAKE_HARBOR_PUBLIC_KEY=%s\n' "${YICLOUD_PUBLIC_KEY:-}"
 printf 'FAKE_HARBOR_ARG=%s\n' "$@"
 SH
 chmod +x "$tmp/bin/fake-harbor"
@@ -76,6 +77,10 @@ run_dry() {
     HARBOR_FORCE_BUILD="$force_build" \
     HARBOR_N_CONCURRENT=1 \
     HARBOR_MAX_RETRIES=0 \
+    HARBOR_TEMPERATURE= \
+    HARBOR_TOP_P= \
+    OPIK_URL= \
+    TRACE_TO_OPIK= \
     API_KEY=fake-api-key \
     BASE_URL=https://model.example \
     MODEL=test-model \
@@ -95,7 +100,8 @@ run_dry() {
     HARBOR_OPIK_PYTHON="$harbor_python" \
     HARBOR_OPENSANDBOX_BUILD_ARGS_JSON="$build_args_json" \
     PI_EXTENSION_SOURCE="$extension_source" \
-    YICLOUD_PUBLIC_KEY=fake-public \
+    YICLOUD_ACCESS_KEY="${YICLOUD_ACCESS_KEY_OVERRIDE:-}" \
+    YICLOUD_PUBLIC_KEY="${YICLOUD_PUBLIC_KEY_OVERRIDE-fake-public}" \
     YICLOUD_SECRET_KEY=fake-secret \
     YICLOUD_PROJECT_NAME=test-project \
     YICLOUD_SANDBOX_ENVIRONMENT_ID=env-test \
@@ -165,6 +171,14 @@ if [[ "$(grep -oF -- '--env yicloud_opensandbox:YiCloudOpenSandboxEnvironment' \
   echo 'OpenSandbox command must contain exactly one YiCloud environment argument' >&2
   exit 1
 fi
+
+access_key_alias="$(
+  YICLOUD_PUBLIC_KEY_OVERRIDE='' YICLOUD_ACCESS_KEY_OVERRIDE=fake-access \
+    run_dry 'test-project/manual:immutable' "$tmp/does-not-exist.py" '{}' \
+      auto opensandbox 0 opencode 0
+)"
+grep -F -- 'FAKE_HARBOR_PUBLIC_KEY=fake-access' \
+  <<< "$access_key_alias" >/dev/null
 
 for force_build in 1 true; do
   forced="$(run_dry \

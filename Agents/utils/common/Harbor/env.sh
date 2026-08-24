@@ -11,6 +11,11 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 source "$REPO_ROOT/scripts/config_loader.sh"
 agent_fleet_load_config "$REPO_ROOT"
 
+# YiCloud calls the signing credential pair AK/SK. Existing site configs use
+# YICLOUD_ACCESS_KEY for the AK, while the SDK expects YICLOUD_PUBLIC_KEY.
+YICLOUD_PUBLIC_KEY="${YICLOUD_PUBLIC_KEY:-${YICLOUD_ACCESS_KEY:-}}"
+export YICLOUD_PUBLIC_KEY
+
 # Keep setup-managed and explicitly supplied prerequisite directories visible
 # for direct Harbor entry points as well as scripts/run_fleet.sh.
 # shellcheck source=../../../../scripts/prerequisites.sh
