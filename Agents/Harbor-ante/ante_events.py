@@ -17,7 +17,6 @@ from harbor.models.trajectories import (
     Trajectory,
 )
 
-
 USAGE_FIELDS = (
     ("input_tokens", "n_input_tokens"),
     ("output_tokens", "n_output_tokens"),

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import importlib
 import asyncio
+import importlib
 import os
 import subprocess
 import sys
@@ -149,7 +149,13 @@ class ShellCommandTests(unittest.TestCase):
         env = os.environ.copy()
         if path is not None:
             env["PATH"] = f"{path}{os.pathsep}{env['PATH']}"
-        return subprocess.run(["sh", "-c", command], text=True, capture_output=True, env=env)
+        return subprocess.run(
+            ["sh", "-c", command],
+            text=True,
+            capture_output=True,
+            env=env,
+            check=False,
+        )
 
     def test_tee_command_preserves_command_failure(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -11,7 +11,7 @@ import os
 import shlex
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from ante_events import (
     CACHE_CREATION_METADATA_KEY,
@@ -28,7 +28,6 @@ from ante_events import (
     total_steps_from_events,
     trajectory_from_events,
 )
-
 from harbor.agents.installed.base import (
     ApiConnectionClosedError,
     ApiInternalServerError,
@@ -66,7 +65,6 @@ from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 from harbor.utils.trajectory_utils import format_trajectory_json
 
-
 _AGENT_LOG = Path("/logs/agent/ante.txt")
 _SETUP_LOG = _AGENT_LOG.parent / "setup" / "stdout.txt"
 _INSTRUCTION_PATH = Path("/tmp/instruction.md")
@@ -100,7 +98,7 @@ def _metadata_dict(context: AgentContext) -> dict[str, Any] | None:
         return metadata
     try:
         context.metadata = {}
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         return None
     return context.metadata if isinstance(context.metadata, dict) else None
 
@@ -144,32 +142,31 @@ def _populate_context_from_events(
 
 def install_prerequisites_command() -> str:
     """Best-effort sandbox prerequisites for published or custom installs."""
-    return "\n".join(
-        [
-            "set -e",
-            "if ! command -v curl >/dev/null 2>&1 || ! command -v bash >/dev/null 2>&1; then",
-            "  if command -v apt-get >/dev/null 2>&1; then",
-            "    apt-get update && "
-            "DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates bash",
-            "  elif command -v apk >/dev/null 2>&1; then",
-            "    apk add --no-cache curl ca-certificates bash",
-            "  elif command -v yum >/dev/null 2>&1; then",
-            "    yum install -y curl ca-certificates bash",
-            "  elif command -v dnf >/dev/null 2>&1; then",
-            "    dnf install -y curl ca-certificates bash",
-            "  else",
-            "    echo 'curl or bash missing and no supported package manager found' >&2",
-            "    exit 127",
-            "  fi",
-            "fi",
-            "command -v curl >/dev/null",
-            "command -v bash >/dev/null",
-        ]
+    return (
+        "set -e\n"
+        "if ! command -v curl >/dev/null 2>&1 || "
+        "! command -v bash >/dev/null 2>&1; then\n"
+        "  if command -v apt-get >/dev/null 2>&1; then\n"
+        "    apt-get update && DEBIAN_FRONTEND=noninteractive "
+        "apt-get install -y curl ca-certificates bash\n"
+        "  elif command -v apk >/dev/null 2>&1; then\n"
+        "    apk add --no-cache curl ca-certificates bash\n"
+        "  elif command -v yum >/dev/null 2>&1; then\n"
+        "    yum install -y curl ca-certificates bash\n"
+        "  elif command -v dnf >/dev/null 2>&1; then\n"
+        "    dnf install -y curl ca-certificates bash\n"
+        "  else\n"
+        "    echo 'curl or bash missing and no supported package manager found' >&2\n"
+        "    exit 127\n"
+        "  fi\n"
+        "fi\n"
+        "command -v curl >/dev/null\n"
+        "command -v bash >/dev/null"
     )
 
 
 def with_install_prerequisites(command: str) -> str:
-    return "\n".join([install_prerequisites_command(), command])
+    return f"{install_prerequisites_command()}\n{command}"
 
 
 def _tee_command(command: str, log_path: Path, *, append: bool) -> str:
@@ -197,7 +194,7 @@ def _tee_command(command: str, log_path: Path, *, append: bool) -> str:
 
 def setup_log_command(command: str, *, append: bool = True) -> str:
     """Mirror setup output to Harbor Hub's conventional setup log path."""
-    logged_command = "\n".join(["set -e", command])
+    logged_command = f"set -e\n{command}"
     return _tee_command(logged_command, _SETUP_LOG, append=append)
 
 
@@ -271,11 +268,11 @@ async def upload_instruction(environment: BaseEnvironment, instruction: str) -> 
 class AnteAgent(BaseInstalledAgent):
     SUPPORTS_ATIF: bool = True
     _INSTALL_VERSION_COMMAND = "ante --version"
-    CLI_FLAGS = [
+    CLI_FLAGS: ClassVar[list[CliFlag]] = [
         CliFlag("provider", cli="--provider", type="str"),
         CliFlag("reasoning_effort", cli="--effort", type="str"),
     ]
-    ENV_VARS = [
+    ENV_VARS: ClassVar[list[EnvVar]] = [
         EnvVar(
             "enable_atif",
             env=ENABLE_ATIF_ENV,
@@ -430,30 +427,29 @@ class AnteAgent(BaseInstalledAgent):
             context, events, failure.failure_class if failure else None
         )
 
-        if self._enable_atif:
-            if events:
-                try:
-                    trajectory = trajectory_from_events(
-                        events,
-                        agent_name=self.name(),
-                        agent_version=self.version() or "unknown",
-                        model_name=self.model_name,
-                    )
-                except Exception:
-                    self.logger.exception("Failed to convert Ante events to trajectory")
-                else:
-                    if trajectory:
-                        trajectory_path = Path(self.logs_dir) / "trajectory.json"
-                        try:
-                            trajectory_path.write_text(
-                                format_trajectory_json(trajectory.to_json_dict()),
-                                encoding="utf-8",
-                            )
-                            self.logger.debug(f"Wrote Ante trajectory to {trajectory_path}")
-                        except OSError as exc:
-                            self.logger.debug(
-                                f"Failed to write trajectory file {trajectory_path}: {exc}"
-                            )
+        if self._enable_atif and events:
+            try:
+                trajectory = trajectory_from_events(
+                    events,
+                    agent_name=self.name(),
+                    agent_version=self.version() or "unknown",
+                    model_name=self.model_name,
+                )
+            except Exception:
+                self.logger.exception("Failed to convert Ante events to trajectory")
+            else:
+                if trajectory:
+                    trajectory_path = Path(self.logs_dir) / "trajectory.json"
+                    try:
+                        trajectory_path.write_text(
+                            format_trajectory_json(trajectory.to_json_dict()),
+                            encoding="utf-8",
+                        )
+                        self.logger.debug(f"Wrote Ante trajectory to {trajectory_path}")
+                    except OSError as exc:
+                        self.logger.debug(
+                            f"Failed to write trajectory file {trajectory_path}: {exc}"
+                        )
 
     @with_prompt_template
     async def run(
