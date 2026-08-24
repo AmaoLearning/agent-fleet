@@ -436,6 +436,12 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
         self._bundle: dict[str, Any] | None = None
         self._services: dict[str, ServiceRuntime] = {}
         self._main_service = "main"
+        diagnostics_dir = os.environ.get(
+            "YICLOUD_SANDBOX_DIAGNOSTICS_DIR", ""
+        ).strip()
+        self._sandbox_diagnostics_dir = (
+            Path(diagnostics_dir).expanduser() if diagnostics_dir else None
+        )
         super().__init__(*args, **kwargs)
 
     @staticmethod
@@ -870,6 +876,39 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
         base = f"{self._make_sandbox_name()}-{service}".lower()
         return re.sub(r"[^a-z0-9-]+", "-", base).strip("-")[:63].rstrip("-")
 
+    def _write_sandbox_diagnostic(
+        self, runtime: ServiceRuntime, state: str, image_ref: str
+    ) -> None:
+        root = getattr(self, "_sandbox_diagnostics_dir", None)
+        if root is None or not runtime.sandbox_id:
+            return
+        safe_id = re.sub(r"[^a-zA-Z0-9_.-]+", "-", runtime.sandbox_id)
+        target = root / f"{safe_id}.json"
+        temporary = root / f".{safe_id}.{os.getpid()}.tmp"
+        payload = {
+            "schema_version": 1,
+            "session_id": str(self.session_id),
+            "service": runtime.name,
+            "sandbox_id": runtime.sandbox_id,
+            "sandbox_name": runtime.sandbox_name,
+            "environment_id": self._environment_id,
+            "image_ref": image_ref,
+            "state": state,
+            "updated_at_epoch": time.time(),
+        }
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            temporary.write_text(
+                json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            os.replace(temporary, target)
+        except OSError as exc:
+            self.logger.warning(
+                "Failed to write YiCloud Sandbox diagnostic record %s: %s",
+                target,
+                exc,
+            )
+
     async def _wait_for_sandbox_ids_absent(self, sandbox_ids: set[str]) -> bool:
         """Return only after the control-plane list no longer contains IDs."""
         sandbox = self._sandbox_service
@@ -1274,12 +1313,14 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
             runtime.sandbox_id = str(getattr(created, "Id", "") or "")
             if not runtime.sandbox_id:
                 raise RuntimeError(f"OpenSandbox create returned no sandbox ID for service {runtime.name!r}")
+            self._write_sandbox_diagnostic(runtime, "CREATED", image_ref)
             current = await self._wait_service_running(runtime, created)
             _validate_sandbox_binding(current, self._environment_id, self._service_image_ref(runtime))
             runtime.access_token = _access_token_of(created) or _access_token_of(current)
             runtime.command_url = _command_url_of(current)
             runtime.internal_address = _internal_address_of(current)
             runtime.state = "WIRING"
+            self._write_sandbox_diagnostic(runtime, "WIRING", image_ref)
             if not runtime.access_token:
                 raise RuntimeError(f"OpenSandbox service {runtime.name!r} returned no access token")
         await self._wire_service_aliases()

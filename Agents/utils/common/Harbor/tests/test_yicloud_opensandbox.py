@@ -107,6 +107,34 @@ class FakeSandbox:
 
 
 class YiCloudOpenSandboxTest(unittest.TestCase):
+    def test_sandbox_diagnostic_record_contains_no_access_token(self) -> None:
+        instance = object.__new__(
+            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
+        )
+        instance._environment_id = "env-test"
+        instance.session_id = "session-test"
+        instance.logger = Mock()
+        runtime = yicloud_opensandbox.ServiceRuntime("main", {})
+        runtime.sandbox_id = "sbx-test"
+        runtime.sandbox_name = "harbor-session-test-main"
+        runtime.access_token = "must-not-be-recorded"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            instance._sandbox_diagnostics_dir = Path(tmp)
+            instance._write_sandbox_diagnostic(
+                runtime,
+                "RUNNING",
+                "registry.example/project/task@sha256:" + "a" * 64,
+            )
+            record_path = Path(tmp) / "sbx-test.json"
+            record_text = record_path.read_text(encoding="utf-8")
+            record = json.loads(record_text)
+
+        self.assertEqual(record["sandbox_id"], "sbx-test")
+        self.assertEqual(record["environment_id"], "env-test")
+        self.assertEqual(record["state"], "RUNNING")
+        self.assertNotIn(runtime.access_token, record_text)
+
     def test_service_command_retries_transient_proxy_error_with_fresh_signature(self) -> None:
         instance = object.__new__(
             yicloud_opensandbox.YiCloudOpenSandboxEnvironment
