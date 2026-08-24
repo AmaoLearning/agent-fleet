@@ -485,7 +485,7 @@ main() {
   assert_arg_pair \
     "$pi_capture" \
     "--ae" \
-    "NO_PROXY=127.0.0.1,localhost,host.docker.internal,opik.example,llm.example"
+    "NO_PROXY=127.0.0.1,localhost,host.docker.internal,opik.example,172.21.250.1,llm.example"
   assert_arg_absent "$pi_capture" "disallowed_tools="
   assert_arg_absent "$pi_capture" "max_turns="
   assert_structured_mount_arg \
