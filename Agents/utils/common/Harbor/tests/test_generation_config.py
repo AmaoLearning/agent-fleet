@@ -377,6 +377,7 @@ PY
         config = self._load_config(
             "ante",
             BASE_URL="https://llm.example/v1/",
+            ANTE_PROVIDER="",
             HARBOR_TEMPERATURE="1.0",
             HARBOR_TOP_P="0.95",
             HARBOR_MAX_TOKENS="65536",
