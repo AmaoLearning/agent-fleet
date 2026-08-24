@@ -5,8 +5,11 @@ import contextlib
 import contextvars
 import importlib.util
 import os
+import shlex
+import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import types
 import unittest
@@ -52,7 +55,10 @@ class FakeOpenCode:
         command = str(kwargs.get("command", ""))
         if hasattr(environment, "exec"):
             await environment.exec(command=command, env=kwargs.get("env"))
-        if not self.fake_opencode_present and "node --version" in command:
+        if (
+            not self.fake_opencode_present
+            and "node --version >/dev/null && opencode --version" in command
+        ):
             raise RuntimeError("opencode is not installed")
 
     def _build_register_skills_command(self):
@@ -139,6 +145,127 @@ class OpenCodeTraceDisabledTests(unittest.TestCase):
             fake_opencode_present=opencode_present,
         )
 
+    def _local_install_command(self) -> str:
+        agent = self.make_agent("false", opencode_present=False)
+
+        async def run_once(_label, operation, **_kwargs) -> None:
+            await operation()
+
+        with mock.patch.object(self.module, "_retry_async", run_once):
+            asyncio.run(agent.install(FakeEnvironment()))
+        return next(
+            str(item.get("command", ""))
+            for item in agent.agent_commands
+            if "opencode_version=" in str(item.get("command", ""))
+        )
+
+    @staticmethod
+    def _write_executable(path: Path, body: str) -> None:
+        path.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+        path.chmod(0o755)
+
+    def _run_node_runtime_probe(
+        self,
+        *,
+        system_node: str,
+        system_npm: str,
+    ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+        install_command = self._local_install_command()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            local_bin = home / ".local" / "bin"
+            tools_bin = root / "tools"
+            cache_dir = root / "cache"
+            runtime_bin = root / "node-v22.14.0-linux-x64" / "bin"
+            cache_log = root / "cache-runtime.log"
+            local_bin.mkdir(parents=True)
+            tools_bin.mkdir()
+            cache_dir.mkdir()
+            runtime_bin.mkdir(parents=True)
+
+            for command in (
+                "dirname",
+                "find",
+                "ln",
+                "mkdir",
+                "mktemp",
+                "tar",
+                "uname",
+            ):
+                source = shutil.which(command)
+                self.assertIsNotNone(source, command)
+                (tools_bin / command).symlink_to(source)
+
+            if system_node == "healthy":
+                self._write_executable(
+                    tools_bin / "node",
+                    'test "${1:-}" = "--version" && echo v20.0.0\nexit 0',
+                )
+            elif system_node == "broken":
+                self._write_executable(tools_bin / "node", "exit 1")
+            elif system_node != "missing":
+                self.fail(f"unknown system_node state: {system_node}")
+
+            if system_npm == "healthy":
+                self._write_executable(
+                    tools_bin / "npm",
+                    'test "${1:-}" = "--version" && echo 10.0.0\nexit 0',
+                )
+            elif system_npm == "broken":
+                self._write_executable(tools_bin / "npm", "exit 1")
+            elif system_npm != "missing":
+                self.fail(f"unknown system_npm state: {system_npm}")
+
+            cache_log_q = shlex.quote(str(cache_log))
+            self._write_executable(
+                runtime_bin / "node",
+                (
+                    f"printf 'node:%s\\n' \"$*\" >> {cache_log_q}\n"
+                    'test "${1:-}" = "--version" && echo v22.14.0\n'
+                    "exit 0"
+                ),
+            )
+            self._write_executable(
+                runtime_bin / "npm",
+                (
+                    f"printf 'npm:%s\\n' \"$*\" >> {cache_log_q}\n"
+                    'test "${1:-}" = "--version" && echo 10.9.2\n'
+                    "exit 0"
+                ),
+            )
+            self._write_executable(runtime_bin / "npx", "exit 0")
+            with tarfile.open(cache_dir / "node-runtime.tar.xz", "w") as archive:
+                archive.add(runtime_bin.parent, arcname=runtime_bin.parent.name)
+
+            self._write_executable(
+                local_bin / "opencode",
+                'test "${1:-}" = "--version" && echo 1.0.0\nexit 0',
+            )
+            result = subprocess.run(
+                ["/bin/bash", "-c", install_command],
+                check=False,
+                capture_output=True,
+                env={
+                    "CC_NODE_DIST_URL": "",
+                    "CC_OPIK_PY_WHEEL_DIR": str(cache_dir),
+                    "HARBOR_LOCAL_OPENCODE_LINUX_X64_TGZ_URL": "",
+                    "HARBOR_LOCAL_OPENCODE_TGZ_URL": "",
+                    "HARBOR_LOCAL_WHEEL_SERVER_URL": "",
+                    "HOME": str(home),
+                    "OPENCODE_LINUX_X64_TGZ_PATH": "",
+                    "OPENCODE_TGZ_PATH": "",
+                    "PATH": str(tools_bin),
+                },
+                text=True,
+            )
+            cache_events = (
+                cache_log.read_text(encoding="utf-8").splitlines()
+                if cache_log.exists()
+                else []
+            )
+            return result, cache_events
+
     def test_trace_switch_matches_shell_semantics(self) -> None:
         self.assertFalse(self.module.opik_tracing_enabled({"OPIK_URL": ""}))
         self.assertFalse(self.module.opik_tracing_enabled({"OPIK_URL": "   "}))
@@ -190,15 +317,7 @@ class OpenCodeTraceDisabledTests(unittest.TestCase):
         self.assertNotIn("opik-trace.ts", commands)
 
     def test_install_uses_sandbox_reachable_node_dist_before_apt(self) -> None:
-        agent = self.make_agent("false", opencode_present=False)
-
-        asyncio.run(agent.install(FakeEnvironment()))
-
-        install_command = next(
-            str(item.get("command", ""))
-            for item in agent.agent_commands
-            if "opencode_version=" in str(item.get("command", ""))
-        )
+        install_command = self._local_install_command()
         self.assertIn("${CC_NODE_DIST_URL:-}", install_command)
         self.assertIn(
             'if download_file "$CC_NODE_DIST_URL" "$node_dist_tgz" '
@@ -222,6 +341,71 @@ class OpenCodeTraceDisabledTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(bash_check.returncode, 0, bash_check.stderr)
+
+    def test_install_uses_cached_node_when_npm_is_broken_and_node_missing(self) -> None:
+        result, cache_events = self._run_node_runtime_probe(
+            system_node="missing",
+            system_npm="broken",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("node:--version", cache_events)
+        self.assertIn("npm:--version", cache_events)
+
+    def test_install_uses_cached_node_when_existing_node_is_broken(self) -> None:
+        result, cache_events = self._run_node_runtime_probe(
+            system_node="broken",
+            system_npm="healthy",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("node:--version", cache_events)
+        self.assertIn("npm:--version", cache_events)
+
+    def test_install_keeps_healthy_node_runtime(self) -> None:
+        result, cache_events = self._run_node_runtime_probe(
+            system_node="healthy",
+            system_npm="healthy",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(cache_events, [])
+
+    def test_install_rechecks_cached_node_runtime_after_hash_refresh(self) -> None:
+        install_command = self._local_install_command()
+
+        self.assertIn(
+            "node_runtime_ready() {   command -v node >/dev/null 2>&1 "
+            "    && command -v npm >/dev/null 2>&1 "
+            "    && node --version >/dev/null 2>&1 "
+            "    && npm --version >/dev/null 2>&1; };",
+            install_command,
+        )
+        self.assertNotIn("if ! command -v npm", install_command)
+        self.assertIn(
+            "hash -r;   if node_runtime_ready; then return 0; fi;",
+            install_command,
+        )
+        self.assertEqual(
+            install_command.count(
+                'activate_node_runtime "$node_runtime_bin" || true;'
+            ),
+            2,
+        )
+        self.assertIn(
+            'activate_node_runtime "$system_node_runtime_bin"',
+            install_command,
+        )
+        self.assertIn(
+            'rm -f "$HOME/.local/bin/node" "$HOME/.local/bin/npm"',
+            install_command,
+        )
+        self.assertGreaterEqual(install_command.count("hash -r;"), 3)
+        self.assertIn(
+            "if ! node_runtime_ready; then   echo "
+            "'[ERROR] Node.js/npm runtime is unavailable or unhealthy'",
+            install_command,
+        )
 
     def test_install_trace_on_keeps_opik_dependencies_and_plugin_files(self) -> None:
         agent = self.make_agent("true")
