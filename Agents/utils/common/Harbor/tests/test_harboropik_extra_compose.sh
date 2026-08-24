@@ -208,6 +208,31 @@ if not any(args[index:index + 2] == [option, expected] for index in range(len(ar
 PY
 }
 
+assert_local_wheel_host_in_no_proxy() {
+  local capture_file="$1"
+  python3 - "$capture_file" <<'PY'
+import sys
+from pathlib import Path
+from urllib.parse import urlparse
+
+args = [part.decode() for part in Path(sys.argv[1]).read_bytes().split(b"\0") if part]
+agent_env = [args[index + 1] for index in range(len(args) - 1) if args[index] == "--ae"]
+wheel_url = next(
+    value.split("=", 1)[1]
+    for value in agent_env
+    if value.startswith("HARBOR_LOCAL_WHEEL_SERVER_URL=")
+)
+wheel_host = urlparse(wheel_url).hostname
+no_proxy = next(
+    value.split("=", 1)[1] for value in agent_env if value.startswith("NO_PROXY=")
+)
+if not wheel_host or wheel_host not in no_proxy.split(","):
+    raise SystemExit(
+        f"local wheel host {wheel_host!r} is missing from NO_PROXY={no_proxy!r}"
+    )
+PY
+}
+
 assert_file_content() {
   local path="$1"
   local expected="$2"
@@ -482,10 +507,7 @@ main() {
     "--ae" \
     "PI_RUNTIME_TAR_PATH=/opt/tb-opik/python-wheels/pi-runtime-0.81.1.tar.gz"
   assert_arg_absent "$pi_capture" "PI_TGZ_PATH="
-  assert_arg_pair \
-    "$pi_capture" \
-    "--ae" \
-    "NO_PROXY=127.0.0.1,localhost,host.docker.internal,opik.example,172.21.250.1,llm.example"
+  assert_local_wheel_host_in_no_proxy "$pi_capture"
   assert_arg_absent "$pi_capture" "disallowed_tools="
   assert_arg_absent "$pi_capture" "max_turns="
   assert_structured_mount_arg \
