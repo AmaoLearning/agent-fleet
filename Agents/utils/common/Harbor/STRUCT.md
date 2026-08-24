@@ -184,6 +184,7 @@ Typical dataset paths:
 | `HARBOR_OPENSANDBOX_IMAGE_REF` | Legacy explicit single-image override; automatic preparation is skipped when set without a Bundle Manifest |
 | `HARBOR_OPENSANDBOX_BUNDLE_MANIFEST` | Optional versioned service Bundle Manifest; automatic preparation writes one under the current task attempt's job directory |
 | `HARBOR_OPENSANDBOX_IMAGE_CACHE_ROOT` | H-local Registry records, image locks, build logs, and immutable Bundle cache root |
+| `HARBOR_OPENSANDBOX_EXISTING_IMAGE_MAP_FILE` | Optional JSON task-to-digest map for verified immutable images already present in each configured Harbor task repository |
 | `YICLOUD_HARBOR_HOST` | New Harbor registry host used by `skopeo` |
 | `YICLOUD_HARBOR_PROJECT` | Externally provisioned Harbor Project for the selected benchmark; task repositories are derived per task |
 | `YICLOUD_HARBOR_TLS_VERIFY` | Whether `skopeo` verifies the configured Harbor TLS certificate; current internal ingress requires `0` |

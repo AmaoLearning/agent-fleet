@@ -101,6 +101,21 @@ The current context hash is conservative: generated cache files are ignored,
 but `.dockerignore` is not yet evaluated. This can cause an unnecessary rebuild
 when an ignored file changes, but cannot incorrectly reuse a stale image.
 
+### Verified existing images
+
+Public read-only Harbor projects can be reused without configuring Registry
+credentials. The manager first performs anonymous `skopeo inspect` calls and
+only requires publish credentials after a deterministic cache miss.
+
+For audited migrations where an existing image has already been verified but
+predates the current input tag, set
+`HARBOR_OPENSANDBOX_EXISTING_IMAGE_MAP_FILE` to a JSON object mapping a task
+identity to an immutable digest reference. Overrides are restricted to
+single-service tasks and to the configured `registry/project/task` repository.
+The manager verifies the digest anonymously, resolves its image config, records
+the source as `explicit-existing`, and writes a normal Bundle Manifest. It never
+uses this map to authorize a copy or push.
+
 ## Bundle Manifest contract
 
 The JSON Manifest includes:

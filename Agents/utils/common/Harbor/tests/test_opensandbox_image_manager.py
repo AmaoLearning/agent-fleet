@@ -27,6 +27,7 @@ from opensandbox_image_manager import (  # noqa: E402
     _service_manifest,
     apt_404_requires_cache_refresh,
     environment_content_hash,
+    mapped_existing_image_ref,
     normalize_oci_image_config,
     oci_archive_image_config,
     parse_args,
@@ -36,6 +37,7 @@ from opensandbox_image_manager import (  # noqa: E402
     render_build_dockerfile,
     run_build,
     schema2_manifest,
+    validate_existing_image_ref,
 )
 
 
@@ -640,6 +642,73 @@ networks:
             "registry.example/seta/973@sha256:" + "b" * 64,
         )
 
+    def test_existing_image_map_requires_task_scoped_immutable_digest(self) -> None:
+        target = RegistryTarget("registry.example", "seta", "973")
+        expected = "registry.example/seta/973@sha256:" + "a" * 64
+        with tempfile.TemporaryDirectory() as temporary:
+            map_path = Path(temporary) / "images.json"
+            map_path.write_text(json.dumps({"973": expected}), encoding="utf-8")
+            self.assertEqual(mapped_existing_image_ref(map_path, "973"), expected)
+            self.assertIsNone(mapped_existing_image_ref(map_path, "other"))
+
+        self.assertEqual(validate_existing_image_ref(expected, target), "sha256:" + "a" * 64)
+        with self.assertRaisesRegex(ValueError, "configured task repository"):
+            validate_existing_image_ref(
+                "registry.example/seta/other@sha256:" + "a" * 64, target
+            )
+
+    def test_prepare_uses_anonymous_existing_image_without_build_or_publish(self) -> None:
+        digest = "sha256:" + "a" * 64
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            task = self.make_task(root, "973")
+            image_ref = f"registry.example/seta/973@{digest}"
+            map_path = root / "images.json"
+            map_path.write_text(json.dumps({"973": image_ref}), encoding="utf-8")
+            args = parse_args(
+                [
+                    "--task-dir",
+                    str(task),
+                    "--registry",
+                    "registry.example",
+                    "--project",
+                    "seta",
+                    "--docker-config",
+                    str(root / "missing-config.json"),
+                    "--cache-root",
+                    str(root / "cache"),
+                    "--existing-image-map-file",
+                    str(map_path),
+                    "--no-use-proxy",
+                ]
+            )
+            image_config = {
+                "entrypoint": None,
+                "cmd": None,
+                "exposed_ports": [],
+                "healthcheck": None,
+            }
+            with (
+                patch.object(
+                    SkopeoPublisher,
+                    "inspect",
+                    return_value={"artifact_digest": digest, "media_type": DOCKER_MANIFEST},
+                ),
+                patch.object(
+                    SkopeoPublisher, "inspect_config", return_value=image_config
+                ),
+                patch("opensandbox_image_manager.run_build") as build,
+                patch.object(SkopeoPublisher, "copy") as copy,
+            ):
+                prepared = prepare_bundle(args)
+
+        self.assertEqual(prepared.main_image_ref, image_ref)
+        artifact = prepared.manifest["services"]["main"]["image"]
+        self.assertEqual(artifact["source"], "explicit-existing")
+        self.assertEqual(artifact["input_hash"].split(":", 1)[0], "sha256")
+        build.assert_not_called()
+        copy.assert_not_called()
+
     def test_skopeo_login_password_uses_subprocess_input_only(self) -> None:
         target = RegistryTarget("registry.example", "seta", "973")
         publisher = SkopeoPublisher(target, "user", "password", tls_verify=False)
@@ -657,6 +726,37 @@ networks:
         self.assertTrue(Path(publisher._authfile).parent.is_dir())
         publisher.close()
         self.assertFalse(Path(publisher._authfile).parent.exists())
+
+    def test_skopeo_anonymous_inspect_omits_authfile_and_login(self) -> None:
+        publisher = SkopeoPublisher(
+            RegistryTarget("registry.example", "seta", "973"),
+            None,
+            None,
+            tls_verify=False,
+        )
+        publisher._run = Mock(return_value="sha256:" + "a" * 64)
+        try:
+            inspected = publisher.inspect("registry.example/seta/973:main-hash")
+            command = publisher._run.call_args.args[0]
+            self.assertNotIn("--authfile", command)
+            self.assertEqual(inspected["artifact_digest"], "sha256:" + "a" * 64)
+        finally:
+            publisher.close()
+
+    def test_skopeo_anonymous_publish_fails_before_copy(self) -> None:
+        publisher = SkopeoPublisher(
+            RegistryTarget("registry.example", "seta", "973"),
+            None,
+            None,
+            tls_verify=False,
+        )
+        try:
+            with self.assertRaisesRegex(RuntimeError, "anonymous access is read-only"):
+                publisher.copy(
+                    "source.example/image:tag", "registry.example/seta/973:tag"
+                )
+        finally:
+            publisher.close()
 
     def test_skopeo_inspect_treats_first_repository_lookup_as_cache_miss(self) -> None:
         publisher = SkopeoPublisher(

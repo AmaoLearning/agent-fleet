@@ -529,8 +529,10 @@ def docker_credentials(config_path: Path, registry: str) -> tuple[str, str]:
     return username, password
 
 
-def registry_credentials(config_path: Path, registry: str) -> tuple[str, str]:
-    """Prefer the ignored Harbor credential environment, then Docker config."""
+def registry_credentials(
+    config_path: Path, registry: str, *, allow_anonymous: bool = False
+) -> tuple[str | None, str | None]:
+    """Prefer explicit credentials while optionally allowing anonymous reads."""
     username = os.environ.get("YICLOUD_HARBOR_USERNAME", "").strip()
     password = os.environ.get("YICLOUD_HARBOR_PASSWORD", "")
     if username or password:
@@ -539,7 +541,16 @@ def registry_credentials(config_path: Path, registry: str) -> tuple[str, str]:
                 "YICLOUD_HARBOR_USERNAME and YICLOUD_HARBOR_PASSWORD must be set together"
             )
         return username, password
-    return docker_credentials(config_path, registry)
+    try:
+        return docker_credentials(config_path, registry)
+    except FileNotFoundError:
+        if allow_anonymous:
+            return None, None
+        raise
+    except RuntimeError as exc:
+        if allow_anonymous and str(exc).startswith("no inline Docker login found"):
+            return None, None
+        raise
 
 
 @dataclass(frozen=True)
@@ -585,7 +596,16 @@ class SkopeoPublisher:
     skopeo; this class only performs login, copy and independent inspection.
     """
 
-    def __init__(self, target: RegistryTarget, username: str, password: str, *, tls_verify: bool) -> None:
+    def __init__(
+        self,
+        target: RegistryTarget,
+        username: str | None,
+        password: str | None,
+        *,
+        tls_verify: bool,
+    ) -> None:
+        if (username is None) != (password is None):
+            raise ValueError("registry username and password must be provided together")
         self.target = target
         self.username = username
         self.password = password
@@ -634,6 +654,9 @@ class SkopeoPublisher:
     def login(self) -> None:
         if self._logged_in:
             return
+        if self.username is None:
+            self._logged_in = True
+            return
         command = [
             "skopeo",
             "login",
@@ -648,6 +671,18 @@ class SkopeoPublisher:
         self._run(command, input_text=self.password)
         self._logged_in = True
 
+    def authfile_args(self, option: str = "--authfile") -> list[str]:
+        if self.username is None:
+            return []
+        return [option, self._authfile]
+
+    def require_publish_credentials(self) -> None:
+        if self.username is None:
+            raise RuntimeError(
+                "target image cache miss and no Harbor publish credentials are "
+                "configured; anonymous access is read-only"
+            )
+
     def _image_url(self, ref: str) -> str:
         return f"docker://{ref}"
 
@@ -659,8 +694,7 @@ class SkopeoPublisher:
         command = [
             "skopeo",
             "inspect",
-            "--authfile",
-            self._authfile,
+            *self.authfile_args(),
             "--format",
             "{{.Digest}}",
         ]
@@ -693,7 +727,7 @@ class SkopeoPublisher:
     def inspect_config(self, ref: str) -> dict[str, object]:
         """Return the final image config for a published or external image."""
         self.login()
-        command = ["skopeo", "inspect", "--authfile", self._authfile, "--config"]
+        command = ["skopeo", "inspect", *self.authfile_args(), "--config"]
         command.append("--tls-verify=true" if self.tls_verify else "--tls-verify=false")
         command.append(self._image_url(ref))
         try:
@@ -703,16 +737,15 @@ class SkopeoPublisher:
         return normalize_oci_image_config(payload)
 
     def copy(self, source: str, destination: str, *, source_is_archive: bool = False) -> dict[str, str]:
+        self.require_publish_credentials()
         self.login()
         command = [
             "skopeo",
             "copy",
             "--format",
             "v2s2",
-            "--src-authfile",
-            self._authfile,
-            "--dest-authfile",
-            self._authfile,
+            *self.authfile_args("--src-authfile"),
+            *self.authfile_args("--dest-authfile"),
         ]
         command.append("--dest-tls-verify=true" if self.tls_verify else "--dest-tls-verify=false")
         if not source_is_archive:
@@ -1129,6 +1162,42 @@ def _read_record(path: Path) -> dict[str, object]:
     return loaded if isinstance(loaded, dict) else {}
 
 
+def mapped_existing_image_ref(
+    map_path: Path | None, task_identity: str
+) -> str | None:
+    if map_path is None:
+        return None
+    try:
+        mapping = json.loads(map_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise RuntimeError(f"failed to read existing-image map {map_path}: {exc}") from exc
+    except ValueError as exc:
+        raise RuntimeError(f"existing-image map is not valid JSON: {map_path}") from exc
+    if not isinstance(mapping, dict):
+        raise TypeError("existing-image map must be a JSON object")
+    value = mapping.get(task_identity)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise TypeError(
+            f"existing-image map entry for {task_identity!r} must be a non-empty string"
+        )
+    return value.strip()
+
+
+def validate_existing_image_ref(ref: str, target: RegistryTarget) -> str:
+    expected_prefix = f"{target.registry}/{target.repository}@sha256:"
+    if not ref.startswith(expected_prefix):
+        raise ValueError(
+            "existing image must be an immutable digest in the configured task "
+            f"repository: expected prefix {expected_prefix!r}"
+        )
+    digest = ref.removeprefix(f"{target.registry}/{target.repository}@")
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        raise ValueError(f"existing image has an invalid sha256 digest: {ref!r}")
+    return digest
+
+
 def _service_image_inputs(
     service: ServiceSpec,
     *,
@@ -1165,6 +1234,7 @@ def _prepare_service_image(
     publisher: SkopeoPublisher | None,
     registry: RegistryClient | None,
     artifact_cache: dict[str, dict[str, object]],
+    existing_image_ref: str | None = None,
 ) -> dict[str, object]:
     identity, service_build_args, resolved_external_ref, source_digest = (
         _service_image_inputs(
@@ -1200,6 +1270,35 @@ def _prepare_service_image(
     }
     if source_digest is not None:
         artifact["source_manifest_digest"] = source_digest
+    if existing_image_ref is not None:
+        artifact_digest = validate_existing_image_ref(existing_image_ref, target)
+        artifact.update(
+            {
+                "source": "explicit-existing",
+                "tag": None,
+                "tag_ref": None,
+                "existing_image_ref": existing_image_ref,
+                "artifact_digest": artifact_digest,
+                "digest_ref": existing_image_ref,
+            }
+        )
+        if args.dry_run:
+            return artifact
+        if publisher is None:
+            raise RuntimeError("Skopeo publisher is unavailable outside dry-run mode")
+        inspected = publisher.inspect(existing_image_ref)
+        if inspected is None:
+            raise RuntimeError(f"configured existing image does not exist: {existing_image_ref}")
+        if inspected["artifact_digest"] != artifact_digest:
+            raise RuntimeError(
+                "configured existing image digest mismatch: "
+                f"expected={artifact_digest} actual={inspected['artifact_digest']}"
+            )
+        artifact["media_type"] = inspected["media_type"]
+        artifact["config"] = publisher.inspect_config(existing_image_ref)
+        artifact["config_resolved"] = True
+        log(f"verified explicit existing image service={service.name}: {existing_image_ref}")
+        return artifact
     if args.dry_run:
         artifact["artifact_digest"] = digest_bytes(
             f"dry-run\0{identity}".encode()
@@ -1246,6 +1345,8 @@ def _prepare_service_image(
                 },
             )
             return artifact
+
+        publisher.require_publish_credentials()
 
         # Equal build inputs can share one Registry artifact within this
         # Bundle, while every service keeps its own deterministic tag.
@@ -1418,6 +1519,13 @@ def _bundle_identity(
 def prepare_bundle(args: argparse.Namespace) -> PreparedBundle:
     task_dir = resolve_task_dir(args.task_dir, args.dataset_root, args.include)
     bundle = resolve_bundle_spec(task_dir)
+    existing_image_ref = mapped_existing_image_ref(
+        getattr(args, "existing_image_map_file", None), bundle.task_identity
+    )
+    if existing_image_ref is not None and len(bundle.services) != 1:
+        raise RuntimeError(
+            "existing-image map overrides currently require a single-service task"
+        )
     policy = SourcePolicy(args.dockerhub_mirror_prefix, args.apt_mirror)
     explicit_build_args = parse_build_args(args.build_args_json)
     cache_root = args.cache_root.resolve()
@@ -1431,7 +1539,9 @@ def prepare_bundle(args: argparse.Namespace) -> PreparedBundle:
     proxy_args: dict[str, str] = {}
     build_network = getattr(args, "build_network", "default")
     if not args.dry_run:
-        username, password = registry_credentials(args.docker_config, args.registry)
+        username, password = registry_credentials(
+            args.docker_config, args.registry, allow_anonymous=True
+        )
         publisher = SkopeoPublisher(
             target,
             username,
@@ -1456,6 +1566,9 @@ def prepare_bundle(args: argparse.Namespace) -> PreparedBundle:
             publisher=publisher,
             registry=registry,
             artifact_cache=artifact_cache,
+            existing_image_ref=(
+                existing_image_ref if name == bundle.main_service else None
+            ),
         )
 
     services = {
@@ -1611,6 +1724,19 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         "--bundle-manifest-output",
         type=Path,
         help="atomically write the prepared Bundle Manifest to this path",
+    )
+    parser.add_argument(
+        "--existing-image-map-file",
+        type=Path,
+        default=default_path(
+            "HARBOR_OPENSANDBOX_EXISTING_IMAGE_MAP_FILE", Path("")
+        )
+        if os.environ.get("HARBOR_OPENSANDBOX_EXISTING_IMAGE_MAP_FILE", "").strip()
+        else None,
+        help=(
+            "optional JSON object mapping task identities to verified immutable "
+            "images in their configured Harbor repositories"
+        ),
     )
     parser.add_argument(
         "--output",
