@@ -10,6 +10,7 @@ agent-fleet/
 │   ├── Harbor-claude-code/    # Claude Code tracing/integration code
 │   ├── Harbor-opencode/       # OpenCode tracing/integration code
 │   ├── Harbor-pi/             # Pi task-container integration code
+│   ├── Harbor-ante/           # Pinned Ante Harbor/OpenSandbox adapter
 │   └── utils/
 │       ├── common/Harbor/     # Shared Harbor runner, zellij layout, workers
 │       └── rl/                # Remote rollout listener, workers, and helpers
@@ -48,6 +49,7 @@ Harbor common resolves the repository root from `Agents/utils/common/Harbor/env.
 - `HARBOR_CLAUDE_CODE_DIR=$AGENTS_DIR/Harbor-claude-code`
 - `HARBOR_OPENCODE_DIR=$AGENTS_DIR/Harbor-opencode`
 - `HARBOR_PI_DIR=$AGENTS_DIR/Harbor-pi`
+- `HARBOR_ANTE_DIR=$AGENTS_DIR/Harbor-ante`
 
 OpenClaw benchmark runners call `Agents/Openclaw` for fleet setup and Docker Compose, then use task-specific code under `Tasks/Pinchbench` or `Tasks/clawBio`.
 

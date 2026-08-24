@@ -15,7 +15,7 @@ gateway fleet, and its benchmarks (PinchBench, ClawBio).
 | Directory | Owns | Agent guidance |
 | --- | --- | --- |
 | `Agents/utils/common/Harbor/` | Shared Harbor benchmark runner | `Agents/AGENTS.md` |
-| `Agents/Harbor-claude-code/`, `Agents/Harbor-opencode/` | Agent-specific Harbor integration | per-directory `STRUCT.md` |
+| `Agents/Harbor-claude-code/`, `Agents/Harbor-opencode/`, `Agents/Harbor-pi/`, `Agents/Harbor-ante/` | Agent-specific Harbor integration | per-directory `STRUCT.md` |
 | `Agents/Openclaw/` | Dockerized OpenClaw gateway fleet | `Agents/AGENTS.md` |
 | `Tasks/` | Harbor task lists; PinchBench and ClawBio runners | `Tasks/AGENTS.md` |
 | `third_party/agent-opik-plugin/` | Opik tracing plugin (git submodule) | — |

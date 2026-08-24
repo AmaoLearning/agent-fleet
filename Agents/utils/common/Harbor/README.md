@@ -1,7 +1,7 @@
 # Harbor Runner
 
 This directory contains the shared Harbor runner for Claude Code, OpenCode,
-and Pi.
+Pi, and Ante.
 
 For YiCloud OpenSandbox, start with the
 [OpenSandbox quick start](OPENSANDBOX_README.md). For qz (SII Inspire)
@@ -63,13 +63,13 @@ OPIK_PROJECT_NAME=your-project-name
 Then edit the run parameters in `env.sh`:
 
 ```bash
-AGENT="claude-code"        # claude-code, opencode, or pi
+AGENT="claude-code"        # claude-code, opencode, pi, or ante
 DATASET_NAME="seta"        # built-in Harbor registry alias
 TOTAL_WORKERS="80"
 HARBOR_N_CONCURRENT="80"
 ```
 
-For OpenCode fixed benchmark runs, optional generation controls can be set in
+For OpenCode and Ante fixed benchmark runs, optional generation controls can be set in
 `config.local.env` or the shell:
 
 ```bash
@@ -84,6 +84,11 @@ temperature or top-p controls, so the runner rejects those two settings for
 provider derives from `BASE_URL` when `PI_PROVIDER` is unset. Rollout mode
 keeps its separate `RL_TEMPERATURE`, `RL_TOP_P`, and `RL_MAX_NEW_TOKENS`
 interface.
+
+Ante uses `ANTE_PROVIDER`, `ANTE_REASONING_EFFORT`, and the fixed
+runner-cached binary described in [Harbor Ante](../../../Harbor-ante/README.md).
+It always runs without Opik and defaults Analyzer off; the shared monitor and
+Zellij worker panes remain enabled.
 
 When `OPIK_URL` is set, the Opik tracing plugin is loaded from
 the `third_party/agent-opik-plugin` submodule. Initialize it before a traced run:

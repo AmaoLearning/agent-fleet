@@ -1,0 +1,10 @@
+caffe-cifar-10
+write-compressor
+sqlite-with-gcov
+filter-js-from-html
+pypi-server
+feal-linear-cryptanalysis
+multi-source-data-merger
+prove-plus-comm
+sparql-university
+install-windows-3.11

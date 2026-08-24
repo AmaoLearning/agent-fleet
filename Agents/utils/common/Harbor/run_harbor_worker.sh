@@ -55,6 +55,10 @@ stream_pi_log() {
   python3 "$SCRIPT_DIR/harbor_worker_utils.py" stream-pi-log "$1"
 }
 
+stream_ante_log() {
+  python3 "$SCRIPT_DIR/harbor_worker_utils.py" stream-ante-log "$1"
+}
+
 seta_online_early_stop_enabled() {
   [[ "$HARBOR_ONLINE_ANALYSIS" == "1" ]] \
     && [[ "$HARBOR_EARLY_STOP" == "1" ]] \
@@ -171,6 +175,10 @@ run_claimed_task() {
       export PI_PROVIDER PI_VERSION PI_TGZ_BASENAME PI_NODE_RUNTIME_BASENAME PI_RUNTIME_BASENAME PI_THINKING_LEVEL
       export PI_MODELS_CONFIG PI_SETTINGS_CONFIG LOCAL_WHEEL_DIR
       export HARBOR_LOCAL_WHEEL_SERVER_URL LOCAL_WHEEL_PORT
+    elif harbor_agent_is_ante; then
+      export ANTE_VERSION ANTE_MANIFEST_URL ANTE_RUNTIME_DIR ANTE_BINARY_PATH
+      export ANTE_PROVIDER ANTE_REASONING_EFFORT ANTE_ARGS ANTE_ENABLE_ATIF
+      export ANTE_HOME ANTE_MODEL_BASE_URL ANTE_MODEL_CONTEXT_LIMIT
     else
       export CC_OPIK_DEBUG
       export CLAUDE_CODE_VERSION CLAUDE_CODE_TGZ_BASENAME LOCAL_WHEEL_DIR
@@ -231,6 +239,9 @@ while true; do
       AGENT_TAIL_PID="$!"
     elif [[ "$AGENT" == "pi" ]]; then
       stream_pi_log "$task_jobs_root" &
+      AGENT_TAIL_PID="$!"
+    elif [[ "$AGENT" == "ante" ]]; then
+      stream_ante_log "$task_jobs_root" &
       AGENT_TAIL_PID="$!"
     fi
   fi

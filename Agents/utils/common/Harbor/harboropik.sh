@@ -1030,6 +1030,32 @@ run_harbor() {
       --ae "PI_SETTINGS_CONFIG=$PI_SETTINGS_CONFIG"
       --ae "PI_EXTENSION_DIR=$PI_EXTENSION_DIR"
     )
+  elif harbor_agent_is_ante; then
+    cmd+=(
+      --ak "version=$ANTE_VERSION"
+      --ak "binary_path=$ANTE_BINARY_PATH"
+      --ak "provider=$ANTE_PROVIDER"
+      --ak "reasoning_effort=$ANTE_REASONING_EFFORT"
+      --ak "ante_args=$ANTE_ARGS"
+      --ae "OPENAI_COMPATIBLE_API_KEY=$HARBOR_ANTHROPIC_AUTH_TOKEN"
+      --ae "OPENAI_COMPATIBLE_BASE_URL=$ANTE_MODEL_BASE_URL"
+      --ae "MODEL_BASE_URL=$ANTE_MODEL_BASE_URL"
+      --ae "ANTE_HOME=$ANTE_HOME"
+      --ae "ANTE_ENABLE_ATIF=$ANTE_ENABLE_ATIF"
+      --ae "ANTE_ENV=agent-fleet"
+    )
+    if [[ -n "$HARBOR_TEMPERATURE" ]]; then
+      cmd+=( --ae "MODEL_TEMPERATURE=$HARBOR_TEMPERATURE" )
+    fi
+    if [[ -n "$HARBOR_TOP_P" ]]; then
+      cmd+=( --ae "MODEL_TOP_P=$HARBOR_TOP_P" )
+    fi
+    if [[ -n "$HARBOR_MAX_TOKENS" ]]; then
+      cmd+=( --ae "MODEL_MAX_TOKENS=$HARBOR_MAX_TOKENS" )
+    fi
+    if [[ -n "${ANTE_MODEL_CONTEXT_LIMIT:-}" ]]; then
+      cmd+=( --ae "MODEL_CONTEXT_LIMIT=$ANTE_MODEL_CONTEXT_LIMIT" )
+    fi
   else
     cmd+=(
       --ak "version=$CLAUDE_CODE_VERSION"
@@ -1119,8 +1145,8 @@ run_harbor() {
   if [[ -n "$wheel_host" ]]; then
     no_proxy_value="$no_proxy_value,$wheel_host"
   fi
-  if harbor_agent_is_pi && [[ -n "$model_host" ]]; then
-    # Pi sends its OpenAI-compatible request straight to the gateway.
+  if { harbor_agent_is_pi || harbor_agent_is_ante; } && [[ -n "$model_host" ]]; then
+    # Pi and Ante send OpenAI-compatible requests straight to the gateway.
     no_proxy_value="$no_proxy_value,$model_host"
   fi
   cmd+=( --ae "NO_PROXY=$no_proxy_value" --ae "no_proxy=$no_proxy_value" )
@@ -1148,7 +1174,7 @@ run_harbor() {
   fi
 
   local mounts_json="[]" agent_package_source="$HARBOR_CC_CLAUDE_TGZ_SOURCE"
-  if harbor_agent_is_pi; then
+  if harbor_agent_is_pi || harbor_agent_is_ante; then
     agent_package_source=""
   fi
   if [[ "$HARBOR_ENVIRONMENT_TYPE" == "docker" || "$HARBOR_ENVIRONMENT_TYPE" == "opensandbox" ]]; then
@@ -1159,7 +1185,7 @@ run_harbor() {
     if [[ -n "$agent_package_source" ]]; then
       mount_args+=( --mount "$agent_package_source" "$HARBOR_CC_CLAUDE_TGZ_MOUNT_PATH" exists )
     fi
-    if [[ -n "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" ]]; then
+    if ! harbor_agent_is_ante && [[ -n "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" ]]; then
       mount_args+=( --mount "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" "$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH" exists )
     fi
     if [[ -n "$VERIFIER_UV_BIN_DIR_SOURCE" ]]; then
@@ -1203,7 +1229,7 @@ run_harbor() {
     cmd+=( --debug )
   fi
 
-  if [[ -n "$AGENT" ]] && ! harbor_agent_is_pi; then
+  if [[ -n "$AGENT" ]] && ! harbor_agent_is_pi && ! harbor_agent_is_ante; then
     cmd+=( -a "$AGENT" )
   fi
 
@@ -1280,6 +1306,9 @@ run_harbor() {
   echo "[INFO] environment: $HARBOR_ENVIRONMENT_TYPE"
   if harbor_agent_is_pi; then
     echo "[INFO] pi version: $PI_VERSION | thinking: $PI_THINKING_LEVEL"
+  elif harbor_agent_is_ante; then
+    echo "[INFO] ante version: $ANTE_VERSION | provider: $ANTE_PROVIDER | effort: $ANTE_REASONING_EFFORT"
+    echo "[INFO] ante args: $ANTE_ARGS"
   else
     echo "[INFO] claude max_turns: ${HARBOR_AK_MAX_TURNS:-<default>}"
   fi
@@ -1308,6 +1337,8 @@ run_harbor() {
 
   if harbor_agent_is_pi; then
     export PYTHONPATH="$HARBOR_PI_DIR:$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+  elif harbor_agent_is_ante; then
+    export PYTHONPATH="$HARBOR_ANTE_DIR:$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
   else
     export PYTHONPATH="$HARBOR_CLAUDE_CODE_DIR:$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
   fi

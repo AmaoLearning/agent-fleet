@@ -131,6 +131,22 @@ exit "${STUB_EXIT:-0}"
         self.assertIn("HARBOR_N_CONCURRENT=3", result.stdout)
         self.assertIn("RUN_ID=\n", result.stdout)
 
+    def test_ante_routes_through_shared_harbor_runner(self):
+        result = self.run_fleet(
+            "--taskset",
+            "terminalbench21",
+            "--agent",
+            "ante",
+            "--workers",
+            "10",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("runner=harbor", result.stdout)
+        self.assertIn("AGENT=ante", result.stdout)
+        self.assertIn("TOTAL_WORKERS=10", result.stdout)
+        self.assertIn("HARBOR_N_CONCURRENT=10", result.stdout)
+
     def test_explicit_local_taskset_maps_only_path_inputs(self):
         result = self.run_fleet("--taskset", "./tasks", "--agent", "opencode")
         self.assertEqual(result.returncode, 0, result.stderr)

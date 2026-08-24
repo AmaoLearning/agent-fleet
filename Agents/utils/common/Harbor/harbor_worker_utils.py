@@ -243,6 +243,59 @@ def stream_pi_log(task_root: Path) -> int:
                     print(f"[tool_result] {_clean(result)}", flush=True)
 
 
+def stream_ante_log(task_root: Path) -> int:
+    """Stream stable, compact progress from Ante's JSON event log."""
+    deadline = time.monotonic() + _float_env("ANTE_STREAM_WAIT_SECONDS", 1200.0)
+    log = None
+    while log is None:
+        direct = task_root / "agent" / "ante.txt"
+        if direct.is_file():
+            log = direct
+            break
+        matches = sorted(
+            task_root.rglob("agent/ante.txt"), key=lambda path: path.stat().st_mtime
+        )
+        if matches:
+            log = matches[-1]
+            break
+        if time.monotonic() >= deadline:
+            print(
+                f"[ERROR] agent/ante.txt did not appear under {task_root}",
+                file=sys.stderr,
+            )
+            return 1
+        time.sleep(1)
+
+    with log.open("r", encoding="utf-8", errors="replace") as handle:
+        while True:
+            line = handle.readline()
+            if not line:
+                time.sleep(0.5)
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            event = payload.get("event")
+            if not isinstance(event, dict) or not event:
+                continue
+            name = next(iter(event))
+            data = event.get(name)
+            if name in {"AgentMessage", "Thinking", "Info", "Error"} and data:
+                label = "llm" if name in {"AgentMessage", "Thinking"} else name.lower()
+                print(f"[{label}] {_clean(data)}", flush=True)
+            elif name == "ToolStart" and isinstance(data, dict):
+                tool_name = data.get("name") or data.get("tool") or "tool"
+                arguments = data.get("arguments") or data.get("input") or {}
+                print(f"[tool] {tool_name}: {_clean(arguments)}", flush=True)
+            elif name == "ToolEnd" and isinstance(data, dict):
+                result = data.get("result") or data.get("output")
+                if result:
+                    print(f"[tool_result] {_clean(result)}", flush=True)
+            elif name == "TurnEnd":
+                print(f"[turn_end] {_clean(data)}", flush=True)
+
+
 def prepare_claude_timeout_backup(logs_dir: Path, project_name: str) -> int:
     backup_state = logs_dir / "opik-runtime-state.json"
     backup_transcript = logs_dir / "opik-runtime-transcript.jsonl"
@@ -309,6 +362,7 @@ def main() -> int:
             "stream-claude-log",
             "stream-opencode-log",
             "stream-pi-log",
+            "stream-ante-log",
             "prepare-claude-timeout-backup",
             "online-early-stop-reason",
         ),
@@ -329,6 +383,8 @@ def main() -> int:
         return stream_opencode_log(path)
     if args.command == "stream-pi-log":
         return stream_pi_log(path)
+    if args.command == "stream-ante-log":
+        return stream_ante_log(path)
     if args.command == "online-early-stop-reason":
         if args.task_id is None:
             parser.error("--task-id is required for online-early-stop-reason")

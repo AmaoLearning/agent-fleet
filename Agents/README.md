@@ -15,6 +15,7 @@ Agent-specific Harbor code lives in:
 - `Harbor-claude-code/`
 - `Harbor-opencode/`
 - `Harbor-pi/`
+- `Harbor-ante/`
 
 Shared Harbor orchestration lives in:
 

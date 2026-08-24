@@ -100,6 +100,18 @@ print(json.dumps({
         if os.environ["PI_SETTINGS_CONFIG"]
         else None
     ),
+    "ante": {
+        name: os.environ[name]
+        for name in (
+            "ANTE_VERSION",
+            "ANTE_PROVIDER",
+            "ANTE_REASONING_EFFORT",
+            "ANTE_ARGS",
+            "ANTE_MODEL_BASE_URL",
+            "ANTE_ENABLE_ATIF",
+        )
+    },
+    "analyzer_enabled": os.environ["HARBOR_ANALYZER_ENABLED"],
     "fixer": {
         name: os.environ[name]
         for name in (
@@ -360,6 +372,44 @@ PY
             "Claude Code does not expose temperature or top_p controls",
             result.stderr,
         )
+
+    def test_ante_defaults_pin_public_control_and_disable_analyzer(self) -> None:
+        config = self._load_config(
+            "ante",
+            BASE_URL="https://llm.example/v1/",
+            HARBOR_TEMPERATURE="1.0",
+            HARBOR_TOP_P="0.95",
+            HARBOR_MAX_TOKENS="65536",
+        )
+
+        self.assertEqual(config["agent_import_path"], "ante_harbor:AnteAgent")
+        self.assertEqual(
+            config["ante"],
+            {
+                "ANTE_VERSION": "0.preview.71",
+                "ANTE_PROVIDER": "openai-compatible",
+                "ANTE_REASONING_EFFORT": "max",
+                "ANTE_ARGS": (
+                    "--yolo --output-format json --no-session-save "
+                    "--no-skills --check"
+                ),
+                "ANTE_MODEL_BASE_URL": "https://llm.example/v1",
+                "ANTE_ENABLE_ATIF": "true",
+            },
+        )
+        self.assertEqual(config["analyzer_enabled"], "0")
+        self.assertEqual(config["llm_kwargs"]["temperature"], 1.0)
+        self.assertEqual(config["llm_kwargs"]["top_p"], 0.95)
+
+    def test_ante_rejects_unknown_reasoning_effort(self) -> None:
+        result = self._run_validation(
+            "ante",
+            validation_function="harbor_validate_agent",
+            ANTE_REASONING_EFFORT="ultra",
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ANTE_REASONING_EFFORT must be", result.stderr)
 
     def test_pi_builds_isolated_gateway_configuration(self) -> None:
         config = self._load_config(

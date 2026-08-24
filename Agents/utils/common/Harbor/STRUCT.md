@@ -140,7 +140,11 @@ Typical dataset paths:
 
 | Variable | Purpose |
 | --- | --- |
-| `AGENT` | `claude-code`, `opencode`, or `pi` |
+| `AGENT` | `claude-code`, `opencode`, `pi`, or `ante` |
+| `ANTE_VERSION` | Exact Ante runtime version; default `0.preview.71` |
+| `ANTE_PROVIDER` | Ante provider ID; default `openai-compatible` |
+| `ANTE_REASONING_EFFORT` | Ante reasoning effort; default `max` |
+| `ANTE_BINARY_PATH` | Runner-cached binary uploaded to each Sandbox |
 | `MODEL` | Model name passed to Harbor |
 | `BASE_URL` | Model gateway base URL |
 | `API_KEY` | Model gateway API key |

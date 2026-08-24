@@ -1,7 +1,7 @@
 # Agent Fleet
 
 Agent Fleet provides runnable integrations and benchmark tasksets for
-evaluating Claude Code, OpenCode, Pi, and OpenClaw.
+evaluating Claude Code, OpenCode, Pi, Ante, and OpenClaw.
 
 ## Quick Start
 
@@ -53,7 +53,7 @@ Then start the full benchmark, with direct arguments or in natural language
 (AI mode):
 
 ```bash
-./scripts/run_fleet.sh --taskset terminalbench21 --agent claude-code --workers 10
+./scripts/run_fleet.sh --taskset terminalbench21 --agent ante --workers 10
 ./scripts/run_fleet.sh --taskset terminalbench21 --task fix-git --workers 1
 ./scripts/run_fleet.sh --prompt "Run terminalbench21 with claude-code and 10 workers"
 ```
@@ -81,7 +81,7 @@ for the full format.
 | --- | --- | --- |
 | `--taskset` | `-t` | Taskset to run ([available tasksets](./scripts/README.md#fleet-launch-modes)) |
 | `--task` | — | Exact task name(s), comma-separated or repeated |
-| `--agent` | `-a` | `claude-code`, `opencode`, `pi`, or `openclaw` |
+| `--agent` | `-a` | `claude-code`, `opencode`, `pi`, `ante`, or `openclaw` |
 | `--workers` | `-n` | Concurrency |
 | `--prompt` | `-p` | Natural-language run request (AI mode) |
 | `--spec` | `-s` | FleetSpec file(s) |
@@ -124,6 +124,10 @@ Pi extensions require the Docker or OpenSandbox environment.
 
 See [Harbor Pi](./Agents/Harbor-pi/README.md#extensions) for the complete
 configuration and a launch example.
+
+Ante is available for direct Harbor runs and uses the shared Zellij monitor and
+OpenSandbox provider. See [Harbor Ante](./Agents/Harbor-ante/README.md). Prompt
+mode and RL rollout integration are intentionally outside the initial adapter.
 
 ## More details
 
