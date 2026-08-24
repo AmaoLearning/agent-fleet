@@ -1361,6 +1361,12 @@ harbor_tar_file_ready() {
 }
 
 harbor_local_cache_ready() {
+  # Ante is uploaded as a standalone binary and does not consume the shared
+  # Python/Node dependency cache.  Treating it as the fallback Claude runner
+  # makes every worker try to start an unnecessary wheel server; concurrent
+  # workers then exhaust the narrow port range before claiming any tasks.
+  harbor_agent_is_ante && return 1
+
   [[ -f "$LOCAL_WHEEL_DIR/manifest.txt" ]] \
     && grep -qx 'cache_schema=3' "$LOCAL_WHEEL_DIR/manifest.txt" \
     && [[ "$(find "$LOCAL_WHEEL_DIR" -maxdepth 1 -name 'opik-*.whl' -type f | wc -l | tr -d ' ')" == "1" ]] \
@@ -1386,6 +1392,10 @@ harbor_local_cache_ready() {
 }
 
 harbor_pick_remote_wheel_url() {
+  # Ante never consumes the Python/Node dependency cache, whether local or
+  # remote.  Its binary is prepared separately by harbor_prepare_ante_runtime.
+  harbor_agent_is_ante && return 1
+
   # Pi unpacks its pinned runtime from the read-only dependency mount. A
   # remote URL cannot materialize that mount, so Pi always prepares locally.
   if harbor_agent_is_pi; then

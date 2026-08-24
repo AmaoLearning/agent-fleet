@@ -76,4 +76,45 @@ override_session="$(printf '%s\n' "$overrides" | sed -n '3p')"
 [[ "$override_project" == "existing-project" ]]
 [[ "$override_session" == "existing-session" ]]
 
+# Ante is distributed as one standalone binary.  Even when a complete Claude
+# dependency cache is present, Ante workers must not start the wheel HTTP
+# server or consider remote wheel mirrors.
+ante_cache_policy="$(
+  env \
+    HOME="$TEST_ROOT/home" \
+    AGENT="ante" \
+    LOCAL_WHEEL_DIR="$TEST_ROOT/complete-claude-cache" \
+    HARBOR_REMOTE_WHEEL_SERVER_URLS="https://cache.invalid" \
+    AGENT_FLEET_PATHS_FILE="$TEST_ROOT/missing-paths.env" \
+    AGENT_FLEET_RUNTIME_DIR="$TEST_ROOT/runtime" \
+    bash -c '
+      source "$1"
+      mkdir -p "$LOCAL_WHEEL_DIR/npm-cache/_cacache"
+      printf "%s\n" \
+        "cache_schema=3" \
+        "claude_npm_cache_version=$CLAUDE_CODE_VERSION" \
+        > "$LOCAL_WHEEL_DIR/manifest.txt"
+      touch \
+        "$LOCAL_WHEEL_DIR/opik-test.whl" \
+        "$LOCAL_WHEEL_DIR/get-pip.py" \
+        "$LOCAL_WHEEL_DIR/node-runtime.tar.xz" \
+        "$LOCAL_WHEEL_DIR/python3.12-runtime.tar.gz" \
+        "$LOCAL_WHEEL_DIR/$CLAUDE_CODE_TGZ_BASENAME" \
+        "$LOCAL_WHEEL_DIR/npm-cache-ready"
+      harbor_tar_file_ready() { return 0; }
+      harbor_gzip_file_ready() { return 0; }
+      if harbor_local_cache_ready; then
+        printf "local-ready\n"
+      else
+        printf "local-skipped\n"
+      fi
+      if harbor_pick_remote_wheel_url; then
+        printf "remote-ready\n"
+      else
+        printf "remote-skipped\n"
+      fi
+    ' bash "$HARBOR_DIR/env.sh"
+)"
+[[ "$ante_cache_policy" == $'local-skipped\nremote-skipped' ]]
+
 echo "host default tests passed"
