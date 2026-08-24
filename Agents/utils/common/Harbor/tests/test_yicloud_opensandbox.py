@@ -107,6 +107,101 @@ class FakeSandbox:
 
 
 class YiCloudOpenSandboxTest(unittest.TestCase):
+    def test_service_command_retries_transient_proxy_error_with_fresh_signature(self) -> None:
+        instance = object.__new__(
+            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
+        )
+        runtime = yicloud_opensandbox.ServiceRuntime("main", {})
+        runtime.command_url = "https://sandbox.example/command?port=44772"
+        runtime.access_token = "test-token"
+        instance._command_ready_timeout_sec = 1
+        instance._base_client = SimpleNamespace(
+            crede=SimpleNamespace(public_key="public", sign=Mock(side_effect=["sig-1", "sig-2"]))
+        )
+        instance.logger = Mock()
+
+        class FakeResponse:
+            def __init__(self, status_code, text=""):
+                self.status_code = status_code
+                self.text = text
+                self.close = Mock()
+
+            def raise_for_status(self):
+                if self.status_code >= 400:
+                    raise yicloud_opensandbox.requests.HTTPError(
+                        f"HTTP {self.status_code}"
+                    )
+
+        responses = [
+            FakeResponse(502),
+            FakeResponse(
+                200,
+                'data: {"type":"stdout","text":"ready\\n'
+                + yicloud_opensandbox.EXIT_MARKER
+                + '0\\n"}\n\n',
+            ),
+        ]
+
+        class FakeSession:
+            trust_env = True
+
+            def post(self, *_args, **_kwargs):
+                return responses.pop(0)
+
+        async def run_inline(function, *args):
+            return function(*args)
+
+        with (
+            patch.object(yicloud_opensandbox.requests, "Session", return_value=FakeSession()),
+            patch.object(yicloud_opensandbox.asyncio, "to_thread", side_effect=run_inline),
+            patch.object(yicloud_opensandbox.time, "sleep") as sleep,
+        ):
+            result = asyncio.run(instance._run_service_command(runtime, "true"))
+
+        self.assertEqual(result.return_code, 0)
+        self.assertEqual(result.stdout, "ready")
+        sleep.assert_called_once()
+        self.assertGreater(sleep.call_args.args[0], 0)
+        self.assertLessEqual(sleep.call_args.args[0], 1)
+        self.assertEqual(instance._base_client.crede.sign.call_count, 2)
+
+    def test_service_command_does_not_retry_nontransient_http_error(self) -> None:
+        instance = object.__new__(
+            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
+        )
+        runtime = yicloud_opensandbox.ServiceRuntime("main", {})
+        runtime.command_url = "https://sandbox.example/command"
+        runtime.access_token = "test-token"
+        instance._command_ready_timeout_sec = 90
+        instance._base_client = SimpleNamespace(
+            crede=SimpleNamespace(public_key="public", sign=Mock(return_value="sig"))
+        )
+        instance.logger = Mock()
+
+        class UnauthorizedResponse:
+            status_code = 401
+            text = ""
+
+            @staticmethod
+            def raise_for_status():
+                raise yicloud_opensandbox.requests.HTTPError("HTTP 401")
+
+        session = Mock()
+        session.post.return_value = UnauthorizedResponse()
+
+        async def run_inline(function, *args):
+            return function(*args)
+
+        with (
+            patch.object(yicloud_opensandbox.requests, "Session", return_value=session),
+            patch.object(yicloud_opensandbox.asyncio, "to_thread", side_effect=run_inline),
+            self.assertRaises(yicloud_opensandbox.requests.HTTPError),
+        ):
+            asyncio.run(instance._run_service_command(runtime, "true"))
+
+        session.post.assert_called_once()
+        instance.logger.warning.assert_not_called()
+
     def test_v2_bundle_loads_digest_refs_and_rejects_unsupported_capabilities(self) -> None:
         instance = object.__new__(
             yicloud_opensandbox.YiCloudOpenSandboxEnvironment

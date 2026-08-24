@@ -327,6 +327,7 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
         project_name: str | None = None,
         lifecycle_minutes: int | str | None = None,
         ready_timeout_sec: int | None = None,
+        command_ready_timeout_sec: int | None = None,
         request_timeout_sec: int = 180,
         cleanup_wait_sec: int = 45,
         status_log_interval_sec: int | None = None,
@@ -357,6 +358,14 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
             if ready_timeout_sec is not None
             else os.environ.get("YICLOUD_SANDBOX_READY_TIMEOUT_SEC", "300"),
             "ready_timeout_sec",
+        )
+        self._command_ready_timeout_sec = _positive_int(
+            command_ready_timeout_sec
+            if command_ready_timeout_sec is not None
+            else os.environ.get(
+                "YICLOUD_SANDBOX_COMMAND_READY_TIMEOUT_SEC", "90"
+            ),
+            "command_ready_timeout_sec",
         )
         self._request_timeout_sec = request_timeout_sec
         self._cleanup_wait_sec = cleanup_wait_sec
@@ -999,20 +1008,44 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
             f"printf '\\n{EXIT_MARKER}%s\\n' \"$harbor_rc\"\nexit \"$harbor_rc\"\n"
         )
         body = json.dumps({"command": wrapped, "background": False, "timeout": timeout_sec * 1000, "cwd": cwd}, separators=(",", ":"))
-        now = time.localtime()
-        headers = {
-            "X-OGW-PUBLIC-KEY": self._base_client.crede.public_key,
-            "X-OGW-TICK": str(int(time.mktime(now) * 1000)),
-            "X-OGW-SIGN": self._base_client.crede.sign(now, urlsplit(runtime.command_url).query, body),
-            "X-Sandbox-Access-Token": runtime.access_token,
-            "Content-Type": "application/json",
-            "Accept": "text/event-stream",
-        }
         def run() -> ExecResult:
             session = requests.Session()
             session.trust_env = False
-            response = session.post(runtime.command_url, headers=headers, data=body, timeout=timeout_sec + 60)
-            response.raise_for_status()
+            deadline = time.monotonic() + self._command_ready_timeout_sec
+            while True:
+                now = time.localtime()
+                headers = {
+                    "X-OGW-PUBLIC-KEY": self._base_client.crede.public_key,
+                    "X-OGW-TICK": str(int(time.mktime(now) * 1000)),
+                    "X-OGW-SIGN": self._base_client.crede.sign(
+                        now, urlsplit(runtime.command_url).query, body
+                    ),
+                    "X-Sandbox-Access-Token": runtime.access_token,
+                    "Content-Type": "application/json",
+                    "Accept": "text/event-stream",
+                }
+                response = session.post(
+                    runtime.command_url,
+                    headers=headers,
+                    data=body,
+                    timeout=timeout_sec + 60,
+                )
+                status_code = getattr(response, "status_code", None)
+                remaining = deadline - time.monotonic()
+                if status_code not in {429, 502, 503, 504} or remaining <= 0:
+                    response.raise_for_status()
+                    break
+                delay = min(2.0, remaining)
+                self.logger.warning(
+                    "OpenSandbox service %s command proxy returned HTTP %s; "
+                    "retrying in %.1fs (%.1fs remaining)",
+                    runtime.name,
+                    status_code,
+                    delay,
+                    remaining,
+                )
+                response.close()
+                time.sleep(delay)
             events = _parse_sse(response.text)
             stdout = "".join(str(event.get("text", "")) for event in events if event.get("type") == "stdout")
             stderr = "".join(str(event.get("text", "")) for event in events if event.get("type") == "stderr")
