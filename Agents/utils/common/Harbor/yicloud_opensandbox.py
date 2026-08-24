@@ -1032,7 +1032,7 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
                 )
                 status_code = getattr(response, "status_code", None)
                 remaining = deadline - time.monotonic()
-                if status_code not in {429, 502, 503, 504} or remaining <= 0:
+                if status_code not in {403, 429, 502, 503, 504} or remaining <= 0:
                     response.raise_for_status()
                     break
                 delay = min(2.0, remaining)

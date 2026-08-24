@@ -116,7 +116,10 @@ class YiCloudOpenSandboxTest(unittest.TestCase):
         runtime.access_token = "test-token"
         instance._command_ready_timeout_sec = 1
         instance._base_client = SimpleNamespace(
-            crede=SimpleNamespace(public_key="public", sign=Mock(side_effect=["sig-1", "sig-2"]))
+            crede=SimpleNamespace(
+                public_key="public",
+                sign=Mock(side_effect=["sig-1", "sig-2", "sig-3"]),
+            )
         )
         instance.logger = Mock()
 
@@ -133,6 +136,7 @@ class YiCloudOpenSandboxTest(unittest.TestCase):
                     )
 
         responses = [
+            FakeResponse(403),
             FakeResponse(502),
             FakeResponse(
                 200,
@@ -160,10 +164,11 @@ class YiCloudOpenSandboxTest(unittest.TestCase):
 
         self.assertEqual(result.return_code, 0)
         self.assertEqual(result.stdout, "ready")
-        sleep.assert_called_once()
-        self.assertGreater(sleep.call_args.args[0], 0)
-        self.assertLessEqual(sleep.call_args.args[0], 1)
-        self.assertEqual(instance._base_client.crede.sign.call_count, 2)
+        self.assertEqual(sleep.call_count, 2)
+        for call in sleep.call_args_list:
+            self.assertGreater(call.args[0], 0)
+            self.assertLessEqual(call.args[0], 1)
+        self.assertEqual(instance._base_client.crede.sign.call_count, 3)
 
     def test_service_command_does_not_retry_nontransient_http_error(self) -> None:
         instance = object.__new__(
