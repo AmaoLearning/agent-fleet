@@ -144,7 +144,7 @@ OPIK_URL="${OPIK_URL:-}"
 harbor_trace_to_opik_enabled() {
   # The initial Ante control integration intentionally records local JSON/ATIF
   # only. Do not label a run as traced or leak Opik credentials into Sandboxes.
-  [[ "$AGENT" != "ante" ]] || return 1
+  [[ "${AGENT:-}" != "ante" ]] || return 1
   OPIK_URL="${OPIK_URL:-}" OPIK_TRACK_DISABLE="${OPIK_TRACK_DISABLE:-}" \
     python3 "$SCRIPT_DIR/opik_trace_gate.py"
 }

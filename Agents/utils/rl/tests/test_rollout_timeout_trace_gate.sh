@@ -3,6 +3,7 @@ set -euo pipefail
 
 RL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HARBOR_DIR="$(cd "$RL_DIR/../common/Harbor" && pwd)"
+SCRIPT_DIR="$HARBOR_DIR"
 
 # Exercise the real shared predicate and rollout timeout function without
 # starting the persistent rollout worker loop.
@@ -52,5 +53,13 @@ finalize_timeout_trace "/tmp/rollout-trace-gate-result.json"
   echo "trace-on rollout incorrectly took the trace-off skip path: $LOGGED" >&2
   exit 1
 }
+
+# Ante's initial integration intentionally keeps Opik disabled even when the
+# shared host configuration contains an endpoint.
+AGENT=ante
+if harbor_trace_to_opik_enabled; then
+  echo "Ante unexpectedly enabled Opik tracing" >&2
+  exit 1
+fi
 
 echo "rollout timeout trace gate OK"
