@@ -63,6 +63,26 @@ TRACE_GATE_PY = HARBOR_RUNTIME_DIR / "opik_trace_gate.py"
 CONTAINER_PLUGIN_REL = ".config/opencode/plugins"
 CONTAINER_STATE_REL = ".opencode/state"
 OPENCODE_RUNTIME_SECRETS_ENV = "OPENCODE_RUNTIME_SECRETS_JSON"
+NODE_RUNTIME_READY_COMMAND = (
+    "command -v node >/dev/null 2>&1 "
+    "&& command -v npm >/dev/null 2>&1 "
+    "&& node -e 'process.exit(Number(process.versions.node.split(\".\")[0]) "
+    ">= 18 ? 0 : 1)' >/dev/null 2>&1 "
+    "&& npm --version >/dev/null 2>&1"
+)
+
+
+def _optional_positive_env_int(name: str) -> int | None:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive integer, got {raw!r}") from exc
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive integer, got {raw!r}")
+    return value
 
 
 def _load_opencode_runtime_secrets() -> dict[str, str]:
@@ -241,7 +261,7 @@ class OpikOpenCodeHarbor(OpenCode):
                     # is missing. Treat Python as present only if it executes.
                     "if command -v python3 >/dev/null 2>&1 && python3 - <<'PY' >/dev/null 2>&1\n"
                     "import sys\n"
-                    "print(sys.version)\n"
+                    "raise SystemExit(0 if sys.version_info >= (3, 9) else 1)\n"
                     "PY\n"
                     "then exit 0; fi; "
                     "if [ -f \"$wheel_dir/python3.12-runtime.tar.gz\" ] && command -v tar >/dev/null 2>&1; then "
@@ -251,7 +271,7 @@ class OpikOpenCodeHarbor(OpenCode):
                     "  if [ -x /opt/python3.12-runtime/bin/python3.12 ] "
                     "    && /opt/python3.12-runtime/bin/python3.12 - <<'PY' >/dev/null 2>&1\n"
                     "import sys\n"
-                    "print(sys.version)\n"
+                    "raise SystemExit(0 if sys.version_info >= (3, 9) else 1)\n"
                     "PY\n"
                     "  then "
                     # Do not symlink the cached wrapper. It derives runtime
@@ -281,14 +301,14 @@ class OpikOpenCodeHarbor(OpenCode):
                     # wrappers by pointing python3 at the package-manager copy.
                     "if [ -x /usr/bin/python3 ] && /usr/bin/python3 - <<'PY' >/dev/null 2>&1\n"
                     "import sys\n"
-                    "print(sys.version)\n"
+                    "raise SystemExit(0 if sys.version_info >= (3, 9) else 1)\n"
                     "PY\n"
                     "then ln -sf /usr/bin/python3 /usr/local/bin/python3; fi; "
                     # The realtime plugin spawns `python3` with stderr hidden.
                     # Fail install here instead of losing all opencode traces.
                     "python3 - <<'PY' >/dev/null\n"
                     "import sys\n"
-                    "print(sys.version)\n"
+                    "raise SystemExit(0 if sys.version_info >= (3, 9) else 1)\n"
                     "PY\n"
                 ),
                 env={"DEBIAN_FRONTEND": "noninteractive"},
@@ -307,7 +327,8 @@ class OpikOpenCodeHarbor(OpenCode):
                     environment,
                     command=(
                         "export PATH=\"$HOME/.local/bin:$PATH\"; "
-                        "node --version >/dev/null && opencode --version >/dev/null"
+                        f"{NODE_RUNTIME_READY_COMMAND} "
+                        "&& opencode --version >/dev/null"
                     ),
                 )
                 return True
@@ -328,12 +349,6 @@ class OpikOpenCodeHarbor(OpenCode):
                     "set -euo pipefail; "
                     "export PATH=\"$HOME/.local/bin:$PATH\"; "
                     f"opencode_version={version_q}; "
-                    "node_runtime_ready() { "
-                    "  command -v node >/dev/null 2>&1 "
-                    "    && command -v npm >/dev/null 2>&1 "
-                    "    && node --version >/dev/null 2>&1 "
-                    "    && npm --version >/dev/null 2>&1; "
-                    "}; "
                     "activate_node_runtime() { "
                     "  runtime_bin=\"$1\"; "
                     "  [ -x \"$runtime_bin/node\" ] && [ -e \"$runtime_bin/npm\" ] "
@@ -373,6 +388,9 @@ class OpikOpenCodeHarbor(OpenCode):
                     "    archive.extractall(sys.argv[2])\n"
                     "PY\n"
                     "  else return 1; fi; "
+                    "}; "
+                    "node_runtime_ready() { "
+                    f"  {NODE_RUNTIME_READY_COMMAND}; "
                     "}; "
                     "wheel_dir=\"${CC_OPIK_PY_WHEEL_DIR:-/opt/tb-opik/python-wheels}\"; "
                     "wheel_url=\"${HARBOR_LOCAL_WHEEL_SERVER_URL:-}\"; "
@@ -442,6 +460,7 @@ class OpikOpenCodeHarbor(OpenCode):
                     "  echo '[ERROR] Node.js/npm runtime is unavailable or unhealthy' >&2; "
                     "  exit 1; "
                     "fi; "
+                    "node_runtime_ready || { echo '[ERROR] Node.js >=18 with npm is required' >&2; exit 1; }; "
                     "npm config set prefix \"$HOME/.local\" >/dev/null 2>&1 || true; "
                     "use_linux_x64_platform=0; "
                     # Only use the cached glibc x64 binary on matching images.
@@ -600,6 +619,10 @@ class OpikOpenCodeHarbor(OpenCode):
         if not self.model_name:
             raise ValueError("Model name must not be empty")
 
+        run_timeout_sec = _optional_positive_env_int(
+            "HARBOR_OPENCODE_RUN_TIMEOUT_SEC"
+        )
+
         env: dict[str, str] = {}
 
         # Harbor's Trial scopes `_extra_env` over every environment exec during
@@ -684,4 +707,9 @@ class OpikOpenCodeHarbor(OpenCode):
                 "exit \"$opencode_rc\""
             ),
             env=env,
+            **(
+                {"timeout_sec": run_timeout_sec}
+                if run_timeout_sec is not None
+                else {}
+            ),
         )

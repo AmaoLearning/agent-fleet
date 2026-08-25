@@ -2,15 +2,20 @@ import asyncio
 import base64
 import importlib.util
 import json
+import os
+import re
 import shlex
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, call, patch
 
 HARBOR_DIR = Path(__file__).resolve().parents[1]
 MODULE_PATH = HARBOR_DIR / "yicloud_opensandbox.py"
@@ -408,6 +413,9 @@ class YiCloudOpenSandboxTest(unittest.TestCase):
             events.append(f"health:{runtime.name}:{command}")
             return SimpleNamespace(return_code=0, stdout="", stderr="")
 
+        async def wait_execd(runtime):
+            events.append(f"execd:{runtime.name}")
+
         instance._services = {"main": main, "worker": worker}
         instance._main_service = "main"
         instance._sandbox_service = SimpleNamespace(
@@ -429,6 +437,7 @@ class YiCloudOpenSandboxTest(unittest.TestCase):
         instance._ready_timeout_sec = 300
         instance.session_id = "test-session"
         instance._wait_service_running = wait_running
+        instance._wait_until_execd_ready = AsyncMock(side_effect=wait_execd)
 
         async def wire_aliases(*_args, **_kwargs):
             events.append("wire:all")
@@ -449,8 +458,10 @@ class YiCloudOpenSandboxTest(unittest.TestCase):
             [
                 "create:worker",
                 "running:worker",
+                "execd:worker",
                 "create:main",
                 "running:main",
+                "execd:main",
                 "wire:all",
                 "release:worker",
                 "health:worker:check-worker",
@@ -623,6 +634,202 @@ class YiCloudOpenSandboxTest(unittest.TestCase):
         self.assertTrue(image.Uri.startswith("harbor-sandbox.example/"))
         self.assertFalse(hasattr(image, "Ref"))
 
+    def test_tag_only_image_is_sent_via_yicloud_ref(self) -> None:
+        fake_sandbox = SimpleNamespace(
+            models=SimpleNamespace(CreateSandboxReqImageInput=Request)
+        )
+        image = yicloud_opensandbox.YiCloudOpenSandboxEnvironment._create_image_input(
+            fake_sandbox,
+            "ubuntu:24.04",
+        )
+        self.assertEqual(image.Ref, "ubuntu:24.04")
+        self.assertFalse(hasattr(image, "Uri"))
+
+    def test_control_plane_auth_failure_is_retried(self) -> None:
+        instance = object.__new__(
+            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
+        )
+        instance.logger = Mock()
+
+        class TransientAuthError(RuntimeError):
+            @property
+            def code(self) -> int:
+                return 101
+
+        operation = Mock(side_effect=[TransientAuthError("auth"), "created"])
+        with patch.object(
+            yicloud_opensandbox.asyncio,
+            "sleep",
+            new=AsyncMock(),
+        ) as sleep:
+            result = asyncio.run(
+                instance._retry_control_plane_auth(
+                    "create sandbox",
+                    operation,
+                    "request",
+                )
+            )
+
+        self.assertEqual(result, "created")
+        self.assertEqual(operation.call_count, 2)
+        sleep.assert_awaited_once_with(1)
+        instance.logger.warning.assert_called_once()
+
+    def test_wait_until_running_retries_transient_status_error(self) -> None:
+        instance = object.__new__(
+            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
+        )
+        running = SimpleNamespace(
+            Status=SimpleNamespace(State="Running", Reason="")
+        )
+        get_sandbox = Mock(
+            side_effect=[RuntimeError("temporary auth failure"), running]
+        )
+        instance._sandbox_service = SimpleNamespace(
+            get_sandbox=get_sandbox,
+            models=SimpleNamespace(GetSandboxReq=Request),
+        )
+        instance._project_name = "test-project"
+        instance._sandbox_id = "sbx-test"
+        instance._ready_timeout_sec = 30
+        instance._status_log_interval_sec = 30
+        instance.logger = Mock()
+        created = SimpleNamespace(
+            Status=SimpleNamespace(State="Pending", Reason="")
+        )
+
+        with patch.object(
+            yicloud_opensandbox.asyncio,
+            "sleep",
+            new=AsyncMock(),
+        ) as sleep:
+            result = asyncio.run(instance._wait_until_running(created))
+
+        self.assertIs(result, running)
+        self.assertEqual(get_sandbox.call_count, 2)
+        sleep.assert_awaited_once_with(1)
+        instance.logger.warning.assert_called_once()
+
+    def test_wait_until_execd_ready_retries_transient_gateway_error(
+        self,
+    ) -> None:
+        instance = object.__new__(
+            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
+        )
+        instance._sandbox_id = "sbx-test"
+        instance._ready_timeout_sec = 120
+        instance._ping_execd_sync = Mock(
+            side_effect=[
+                yicloud_opensandbox.requests.ConnectionError(
+                    "temporary gateway failure"
+                ),
+                None,
+            ]
+        )
+        instance.logger = Mock()
+
+        with patch.object(
+            yicloud_opensandbox.asyncio,
+            "sleep",
+            new=AsyncMock(),
+        ) as sleep:
+            asyncio.run(instance._wait_until_execd_ready())
+
+        self.assertEqual(instance._ping_execd_sync.call_count, 2)
+        instance._ping_execd_sync.assert_has_calls([call("", "")] * 2)
+        sleep.assert_awaited_once_with(3)
+        instance.logger.warning.assert_called_once()
+
+    def test_composite_execd_readiness_uses_service_endpoint(self) -> None:
+        instance = object.__new__(
+            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
+        )
+        runtime = yicloud_opensandbox.ServiceRuntime("worker", {})
+        runtime.sandbox_id = "sbx-worker"
+        runtime.command_url = "https://sandbox.example/worker/command"
+        runtime.access_token = "worker-token"
+        instance._ready_timeout_sec = 120
+        instance._ping_execd_sync = Mock()
+        instance.logger = Mock()
+
+        asyncio.run(instance._wait_until_execd_ready(runtime))
+
+        instance._ping_execd_sync.assert_called_once_with(
+            runtime.command_url,
+            runtime.access_token,
+        )
+
+    def test_composite_execd_readiness_rejects_missing_command_url(self) -> None:
+        instance = object.__new__(
+            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
+        )
+        runtime = yicloud_opensandbox.ServiceRuntime("worker", {})
+        runtime.sandbox_id = "sbx-worker"
+        runtime.access_token = "worker-token"
+        instance._ready_timeout_sec = 120
+        instance.logger = Mock()
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "service 'worker' returned no command URL",
+        ):
+            asyncio.run(instance._wait_until_execd_ready(runtime))
+
+    def test_execd_readiness_uses_configured_ready_timeout(self) -> None:
+        instance = object.__new__(
+            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
+        )
+        instance._sandbox_id = "sbx-test"
+        instance._command_url = "https://sandbox.example/command"
+        instance._access_token = "sandbox-token"
+        instance._ready_timeout_sec = 7
+        instance._ping_execd_sync = Mock(
+            side_effect=yicloud_opensandbox.requests.ConnectionError(
+                "temporary gateway failure"
+            )
+        )
+        instance.logger = Mock()
+        fake_time = SimpleNamespace(
+            monotonic=Mock(side_effect=[10, 10, 18])
+        )
+
+        with (
+            patch.object(yicloud_opensandbox, "time", fake_time),
+            patch.object(
+                yicloud_opensandbox.asyncio,
+                "sleep",
+                new=AsyncMock(),
+            ),
+            self.assertRaisesRegex(RuntimeError, "within 7s"),
+        ):
+            asyncio.run(instance._wait_until_execd_ready())
+
+    def test_proxy_origin_can_be_replaced_without_changing_instance_path(self) -> None:
+        proxy_url = (
+            "https://sandbox.yicloud.com.cn/v1/sandboxes/sbx-1/proxy/44772/ping"
+        )
+        with patch.dict(
+            "os.environ",
+            {
+                "YICLOUD_SANDBOX_PROXY_ORIGIN": (
+                    "https://gate.yicloud.com.cn/sandbox-connect"
+                )
+            },
+        ):
+            result = yicloud_opensandbox._host_routable_proxy_url(proxy_url)
+
+        self.assertEqual(
+            result,
+            "https://gate.yicloud.com.cn/sandbox-connect/v1/sandboxes/"
+            "sbx-1/proxy/44772/ping",
+        )
+
+    def test_proxy_url_is_unchanged_without_an_origin_override(self) -> None:
+        proxy_url = "https://sandbox.example/v1/sandboxes/sbx-1/ping"
+        with patch.dict("os.environ", {}, clear=True):
+            result = yicloud_opensandbox._host_routable_proxy_url(proxy_url)
+        self.assertEqual(result, proxy_url)
+
     def test_s3_download_url_is_passed_as_environment_not_command_text(self) -> None:
         instance = object.__new__(
             yicloud_opensandbox.YiCloudOpenSandboxEnvironment
@@ -670,6 +877,10 @@ class YiCloudOpenSandboxTest(unittest.TestCase):
         instance._s3_downloader_ready = False
         instance._s3_downloader_lock = None
         instance._sandbox_id = "sbx-test"
+        instance._command_url = (
+            "https://gate.example/sandbox-connect/v1/sandboxes/sbx-test/"
+            "proxy/44772/command"
+        )
         instance._access_token = "sandbox-token"
         instance.logger = Mock()
         instance.exec = AsyncMock(
@@ -682,25 +893,23 @@ class YiCloudOpenSandboxTest(unittest.TestCase):
         )
         uploaded = {}
 
-        def capture_upload(source, target_path, _upload_url):
+        async def capture_upload(source, target_path, upload_url, mode):
             uploaded["count"] = uploaded.get("count", 0) + 1
             uploaded["payload"] = source.read_bytes()
             uploaded["target_path"] = target_path
+            uploaded["upload_url"] = upload_url
+            uploaded["mode"] = mode
 
-        instance._upload_file_fast_sync = capture_upload
+        instance._upload_file_fast = AsyncMock(side_effect=capture_upload)
 
         async def ensure_twice() -> None:
             signed_url = "http://ceph.example/cache/object?signature=test"
             await instance._ensure_s3_downloader(signed_url)
             await instance._ensure_s3_downloader(signed_url)
 
-        async def run_inline(function, *args):
-            return function(*args)
-
-        with patch.object(
-            yicloud_opensandbox.asyncio,
-            "to_thread",
-            side_effect=run_inline,
+        with patch.dict(
+            yicloud_opensandbox.os.environ,
+            {"YICLOUD_SANDBOX_FAST_UPLOAD_ORIGIN": ""},
         ):
             asyncio.run(ensure_twice())
 
@@ -709,6 +918,12 @@ class YiCloudOpenSandboxTest(unittest.TestCase):
             uploaded["target_path"],
             yicloud_opensandbox.S3_HTTP_BOOTSTRAP_PATH,
         )
+        self.assertEqual(
+            uploaded["upload_url"],
+            "https://gate.example/sandbox-connect/v1/sandboxes/sbx-test/"
+            "proxy/44772/files/upload",
+        )
+        self.assertEqual(uploaded["mode"], "700")
         self.assertIn(b"/dev/tcp/", uploaded["payload"])
         self.assertLess(len(uploaded["payload"]), 2048)
         self.assertIn(
@@ -752,6 +967,48 @@ class YiCloudOpenSandboxTest(unittest.TestCase):
                 "env-dedicated",
                 "project/task:image",
             )
+
+        running.EnvironmentId = "env-dedicated"
+        running.Image = SimpleNamespace(
+            Ref="", Uri="harbor.example/project/task:image"
+        )
+        yicloud_opensandbox._validate_sandbox_binding(
+            running,
+            "env-dedicated",
+            "harbor.example/project/task:image",
+        )
+        running.Image = SimpleNamespace(Ref="project/task:image", Uri="")
+        yicloud_opensandbox._validate_sandbox_binding(
+            running,
+            "env-dedicated",
+            "harbor.example/project/task:image",
+        )
+        running.Image = SimpleNamespace(
+            Ref="", Uri="registry-a.example/project/task:image"
+        )
+        with self.assertRaisesRegex(RuntimeError, "image binding mismatch"):
+            yicloud_opensandbox._validate_sandbox_binding(
+                running,
+                "env-dedicated",
+                "registry-b.example/project/task:image",
+            )
+        running.Image = SimpleNamespace(Ref="ubuntu:22.04", Uri="")
+        with self.assertRaisesRegex(RuntimeError, "image binding mismatch"):
+            yicloud_opensandbox._validate_sandbox_binding(
+                running,
+                "env-dedicated",
+                "ubuntu:24.04",
+            )
+
+    def test_tag_only_image_aliases_do_not_contain_empty_ref(self) -> None:
+        aliases = yicloud_opensandbox._image_ref_aliases("ubuntu:24.04")
+
+        self.assertEqual(aliases, {"ubuntu:24.04"})
+        self.assertFalse(
+            aliases.intersection(
+                yicloud_opensandbox._image_ref_aliases("ubuntu:22.04")
+            )
+        )
 
     def test_root_exec_payload_uses_uid_zero(self) -> None:
         instance = object.__new__(
@@ -841,6 +1098,467 @@ class YiCloudOpenSandboxTest(unittest.TestCase):
                     completed.stdout,
                 )
 
+    def test_exec_retries_chunked_response_with_same_idempotent_command(
+        self,
+    ) -> None:
+        instance = object.__new__(
+            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
+        )
+        instance._command_url = "https://sandbox.example/command"
+        instance._access_token = "test-token"
+        instance._signed_headers = Mock(return_value={})
+        instance.logger = Mock()
+        instance._cleanup_remote_exec_paths_sync = Mock()
+        bodies = []
+        timeouts = []
+
+        class InterruptedResponse:
+            @staticmethod
+            def raise_for_status() -> None:
+                return None
+
+            @property
+            def text(self):
+                raise yicloud_opensandbox.requests.exceptions.ChunkedEncodingError(
+                    "response ended prematurely"
+                )
+
+        class SuccessResponse:
+            text = (
+                '{"type":"stdout","text":"ok"}\n'
+                '{"type":"stdout","text":"'
+                f"{yicloud_opensandbox.EXIT_MARKER}0"
+                '"}\n'
+            )
+
+            @staticmethod
+            def raise_for_status() -> None:
+                return None
+
+        class FakeSession:
+            trust_env = True
+
+            def __init__(self, response):
+                self._response = response
+
+            def post(self, _url, *, headers, data, timeout):
+                bodies.append(data)
+                timeouts.append(timeout)
+                return self._response
+
+        with (
+            patch.object(
+                yicloud_opensandbox.requests,
+                "Session",
+                side_effect=[
+                    FakeSession(InterruptedResponse()),
+                    FakeSession(SuccessResponse()),
+                ],
+            ),
+            patch.object(yicloud_opensandbox.time, "sleep") as sleep,
+        ):
+            result = instance._run_command_sync("echo ok", "/", {}, 30)
+
+        self.assertEqual(result.return_code, 0)
+        self.assertEqual(result.stdout, "ok")
+        self.assertEqual(len(bodies), 2)
+        self.assertEqual(bodies[0], bodies[1])
+        self.assertEqual(timeouts, [90, 90])
+        self.assertIn("flock -x 9", json.loads(bodies[0])["command"])
+        self.assertIn(
+            "command -v flock",
+            json.loads(bodies[0])["command"],
+        )
+        cleanup_paths = instance._cleanup_remote_exec_paths_sync.call_args.args
+        self.assertTrue(any(path.endswith(".lock") for path in cleanup_paths))
+        self.assertTrue(any(path.endswith(".status") for path in cleanup_paths))
+        sleep.assert_called_once_with(1)
+
+    def test_wrapped_command_falls_back_when_flock_is_missing(self) -> None:
+        instance = object.__new__(
+            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
+        )
+        instance._command_url = "https://sandbox.example/command"
+        instance._access_token = "test-token"
+        instance._signed_headers = Mock(return_value={})
+        captured = {}
+
+        class StopAfterCapture(RuntimeError):
+            pass
+
+        class FakeSession:
+            trust_env = True
+
+            def post(self, _url, *, headers, data, timeout):
+                captured["payload"] = json.loads(data)
+                raise StopAfterCapture
+
+        with (
+            patch.object(
+                yicloud_opensandbox.requests,
+                "Session",
+                return_value=FakeSession(),
+            ),
+            self.assertRaises(StopAfterCapture),
+        ):
+            instance._run_command_sync("printf fallback", "/", {}, 30)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            for name in ("cat", "mkdir", "mv", "rm", "sleep"):
+                target = shutil.which(name)
+                self.assertIsNotNone(target)
+                os.symlink(target, bin_dir / name)
+            wrapped = re.sub(
+                r"/tmp/harbor-execd-[0-9a-f]+",
+                str(root / "exec"),
+                captured["payload"]["command"],
+            )
+            result = subprocess.run(
+                ["/bin/sh", "-c", wrapped],
+                capture_output=True,
+                text=True,
+                check=False,
+                env={**os.environ, "PATH": str(bin_dir)},
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("fallback", result.stdout)
+        self.assertIn(f"{yicloud_opensandbox.EXIT_MARKER}0", result.stdout)
+
+    def test_remote_exec_cleanup_uses_unwrapped_root_request(self) -> None:
+        instance = object.__new__(
+            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
+        )
+        instance._command_url = "https://sandbox.example/command"
+        instance._access_token = "test-token"
+        instance._signed_headers = Mock(return_value={})
+        instance.logger = Mock()
+        captured = {}
+
+        class Response:
+            @staticmethod
+            def raise_for_status() -> None:
+                return None
+
+        class FakeSession:
+            trust_env = True
+
+            def post(self, _url, *, headers, data, timeout):
+                captured["payload"] = json.loads(data)
+                captured["timeout"] = timeout
+                return Response()
+
+        with patch.object(
+            yicloud_opensandbox.requests,
+            "Session",
+            return_value=FakeSession(),
+        ):
+            instance._cleanup_remote_exec_paths_sync("/tmp/a", "/tmp/b")
+
+        self.assertEqual(captured["payload"]["command"], "rm -rf /tmp/a /tmp/b")
+        self.assertEqual(captured["payload"]["uid"], 0)
+        self.assertNotIn("flock", captured["payload"]["command"])
+        self.assertEqual(captured["timeout"], 30)
+
+    def test_long_exec_launches_detached_and_polls_for_result(self) -> None:
+        instance = object.__new__(
+            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
+        )
+        instance._run_command_direct_sync = Mock(
+            side_effect=[
+                SimpleNamespace(return_code=0, stdout="", stderr=""),
+                SimpleNamespace(
+                    return_code=0,
+                    stdout=yicloud_opensandbox.DETACHED_PENDING_MARKER,
+                    stderr="",
+                ),
+                SimpleNamespace(return_code=7, stdout="done", stderr="warn"),
+            ]
+        )
+        instance._cleanup_remote_exec_paths_sync = Mock()
+
+        with patch.object(yicloud_opensandbox.time, "sleep") as sleep:
+            result = instance._run_command_sync(
+                "sleep 10; exit 7",
+                "/work",
+                {"A": "B"},
+                600,
+                1234,
+            )
+
+        self.assertEqual(result.return_code, 7)
+        self.assertEqual(result.stdout, "done")
+        self.assertEqual(result.stderr, "warn")
+        calls = instance._run_command_direct_sync.call_args_list
+        self.assertEqual(len(calls), 3)
+        launch_command = calls[0].args[0]
+        self.assertIn("nohup", launch_command)
+        self.assertIn("command -v bash", launch_command)
+        self.assertIn("harbor_detached_started()", launch_command)
+        self.assertIn("harbor_launch_dir=", launch_command)
+        self.assertLess(
+            launch_command.index("harbor_detached_started()"),
+            launch_command.index("nohup"),
+        )
+        self.assertEqual(launch_command.count("9>&-"), 2)
+        encoded_script = re.search(
+            r"printf %s ([A-Za-z0-9+/=]+) \| base64 -d",
+            launch_command,
+        )
+        self.assertIsNotNone(encoded_script)
+        child_script = base64.b64decode(encoded_script.group(1)).decode()
+        self.assertIn('printf \'%s\\n\' "$$"', child_script)
+        self.assertIn(".pid.tmp", child_script)
+        self.assertEqual(calls[0].args[1:], ("/work", {"A": "B"}, 60, 1234))
+        self.assertIn("kill -0", calls[1].args[0])
+        cleanup_paths = instance._cleanup_remote_exec_paths_sync.call_args.args
+        self.assertTrue(any(path.endswith(".sh") for path in cleanup_paths))
+        self.assertTrue(any(path.endswith(".pid") for path in cleanup_paths))
+        self.assertTrue(any(path.endswith(".pid.tmp") for path in cleanup_paths))
+        self.assertTrue(any(path.endswith(".launch") for path in cleanup_paths))
+        sleep.assert_called_once()
+
+    def test_detached_timeout_kills_process_tree_without_setsid(self) -> None:
+        instance = object.__new__(
+            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
+        )
+        instance._run_command_direct_sync = Mock(
+            side_effect=[
+                SimpleNamespace(return_code=0, stdout="", stderr=""),
+                SimpleNamespace(return_code=0, stdout="", stderr=""),
+            ]
+        )
+        instance._cleanup_remote_exec_paths_sync = Mock()
+
+        with patch.object(
+            yicloud_opensandbox.time,
+            "monotonic",
+            side_effect=[0, 2],
+        ):
+            result = instance._run_command_detached_sync(
+                "sleep 60",
+                "/work",
+                {},
+                1,
+                1234,
+            )
+
+        self.assertEqual(result.return_code, 124)
+        terminate_command = instance._run_command_direct_sync.call_args_list[1].args[0]
+        self.assertIn('kill -TERM -- "-$harbor_pid"', terminate_command)
+        self.assertIn('kill -KILL -- "-$harbor_pid"', terminate_command)
+        self.assertIn("for harbor_status in /proc/[0-9]*/status", terminate_command)
+        self.assertIn('"$harbor_key" = PPid', terminate_command)
+        self.assertIn('kill -TERM "$harbor_tree_pid"', terminate_command)
+        self.assertIn('kill -KILL "$harbor_tree_pid"', terminate_command)
+        instance._cleanup_remote_exec_paths_sync.assert_called_once()
+
+    @unittest.skipUnless(
+        Path("/proc/self/task").is_dir() and shutil.which("setsid"),
+        "requires Linux procfs and setsid",
+    )
+    def test_detached_launch_command_is_idempotent(self) -> None:
+        command_id = f"launch-once-{os.getpid()}"
+        count_path = Path(f"/tmp/{command_id}.count")
+        prefix = f"/tmp/harbor-detached-{command_id}"
+        pid_path = Path(f"{prefix}.pid")
+        instance = object.__new__(
+            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
+        )
+        instance._run_command_direct_sync = Mock(
+            side_effect=[
+                SimpleNamespace(return_code=0, stdout="", stderr=""),
+                SimpleNamespace(return_code=0, stdout="", stderr=""),
+            ]
+        )
+        instance._cleanup_remote_exec_paths_sync = Mock()
+
+        with (
+            patch.object(
+                yicloud_opensandbox.uuid,
+                "uuid4",
+                return_value=SimpleNamespace(hex=command_id),
+            ),
+            patch.object(
+                yicloud_opensandbox.time,
+                "monotonic",
+                side_effect=[0, 2],
+            ),
+        ):
+            instance._run_command_detached_sync(
+                f"printf 'started\\n' >> {shlex.quote(str(count_path))}; "
+                "sleep 300",
+                "/",
+                {},
+                1,
+                0,
+            )
+
+        calls = instance._run_command_direct_sync.call_args_list
+        launch_command = calls[0].args[0]
+        terminate_command = calls[1].args[0]
+        detached_pid: int | None = None
+        try:
+            for _ in range(2):
+                launched = subprocess.run(
+                    ["/bin/sh", "-c", launch_command],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                self.assertEqual(launched.returncode, 0, launched.stderr)
+
+            deadline = time.monotonic() + 5
+            while not count_path.is_file() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertEqual(
+                count_path.read_text(encoding="utf-8").splitlines(),
+                ["started"],
+            )
+            detached_pid = int(pid_path.read_text(encoding="utf-8"))
+            self.assertEqual(os.getpgid(detached_pid), detached_pid)
+            terminated = subprocess.run(
+                ["/bin/sh", "-c", terminate_command],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            self.assertEqual(terminated.returncode, 0, terminated.stderr)
+        finally:
+            if detached_pid is not None:
+                try:
+                    os.killpg(detached_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            count_path.unlink(missing_ok=True)
+            for path in Path("/tmp").glob(
+                f"harbor-detached-{command_id}*"
+            ):
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink(missing_ok=True)
+
+    @unittest.skipUnless(
+        Path("/proc/self/task").is_dir(),
+        "requires Linux procfs",
+    )
+    def test_detached_timeout_process_tree_fallback_stops_descendants(
+        self,
+    ) -> None:
+        command_id = f"tree-test-{os.getpid()}"
+        instance = object.__new__(
+            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
+        )
+        instance._run_command_direct_sync = Mock(
+            side_effect=[
+                SimpleNamespace(return_code=0, stdout="", stderr=""),
+                SimpleNamespace(return_code=0, stdout="", stderr=""),
+            ]
+        )
+        instance._cleanup_remote_exec_paths_sync = Mock()
+
+        with (
+            patch.object(
+                yicloud_opensandbox.uuid,
+                "uuid4",
+                return_value=SimpleNamespace(hex=command_id),
+            ),
+            patch.object(
+                yicloud_opensandbox.time,
+                "monotonic",
+                side_effect=[0, 2],
+            ),
+        ):
+            instance._run_command_detached_sync(
+                "sleep 60",
+                "/work",
+                {},
+                1,
+                1234,
+            )
+
+        terminate_command = instance._run_command_direct_sync.call_args_list[1].args[0]
+        pid_path = Path(f"/tmp/harbor-detached-{command_id}.pid")
+        child_pid_path = Path(f"/tmp/harbor-detached-{command_id}.child")
+        parent_command = (
+            "import subprocess; "
+            "child = subprocess.Popen(['sleep', '300']); "
+            f"open({str(child_pid_path)!r}, 'w').write(str(child.pid)); "
+            "child.wait()"
+        )
+        parent = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                parent_command,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        child_pid: int | None = None
+        try:
+            self.assertNotEqual(os.getpgid(parent.pid), parent.pid)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if child_pid_path.is_file():
+                    child_pid = int(
+                        child_pid_path.read_text(encoding="utf-8")
+                    )
+                    break
+                time.sleep(0.05)
+            self.assertIsNotNone(child_pid)
+            pid_path.write_text(f"{parent.pid}\n", encoding="utf-8")
+
+            terminated = subprocess.run(
+                ["/bin/sh", "-c", terminate_command],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+
+            self.assertEqual(terminated.returncode, 0, terminated.stderr)
+            parent.wait(timeout=5)
+            child_path = Path(f"/proc/{child_pid}")
+            deadline = time.monotonic() + 5
+            while child_path.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertFalse(child_path.exists())
+        finally:
+            pid_path.unlink(missing_ok=True)
+            child_pid_path.unlink(missing_ok=True)
+            for pid in (child_pid, parent.pid):
+                if pid is None:
+                    continue
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            if parent.poll() is None:
+                parent.wait(timeout=5)
+
+    def test_exec_without_explicit_timeout_stays_direct(self) -> None:
+        instance = object.__new__(
+            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
+        )
+        expected = SimpleNamespace(return_code=0, stdout="ok", stderr="")
+        instance._run_command_direct_sync = Mock(return_value=expected)
+        instance._run_command_detached_sync = Mock()
+
+        result = instance._run_command_sync("echo ok", "/", {}, None, 0)
+
+        self.assertIs(result, expected)
+        instance._run_command_direct_sync.assert_called_once_with(
+            "echo ok", "/", {}, None, 0
+        )
+        instance._run_command_detached_sync.assert_not_called()
+
     def test_exec_uses_harbor_default_user_when_user_is_unset(self) -> None:
         instance = object.__new__(
             yicloud_opensandbox.YiCloudOpenSandboxEnvironment
@@ -922,6 +1640,10 @@ class YiCloudOpenSandboxTest(unittest.TestCase):
             yicloud_opensandbox.YiCloudOpenSandboxEnvironment
         )
         instance._sandbox_id = "sbx-test"
+        instance._command_url = (
+            "https://gate.example/sandbox-connect/v1/sandboxes/sbx-test/"
+            "proxy/44772/command"
+        )
         instance._access_token = "secret-sandbox-token"
         instance.logger = Mock()
         captured = {}
@@ -966,6 +1688,100 @@ class YiCloudOpenSandboxTest(unittest.TestCase):
         )
         self.assertEqual(captured["metadata"]["mode"], 755)
 
+    def test_fast_upload_reuses_host_routable_execd_endpoint(self) -> None:
+        instance = object.__new__(
+            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
+        )
+        instance._sandbox_id = "sbx-test"
+        instance._command_url = (
+            "https://gate.example/sandbox-connect/v1/sandboxes/sbx-test/"
+            "proxy/44772/command"
+        )
+
+        with patch.dict(
+            yicloud_opensandbox.os.environ,
+            {"YICLOUD_SANDBOX_FAST_UPLOAD_ORIGIN": ""},
+        ):
+            upload_url = instance._fast_upload_url()
+
+        self.assertEqual(
+            upload_url,
+            "https://gate.example/sandbox-connect/v1/sandboxes/sbx-test/"
+            "proxy/44772/files/upload",
+        )
+
+    def test_fast_upload_failure_without_body_reports_curl_error(self) -> None:
+        instance = object.__new__(
+            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
+        )
+        instance._sandbox_id = "sbx-test"
+        instance._access_token = "secret-sandbox-token"
+        instance.logger = Mock()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "agent.tgz"
+            source.write_bytes(b"agent-package")
+            with (
+                patch.object(
+                    yicloud_opensandbox.subprocess,
+                    "run",
+                    return_value=SimpleNamespace(
+                        returncode=28,
+                        stdout="000",
+                        stderr="connection timed out",
+                    ),
+                ),
+                self.assertRaisesRegex(RuntimeError, "connection timed out"),
+            ):
+                instance._upload_file_fast_sync(
+                    source,
+                    "/opt/tb-opik/agent.tgz",
+                    "https://gate.example/files/upload",
+                )
+
+    def test_large_fast_upload_is_chunked_and_reassembled(self) -> None:
+        instance = object.__new__(
+            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
+        )
+        instance._uses_s3_upload = Mock(return_value=False)
+        instance._fast_upload_url = Mock(
+            return_value="https://gate.example/files/upload"
+        )
+        uploaded = []
+
+        def capture_upload(content, target_path, _filename):
+            uploaded.append((content, target_path))
+
+        instance._upload_chunk_sync = capture_upload
+        instance.exec = AsyncMock(
+            return_value=SimpleNamespace(return_code=0, stdout="", stderr="")
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "runtime.tgz"
+            source.write_bytes(b"abcdefghi")
+            source.chmod(0o755)
+            with (
+                patch.object(
+                    yicloud_opensandbox, "FAST_UPLOAD_CHUNK_BYTES", 4
+                ),
+                patch.dict(
+                    yicloud_opensandbox.os.environ,
+                    {"YICLOUD_SANDBOX_FAST_UPLOAD_ORIGIN": ""},
+                ),
+            ):
+                asyncio.run(
+                    instance.upload_file(source, "/opt/tools/runtime.tgz")
+                )
+
+        self.assertEqual(
+            [part[0] for part in uploaded], [b"abcd", b"efgh", b"i"]
+        )
+        self.assertEqual(len({part[1] for part in uploaded}), 3)
+        commands = [call.args[0] for call in instance.exec.await_args_list]
+        self.assertTrue(any("base64 -d" in command for command in commands))
+        self.assertTrue(any("chmod 755" in command for command in commands))
+
     def test_chunked_upload_restores_source_mode(self) -> None:
         instance = object.__new__(
             yicloud_opensandbox.YiCloudOpenSandboxEnvironment
@@ -993,6 +1809,63 @@ class YiCloudOpenSandboxTest(unittest.TestCase):
 
         commands = [call.args[0] for call in instance.exec.await_args_list]
         self.assertIn("chmod 755 /opt/tools/tool", commands)
+
+    def test_delete_disconnect_does_not_replace_completed_trial(self) -> None:
+        instance = object.__new__(
+            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
+        )
+        instance._sandbox_id = "sbx-test"
+        instance._project_name = "test-project"
+        instance._environment_id = "env-test"
+        instance._sandbox_name = "trial-test"
+        instance._cleanup_wait_sec = 1
+        instance.logger = Mock()
+        instance._detach_sandbox = Mock()
+        sandbox = Mock()
+        sandbox.models = SimpleNamespace(
+            DeleteSandboxReq=Request,
+            ListSandboxesReq=Request,
+        )
+        sandbox.delete_sandbox.side_effect = ConnectionError(
+            "response disconnected"
+        )
+        # The request can have succeeded even when its response was lost.
+        sandbox.list_sandboxes.return_value = SimpleNamespace(Items=[])
+        instance._sandbox_service = sandbox
+
+        asyncio.run(instance._delete_sandbox())
+
+        sandbox.delete_sandbox.assert_called_once()
+        sandbox.list_sandboxes.assert_called_once()
+        instance._detach_sandbox.assert_called_once()
+        instance.logger.warning.assert_called_once()
+
+    def test_batch_delete_disconnect_is_confirmed_by_listing(self) -> None:
+        instance = object.__new__(
+            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
+        )
+        instance._project_name = "test-project"
+        instance._environment_id = "env-test"
+        instance.logger = Mock()
+        sandbox = Mock()
+        sandbox.models = SimpleNamespace(
+            BatchDeleteSandboxesReq=Request,
+            ListSandboxesReq=Request,
+        )
+        sandbox.batch_delete_sandboxes.side_effect = ConnectionError(
+            "response disconnected"
+        )
+        sandbox.list_sandboxes.return_value = SimpleNamespace(Items=[])
+        instance._sandbox_service = sandbox
+
+        deleted = asyncio.run(
+            instance._batch_delete_sandboxes({"sbx-main", "sbx-worker"})
+        )
+
+        self.assertTrue(deleted)
+        sandbox.batch_delete_sandboxes.assert_called_once()
+        sandbox.list_sandboxes.assert_called_once()
+        instance.logger.warning.assert_called_once()
 
     def test_execd_upload_uses_binary_multipart_metadata(self) -> None:
         instance = object.__new__(
@@ -1053,6 +1926,59 @@ class YiCloudOpenSandboxTest(unittest.TestCase):
         )
         self.assertIn(b'"mode":600', prepared.body)
         self.assertEqual(prepared.headers["X-OGW-SIGN"], "signed")
+
+    def test_execd_upload_retries_transient_disconnect(self) -> None:
+        instance = object.__new__(
+            yicloud_opensandbox.YiCloudOpenSandboxEnvironment
+        )
+        instance._command_url = (
+            "https://gate.example/sandbox-connect/v1/sandboxes/sbx-test/"
+            "proxy/44772/command"
+        )
+        instance._request_timeout_sec = 180
+        instance._signed_headers = Mock(return_value={})
+        instance.logger = Mock()
+        sends = []
+
+        class FakeResponse:
+            ok = True
+            status_code = 200
+            text = ""
+
+        class FakeSession:
+            trust_env = True
+
+            def prepare_request(self, request):
+                return (
+                    yicloud_opensandbox.requests.sessions.Session()
+                    .prepare_request(request)
+                )
+
+            def send(self, prepared, timeout):
+                sends.append((prepared, timeout))
+                if len(sends) == 1:
+                    raise yicloud_opensandbox.requests.ConnectionError(
+                        "response disconnected"
+                    )
+                return FakeResponse()
+
+        with (
+            patch.object(
+                yicloud_opensandbox.requests,
+                "Session",
+                FakeSession,
+            ),
+            patch.object(yicloud_opensandbox.time, "sleep") as sleep,
+        ):
+            instance._upload_chunk_sync(
+                b"agent-package",
+                "/tmp/harbor-upload.chunk",
+                "agent.tgz",
+            )
+
+        self.assertEqual(len(sends), 2)
+        sleep.assert_called_once_with(1)
+        instance.logger.warning.assert_called_once()
 
 
 if __name__ == "__main__":

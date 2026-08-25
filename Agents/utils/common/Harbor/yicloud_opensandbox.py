@@ -20,6 +20,7 @@ import subprocess
 import tarfile
 import tempfile
 import time
+import uuid
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
@@ -50,6 +51,13 @@ COMPOSE_START_MARKER_PREFIX = "/tmp/.harbor-compose-start-"
 # above. Base64 expands each chunk by 4/3, so 512 KiB leaves enough room for
 # multipart metadata while avoiding thousands of tiny requests.
 UPLOAD_CHUNK_BYTES = 512 * 1024
+FAST_UPLOAD_CHUNK_BYTES = 512 * 1024
+DEFAULT_EXECD_REQUEST_ATTEMPTS = 4
+SANDBOX_STATUS_REQUEST_ATTEMPTS = 5
+CONTROL_PLANE_AUTH_ATTEMPTS = 5
+EXECD_DETACHED_COMMAND_MIN_TIMEOUT_SEC = 300
+EXECD_DETACHED_POLL_INTERVAL_SEC = 5
+DETACHED_PENDING_MARKER = "__HARBOR_YICLOUD_DETACHED_PENDING__"
 S3_HTTP_BOOTSTRAP_PATH = "/tmp/.harbor-s3-http-get-v1.sh"
 # Current YiCloud task images are Linux/amd64 glibc images and normally carry
 # curl, wget, or python3. A few minimal images only carry Bash. For those
@@ -105,6 +113,32 @@ cat <&3 >"$output"
 
 class YiCloudSandboxReadyTimeoutError(RuntimeError):
     """The YiCloud control plane did not schedule a Sandbox before our deadline."""
+
+
+def _execd_request_attempts() -> int:
+    return _positive_int(
+        os.environ.get(
+            "YICLOUD_EXECD_REQUEST_ATTEMPTS",
+            str(DEFAULT_EXECD_REQUEST_ATTEMPTS),
+        ),
+        "YICLOUD_EXECD_REQUEST_ATTEMPTS",
+    )
+
+
+def _retryable_execd_error(error: requests.RequestException) -> bool:
+    if isinstance(error, requests.HTTPError):
+        return (
+            error.response is not None
+            and error.response.status_code in {502, 503, 504}
+        )
+    return isinstance(
+        error,
+        (
+            requests.ConnectionError,
+            requests.Timeout,
+            requests.exceptions.ChunkedEncodingError,
+        ),
+    )
 
 
 class ServiceRuntime:
@@ -213,7 +247,45 @@ def _access_token_of(data: Any) -> str:
 
 
 def _image_ref_of(data: Any) -> str:
-    return str(getattr(getattr(data, "Image", None), "Ref", "") or "").strip()
+    image = getattr(data, "Image", None)
+    return str(
+        getattr(image, "Ref", "") or getattr(image, "Uri", "") or ""
+    ).strip()
+
+
+def _image_ref_aliases(image_ref: str) -> set[str]:
+    value = str(image_ref or "").strip()
+    if not value:
+        return set()
+    aliases = {value}
+    if "://" in value:
+        path = urlsplit(value).path.lstrip("/")
+        if path:
+            aliases.add(path)
+    else:
+        normalized = _yicloud_image_ref(value)
+        if normalized != value:
+            aliases.add(normalized)
+    return aliases
+
+
+def _is_external_image_ref(image_ref: str) -> bool:
+    value = str(image_ref or "").strip()
+    return "://" in value or _yicloud_image_ref(value) != value
+
+
+def _host_routable_proxy_url(proxy_url: str) -> str:
+    origin = os.environ.get("YICLOUD_SANDBOX_PROXY_ORIGIN", "").strip()
+    if not origin:
+        return proxy_url
+    source = urlsplit(proxy_url)
+    target = urlsplit(origin)
+    if target.scheme not in {"http", "https"} or not target.netloc:
+        raise ValueError(
+            "YICLOUD_SANDBOX_PROXY_ORIGIN must be an HTTP(S) origin"
+        )
+    path = f"{target.path.rstrip('/')}/{source.path.lstrip('/')}"
+    return urlunsplit((target.scheme, target.netloc, path, source.query, ""))
 
 
 def _environment_id_by_exact_name(
@@ -265,7 +337,15 @@ def _validate_sandbox_binding(
             f"expected={expected_environment_id!r}, "
             f"actual={actual_environment_id!r}"
         )
-    if actual_image_ref != expected_image_ref:
+    aliases_match = _image_ref_aliases(actual_image_ref).intersection(
+        _image_ref_aliases(expected_image_ref)
+    )
+    registry_mismatch = (
+        actual_image_ref != expected_image_ref
+        and _is_external_image_ref(actual_image_ref)
+        and _is_external_image_ref(expected_image_ref)
+    )
+    if registry_mismatch or not aliases_match:
         raise RuntimeError(
             "YiCloud Sandbox image binding mismatch: "
             f"expected={expected_image_ref!r}, actual={actual_image_ref!r}"
@@ -278,6 +358,7 @@ def _command_url_of(data: Any) -> str:
         proxy_url = str(getattr(endpoint, "ProxyUrl", "") or "")
         if not proxy_url.startswith(("http://", "https://")):
             continue
+        proxy_url = _host_routable_proxy_url(proxy_url)
         parsed = urlsplit(proxy_url)
         path = parsed.path.rstrip("/")
         path = path.removesuffix("/ping")
@@ -616,6 +697,35 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
         normalized = re.sub(r"[^a-z0-9-]+", "-", raw).strip("-")
         return (normalized or "harbor-trial")[:63].rstrip("-")
 
+    async def _retry_control_plane_auth(
+        self,
+        operation: str,
+        function: Any,
+        *args: Any,
+    ) -> Any:
+        for attempt in range(1, CONTROL_PLANE_AUTH_ATTEMPTS + 1):
+            try:
+                return await asyncio.to_thread(function, *args)
+            except Exception as error:
+                if (
+                    getattr(error, "code", None) != 101
+                    or attempt == CONTROL_PLANE_AUTH_ATTEMPTS
+                ):
+                    raise
+                delay = min(2 ** (attempt - 1), 5)
+                self.logger.warning(
+                    "YiCloud control-plane authentication failed "
+                    "transiently during %s; retrying in %ss "
+                    "(attempt %s/%s): %s",
+                    operation,
+                    delay,
+                    attempt,
+                    CONTROL_PLANE_AUTH_ATTEMPTS,
+                    error,
+                )
+                await asyncio.sleep(delay)
+        raise AssertionError("unreachable")
+
     async def _wait_until_running(self, created: Any) -> Any:
         sandbox = self._sandbox_service
         assert sandbox is not None
@@ -626,16 +736,45 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
         current = created
         last_state = _state_of(current) or "unknown"
         last_reason = _status_reason_of(current)
+        consecutive_status_errors = 0
 
         while time.monotonic() < deadline:
-            current = await asyncio.to_thread(
-                sandbox.get_sandbox,
-                None,
-                sandbox.models.GetSandboxReq(
-                    ProjectName=self._project_name,
-                    SandboxId=self._sandbox_id,
-                ),
-            )
+            try:
+                current = await asyncio.to_thread(
+                    sandbox.get_sandbox,
+                    None,
+                    sandbox.models.GetSandboxReq(
+                        ProjectName=self._project_name,
+                        SandboxId=self._sandbox_id,
+                    ),
+                )
+            except Exception as error:
+                consecutive_status_errors += 1
+                if (
+                    consecutive_status_errors
+                    >= SANDBOX_STATUS_REQUEST_ATTEMPTS
+                ):
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                delay = min(
+                    2 ** (consecutive_status_errors - 1),
+                    5,
+                    remaining,
+                )
+                self.logger.warning(
+                    "YiCloud Sandbox status request failed transiently; "
+                    "retrying in %ss (attempt %s/%s) sandbox_id=%s: %s",
+                    delay,
+                    consecutive_status_errors,
+                    SANDBOX_STATUS_REQUEST_ATTEMPTS,
+                    self._sandbox_id,
+                    error,
+                )
+                await asyncio.sleep(delay)
+                continue
+            consecutive_status_errors = 0
             now = time.monotonic()
             state = _state_of(current) or "unknown"
             reason = _status_reason_of(current)
@@ -670,6 +809,73 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
             f"{self._ready_timeout_sec}); last_state={last_state}; "
             f"reason={last_reason or '<none>'}; environment_id="
             f"{self._environment_id}; image_ref={self._image_ref}"
+        )
+
+    def _ping_execd_sync(
+        self,
+        command_url: str | None = None,
+        access_token: str | None = None,
+    ) -> None:
+        url = self._execd_url("/ping", command_url=command_url)
+        session = requests.Session()
+        session.trust_env = False
+        response = session.get(
+            url,
+            headers=self._signed_headers(
+                "",
+                url=url,
+                access_token=access_token,
+                accept="application/json",
+            ),
+            timeout=(10, 20),
+        )
+        response.raise_for_status()
+
+    async def _wait_until_execd_ready(
+        self, runtime: ServiceRuntime | None = None
+    ) -> None:
+        ready_timeout_sec = self._ready_timeout_sec
+        deadline = time.monotonic() + ready_timeout_sec
+        last_error: requests.RequestException | None = None
+        sandbox_id = (
+            runtime.sandbox_id
+            if runtime is not None
+            else getattr(self, "_sandbox_id", "")
+        )
+        command_url = (
+            runtime.command_url
+            if runtime is not None
+            else getattr(self, "_command_url", "")
+        )
+        access_token = (
+            runtime.access_token
+            if runtime is not None
+            else getattr(self, "_access_token", "")
+        )
+        if runtime is not None and not command_url:
+            raise RuntimeError(
+                f"OpenSandbox service {runtime.name!r} returned no command URL"
+            )
+        while time.monotonic() < deadline:
+            try:
+                await asyncio.to_thread(
+                    self._ping_execd_sync,
+                    command_url,
+                    access_token,
+                )
+                return
+            except requests.RequestException as error:
+                last_error = error
+                self.logger.warning(
+                    "YiCloud Sandbox is running but execd is not ready; "
+                    "retrying sandbox_id=%s: %s",
+                    sandbox_id,
+                    error,
+                )
+                await asyncio.sleep(3)
+        raise RuntimeError(
+            f"YiCloud Sandbox {sandbox_id} execd did not become ready "
+            f"within {ready_timeout_sec}s: {last_error}"
         )
 
     def _detach_sandbox(self) -> None:
@@ -742,12 +948,34 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
         assert sandbox is not None
         deadline = time.monotonic() + self._ready_timeout_sec
         current = created
+        consecutive_status_errors = 0
         while time.monotonic() < deadline:
-            current = await asyncio.to_thread(
-                sandbox.get_sandbox,
-                None,
-                sandbox.models.GetSandboxReq(ProjectName=self._project_name, SandboxId=runtime.sandbox_id),
-            )
+            try:
+                current = await asyncio.to_thread(
+                    sandbox.get_sandbox,
+                    None,
+                    sandbox.models.GetSandboxReq(ProjectName=self._project_name, SandboxId=runtime.sandbox_id),
+                )
+            except Exception as error:
+                consecutive_status_errors += 1
+                if consecutive_status_errors >= SANDBOX_STATUS_REQUEST_ATTEMPTS:
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                delay = min(2 ** (consecutive_status_errors - 1), 5, remaining)
+                self.logger.warning(
+                    "YiCloud Sandbox status request failed transiently; "
+                    "retrying in %ss (attempt %s/%s) sandbox_id=%s: %s",
+                    delay,
+                    consecutive_status_errors,
+                    SANDBOX_STATUS_REQUEST_ATTEMPTS,
+                    runtime.sandbox_id,
+                    error,
+                )
+                await asyncio.sleep(delay)
+                continue
+            consecutive_status_errors = 0
             state = _state_of(current) or "unknown"
             if state == "running":
                 return current
@@ -868,46 +1096,97 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
             return True
         deadline = time.monotonic() + self._cleanup_wait_sec
         while time.monotonic() < deadline:
-            remaining: set[str] = set()
-            offset = 0
-            while True:
-                listed = await asyncio.to_thread(
-                    sandbox.list_sandboxes,
-                    None,
-                    sandbox.models.ListSandboxesReq(
-                        ProjectName=self._project_name,
-                        EnvironmentId=self._environment_id,
-                        Limit=100,
-                        Offset=offset,
-                    ),
-                )
-                items = list(getattr(listed, "Items", None) or [])
-                remaining.update(
-                    str(getattr(item, "Id", "") or "")
-                    for item in items
-                    if str(getattr(item, "Id", "") or "") in sandbox_ids
-                )
-                if len(items) < 100:
-                    break
-                offset += len(items)
+            remaining = await self._listed_sandbox_ids(sandbox_ids)
             if not remaining:
                 return True
             await asyncio.sleep(3)
         return False
+
+    async def _listed_sandbox_ids(self, sandbox_ids: set[str]) -> set[str]:
+        sandbox = self._sandbox_service
+        if sandbox is None or not sandbox_ids:
+            return set()
+        remaining: set[str] = set()
+        offset = 0
+        while True:
+            listed = await asyncio.to_thread(
+                sandbox.list_sandboxes,
+                None,
+                sandbox.models.ListSandboxesReq(
+                    ProjectName=self._project_name,
+                    EnvironmentId=self._environment_id,
+                    Limit=100,
+                    Offset=offset,
+                ),
+            )
+            items = list(getattr(listed, "Items", None) or [])
+            remaining.update(
+                str(getattr(item, "Id", "") or "")
+                for item in items
+                if str(getattr(item, "Id", "") or "") in sandbox_ids
+            )
+            if len(items) < 100:
+                return remaining
+            offset += len(items)
+
+    async def _request_sandbox_deletion(
+        self,
+        operation: str,
+        sandbox_ids: set[str],
+        function: Any,
+        request: Any,
+    ) -> tuple[bool, Any]:
+        """Retry an idempotent delete and confirm ambiguous responses by list."""
+        for attempt in range(1, CONTROL_PLANE_AUTH_ATTEMPTS + 1):
+            try:
+                response = await asyncio.to_thread(function, None, request)
+                return True, response
+            except Exception as error:
+                try:
+                    if not await self._listed_sandbox_ids(sandbox_ids):
+                        self.logger.warning(
+                            "YiCloud Sandbox %s response failed after the "
+                            "Sandbox disappeared; treating cleanup as complete: "
+                            "sandbox_ids=%s error=%s",
+                            operation,
+                            sorted(sandbox_ids),
+                            error,
+                        )
+                        return False, None
+                except Exception:  # noqa: BLE001, S110 - retry idempotent delete
+                    pass
+                if attempt == CONTROL_PLANE_AUTH_ATTEMPTS:
+                    raise
+                delay = min(2 ** (attempt - 1), 5)
+                self.logger.warning(
+                    "YiCloud Sandbox %s failed transiently; retrying in %ss "
+                    "(attempt %s/%s) sandbox_ids=%s: %s",
+                    operation,
+                    delay,
+                    attempt,
+                    CONTROL_PLANE_AUTH_ATTEMPTS,
+                    sorted(sandbox_ids),
+                    error,
+                )
+                await asyncio.sleep(delay)
+        raise AssertionError("unreachable")
 
     async def _batch_delete_sandboxes(self, sandbox_ids: set[str]) -> bool:
         """Request physical removal, then require list invisibility as success."""
         sandbox = self._sandbox_service
         if sandbox is None or not sandbox_ids:
             return True
-        response = await asyncio.to_thread(
+        requested, response = await self._request_sandbox_deletion(
+            "batch deletion",
+            sandbox_ids,
             sandbox.batch_delete_sandboxes,
-            None,
             sandbox.models.BatchDeleteSandboxesReq(
                 ProjectName=self._project_name,
                 Ids=sorted(sandbox_ids),
             ),
         )
+        if not requested:
+            return True
         failed = {
             str(getattr(item, "Id", "") or "")
             for item in (getattr(response, "Failed", None) or [])
@@ -924,14 +1203,17 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
         sandbox = self._sandbox_service
         if sandbox is None or not sandbox_id:
             return True
-        await asyncio.to_thread(
+        requested, _response = await self._request_sandbox_deletion(
+            "deletion",
+            {sandbox_id},
             sandbox.delete_sandbox,
-            None,
             sandbox.models.DeleteSandboxReq(
                 ProjectName=self._project_name,
                 SandboxId=sandbox_id,
             ),
         )
+        if not requested:
+            return True
         return await self._wait_for_sandbox_ids_absent({sandbox_id})
 
     async def _delete_service(self, runtime: ServiceRuntime) -> None:
@@ -1237,7 +1519,12 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
             ports = self._service_ports(runtime.spec)
             if ports:
                 request["Ports"] = [sandbox.models.CreateSandboxReqPort(ContainerPort=port, Name=f"svc-{port}", Purpose=f"Harbor {runtime.name}") for port in ports]
-            created = await asyncio.to_thread(sandbox.create_sandbox, None, sandbox.models.CreateSandboxReq(**request))
+            created = await self._retry_control_plane_auth(
+                f"create composite service {runtime.name}",
+                sandbox.create_sandbox,
+                None,
+                sandbox.models.CreateSandboxReq(**request),
+            )
             runtime.sandbox_id = str(getattr(created, "Id", "") or "")
             if not runtime.sandbox_id:
                 raise RuntimeError(f"OpenSandbox create returned no sandbox ID for service {runtime.name!r}")
@@ -1249,6 +1536,7 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
             runtime.state = "WIRING"
             if not runtime.access_token:
                 raise RuntimeError(f"OpenSandbox service {runtime.name!r} returned no access token")
+            await self._wait_until_execd_ready(runtime)
         await self._wire_service_aliases()
         for runtime in start_order:
             dependencies = runtime.spec.get("depends_on") or {}
@@ -1280,7 +1568,10 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
         self._initialize_service()
         sandbox = self._sandbox_service
         assert sandbox is not None
-        await asyncio.to_thread(self._resolve_environment_id)
+        await self._retry_control_plane_auth(
+            "resolve environment",
+            self._resolve_environment_id,
+        )
         if self._bundle is not None:
             try:
                 await self._start_composite()
@@ -1304,7 +1595,8 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
             return
         self._sandbox_name = self._make_sandbox_name()
 
-        created = await asyncio.to_thread(
+        created = await self._retry_control_plane_auth(
+            "create sandbox",
             sandbox.create_sandbox,
             None,
             sandbox.models.CreateSandboxReq(
@@ -1358,6 +1650,7 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
             if not self._access_token:
                 raise RuntimeError("YiCloud Sandbox returned no access token")
             self._command_url = _command_url_of(current)
+            await self._wait_until_execd_ready()
             setup = await self.exec(
                 "mkdir -p /logs/agent /logs/verifier /logs/artifacts /artifacts && "
                 "chmod 777 /logs/agent /logs/verifier /logs/artifacts /artifacts",
@@ -1425,6 +1718,7 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
         body: str | bytes,
         *,
         url: str | None = None,
+        access_token: str | None = None,
         content_type: str = "application/json",
         accept: str = "text/event-stream",
     ) -> dict[str, str]:
@@ -1438,15 +1732,20 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
             "X-OGW-PUBLIC-KEY": self._base_client.crede.public_key,
             "X-OGW-TICK": timestamp,
             "X-OGW-SIGN": signature,
-            "X-Sandbox-Access-Token": self._access_token,
+            "X-Sandbox-Access-Token": (
+                self._access_token if access_token is None else access_token
+            ),
             "Content-Type": content_type,
             "Accept": accept,
         }
 
-    def _execd_url(self, suffix: str) -> str:
-        if not self._command_url:
+    def _execd_url(
+        self, suffix: str, *, command_url: str | None = None
+    ) -> str:
+        source_url = self._command_url if command_url is None else command_url
+        if not source_url:
             raise RuntimeError("YiCloud Sandbox is not running")
-        parsed = urlsplit(self._command_url)
+        parsed = urlsplit(source_url)
         base_path = parsed.path.rsplit("/", 1)[0]
         return urlunsplit(
             (
@@ -1475,70 +1774,111 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
             },
             separators=(",", ":"),
         )
-        session = requests.Session()
-        session.trust_env = False
-        request = requests.Request(
-            "POST",
-            upload_url,
-            files=[
-                (
-                    "metadata",
+        attempts = _execd_request_attempts()
+        for attempt in range(attempts):
+            session = requests.Session()
+            session.trust_env = False
+            request = requests.Request(
+                "POST",
+                upload_url,
+                files=[
                     (
-                        "metadata.json",
-                        io.BytesIO(metadata.encode()),
-                        "application/json",
+                        "metadata",
+                        (
+                            "metadata.json",
+                            io.BytesIO(metadata.encode()),
+                            "application/json",
+                        ),
                     ),
-                ),
-                (
-                    "file",
                     (
-                        f"{filename}.b64",
-                        io.BytesIO(encoded_content),
-                        "text/plain",
+                        "file",
+                        (
+                            f"{filename}.b64",
+                            io.BytesIO(encoded_content),
+                            "text/plain",
+                        ),
                     ),
-                ),
-            ],
-        )
-        prepared = session.prepare_request(request)
-        if not isinstance(prepared.body, bytes):
-            raise TypeError("execd multipart upload did not produce a binary body")
-        content_type = prepared.headers.get("Content-Type", "")
-        prepared.headers.update(
-            self._signed_headers(
-                prepared.body.decode("ascii"),
-                url=upload_url,
-                content_type=content_type,
-                accept="application/json",
+                ],
             )
-        )
-        response = session.send(
-            prepared,
-            timeout=self._request_timeout_sec + 300,
-        )
-        if not response.ok:
-            raise RuntimeError(
-                "YiCloud execd file upload failed "
-                f"status={response.status_code} body={response.text[:1000]!r}"
+            prepared = session.prepare_request(request)
+            if not isinstance(prepared.body, bytes):
+                raise TypeError(
+                    "execd multipart upload did not produce a binary body"
+                )
+            content_type = prepared.headers.get("Content-Type", "")
+            prepared.headers.update(
+                self._signed_headers(
+                    prepared.body.decode("ascii"),
+                    url=upload_url,
+                    content_type=content_type,
+                    accept="application/json",
+                )
             )
+            try:
+                response = session.send(
+                    prepared,
+                    timeout=self._request_timeout_sec + 300,
+                )
+                if response.ok:
+                    return
+                raise requests.HTTPError(
+                    f"YiCloud execd file upload returned {response.status_code}",
+                    response=response,
+                )
+            except requests.RequestException as error:
+                if (
+                    not _retryable_execd_error(error)
+                    or attempt + 1 == attempts
+                ):
+                    response = getattr(error, "response", None)
+                    if response is not None:
+                        raise RuntimeError(
+                            "YiCloud execd file upload failed "
+                            f"status={response.status_code} "
+                            f"body={response.text[:1000]!r}"
+                        ) from error
+                    raise
+                delay = min(2**attempt, 5)
+                self.logger.warning(
+                    "YiCloud execd file upload failed transiently; "
+                    "retrying in %ss (attempt %s/%s): %s",
+                    delay,
+                    attempt + 1,
+                    attempts,
+                    error,
+                )
+                time.sleep(delay)
 
     def _fast_upload_url(self) -> str:
-        origin = os.environ.get(
-            "YICLOUD_SANDBOX_FAST_UPLOAD_ORIGIN",
-            "https://sandbox.yicloud.com.cn",
-        ).strip()
-        if not origin:
-            return ""
         if not self._sandbox_id:
             raise RuntimeError("YiCloud Sandbox is not running")
-        parsed = urlsplit(origin)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise ValueError(
-                "YICLOUD_SANDBOX_FAST_UPLOAD_ORIGIN must be an HTTP(S) origin"
+        origin = os.environ.get(
+            "YICLOUD_SANDBOX_FAST_UPLOAD_ORIGIN", ""
+        ).strip()
+        if origin:
+            parsed = urlsplit(origin)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError(
+                    "YICLOUD_SANDBOX_FAST_UPLOAD_ORIGIN must be an HTTP(S) "
+                    "origin"
+                )
+            return (
+                f"{origin.rstrip('/')}/sandboxes/{self._sandbox_id}"
+                "/proxy/44772/files/upload"
             )
-        return (
-            f"{origin.rstrip('/')}/sandboxes/{self._sandbox_id}"
-            "/proxy/44772/files/upload"
-        )
+
+        command_url = getattr(self, "_command_url", "")
+        if not command_url:
+            return ""
+        parsed = urlsplit(command_url)
+        command_suffix = "/command"
+        if not parsed.path.endswith(command_suffix):
+            raise RuntimeError(
+                "YiCloud execd command endpoint has an unexpected path: "
+                f"{parsed.path!r}"
+            )
+        path = parsed.path[: -len(command_suffix)] + "/files/upload"
+        return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, ""))
 
     def _upload_file_fast_sync(
         self,
@@ -1607,9 +1947,13 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
             status_text = completed.stdout.strip()
             status = int(status_text) if status_text.isdigit() else 0
             if completed.returncode != 0 or not 200 <= status < 300:
-                body = response_body.read_text(
-                    encoding="utf-8", errors="replace"
-                )[:1000]
+                body = (
+                    response_body.read_text(
+                        encoding="utf-8", errors="replace"
+                    )[:1000]
+                    if response_body.exists()
+                    else ""
+                )
                 raise RuntimeError(
                     "YiCloud fast file upload failed "
                     f"curl_rc={completed.returncode} status={status} "
@@ -1626,7 +1970,128 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
             size / elapsed / 1024 / 1024,
         )
 
-    def _run_command_sync(
+    async def _upload_file_fast(
+        self,
+        source: Path,
+        target_path: str,
+        upload_url: str,
+        mode: str,
+    ) -> None:
+        use_signed_execd = not os.environ.get(
+            "YICLOUD_SANDBOX_FAST_UPLOAD_ORIGIN", ""
+        ).strip()
+        if (
+            not use_signed_execd
+            and source.stat().st_size <= FAST_UPLOAD_CHUNK_BYTES
+        ):
+            await asyncio.to_thread(
+                self._upload_file_fast_sync,
+                source,
+                target_path,
+                upload_url,
+            )
+            return
+
+        remote_prefix = f"/tmp/harbor-fast-upload-{time.time_ns()}"
+        remote_parts: list[str] = []
+        handle = None
+        try:
+            handle = await asyncio.to_thread(source.open, "rb")
+            with tempfile.TemporaryDirectory(
+                prefix="yicloud-fast-upload-parts-"
+            ) as tmp:
+                tmp_dir = Path(tmp)
+                index = 0
+                while chunk := await asyncio.to_thread(
+                    handle.read, FAST_UPLOAD_CHUNK_BYTES
+                ):
+                    remote_part = f"{remote_prefix}-{index:04d}"
+                    if use_signed_execd:
+                        await asyncio.to_thread(
+                            self._upload_chunk_sync,
+                            chunk,
+                            remote_part,
+                            source.name,
+                        )
+                    else:
+                        local_part = tmp_dir / f"part-{index:04d}"
+                        await asyncio.to_thread(local_part.write_bytes, chunk)
+                        await asyncio.to_thread(
+                            self._upload_file_fast_sync,
+                            local_part,
+                            remote_part,
+                            upload_url,
+                        )
+                    remote_parts.append(remote_part)
+                    index += 1
+
+            quoted_target = shlex.quote(target_path)
+            if use_signed_execd:
+                assemble = f": > {quoted_target}"
+                for part in remote_parts:
+                    assemble += (
+                        f" && base64 -d {shlex.quote(part)} >> {quoted_target}"
+                    )
+                assemble += f" && chmod {mode} {quoted_target}"
+            else:
+                quoted_parts = " ".join(
+                    shlex.quote(part) for part in remote_parts
+                )
+                assemble = (
+                    f"cat {quoted_parts} > {quoted_target} && "
+                    f"chmod {mode} {quoted_target}"
+                )
+            assembled = await self.exec(
+                assemble,
+                cwd="/",
+                timeout_sec=300,
+                user="root",
+            )
+            if assembled.return_code != 0:
+                raise RuntimeError(
+                    f"failed to assemble fast upload at {target_path!r}: "
+                    f"{assembled.stderr or assembled.stdout}"
+                )
+        finally:
+            if handle is not None:
+                await asyncio.to_thread(handle.close)
+            if remote_parts:
+                await self.exec(
+                    "rm -f "
+                    + " ".join(shlex.quote(part) for part in remote_parts),
+                    cwd="/",
+                    timeout_sec=60,
+                    user="root",
+                )
+
+    def _cleanup_remote_exec_paths_sync(self, *paths: str) -> None:
+        if not paths or not self._command_url or not self._access_token:
+            return
+        command = "rm -rf " + " ".join(shlex.quote(path) for path in paths)
+        payload = {
+            "command": command,
+            "background": False,
+            "timeout": 30_000,
+            "uid": 0,
+        }
+        body = json.dumps(payload, separators=(",", ":"))
+        try:
+            session = requests.Session()
+            session.trust_env = False
+            response = session.post(
+                self._command_url,
+                headers=self._signed_headers(body),
+                data=body,
+                timeout=30,
+            )
+            response.raise_for_status()
+        except Exception as error:  # noqa: BLE001 - cleanup is best effort
+            self.logger.warning(
+                "YiCloud failed to remove remote exec temporary files: %s",
+                error,
+            )
+
+    def _run_command_direct_sync(
         self,
         command: str,
         cwd: str | None,
@@ -1636,19 +2101,67 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
     ) -> ExecResult:
         if not self._command_url or not self._access_token:
             raise RuntimeError("YiCloud Sandbox is not running")
+        command_id = uuid.uuid4().hex
+        prefix = f"/tmp/harbor-execd-{command_id}"
+        stdout_path = f"{prefix}.stdout"
+        stderr_path = f"{prefix}.stderr"
+        status_path = f"{prefix}.status"
+        lock_path = f"{prefix}.lock"
+        lock_dir = f"{lock_path}.d"
+        cleanup_paths = (
+            lock_path,
+            lock_dir,
+            stdout_path,
+            stderr_path,
+            status_path,
+            f"{status_path}.tmp",
+        )
         wrapped = (
             "set +e\n"
-            "(\n"
+            f"harbor_lock_dir={shlex.quote(lock_dir)}\n"
+            "if command -v flock >/dev/null 2>&1; then\n"
+            f"  exec 9>{shlex.quote(lock_path)}\n"
+            "  flock -x 9\n"
+            "else\n"
+            "  while ! mkdir \"$harbor_lock_dir\" 2>/dev/null; do\n"
+            f"    [ -f {shlex.quote(status_path)} ] && break\n"
+            "    if [ -s \"$harbor_lock_dir/pid\" ]; then\n"
+            "      harbor_lock_pid=$(cat \"$harbor_lock_dir/pid\")\n"
+            "      if ! kill -0 \"$harbor_lock_pid\" 2>/dev/null; then\n"
+            "        rm -rf \"$harbor_lock_dir\"\n"
+            "        continue\n"
+            "      fi\n"
+            "    fi\n"
+            "    sleep 1\n"
+            "  done\n"
+            f"  if [ ! -f {shlex.quote(status_path)} ] "
+            "&& [ -d \"$harbor_lock_dir\" ]; then\n"
+            "    printf '%s\\n' \"$$\" > \"$harbor_lock_dir/pid\"\n"
+            "    trap 'rm -rf \"$harbor_lock_dir\"' EXIT\n"
+            "    trap 'exit 129' HUP\n"
+            "    trap 'exit 130' INT\n"
+            "    trap 'exit 143' TERM\n"
+            "  fi\n"
+            "fi\n"
+            f"if [ ! -f {shlex.quote(status_path)} ]; then\n"
+            "  (\n"
             f"{command}\n"
-            ")\n"
-            "harbor_rc=$?\n"
+            f"  ) > {shlex.quote(stdout_path)} 2> {shlex.quote(stderr_path)}\n"
+            "  harbor_rc=$?\n"
+            f"  printf '%s\\n' \"$harbor_rc\" > {shlex.quote(status_path)}.tmp\n"
+            f"  mv -f {shlex.quote(status_path)}.tmp {shlex.quote(status_path)}\n"
+            "fi\n"
+            f"cat {shlex.quote(stdout_path)} 2>/dev/null\n"
+            f"cat {shlex.quote(stderr_path)} >&2 2>/dev/null\n"
+            f"harbor_rc=$(cat {shlex.quote(status_path)})\n"
             f"printf '\\n{EXIT_MARKER}%s\\n' \"$harbor_rc\"\n"
             "exit \"$harbor_rc\"\n"
         )
+        effective_timeout_sec = timeout_sec or 3600
         payload = {
             "command": wrapped,
             "background": False,
-            "timeout": (timeout_sec or 3600) * 1000,
+            "timeout": effective_timeout_sec * 1000,
             "envs": env,
         }
         if cwd is not None:
@@ -1656,32 +2169,274 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
         if uid is not None:
             payload["uid"] = uid
         body = json.dumps(payload, separators=(",", ":"))
-        session = requests.Session()
-        session.trust_env = False
-        response = session.post(
-            self._command_url,
-            headers=self._signed_headers(body),
-            data=body,
-            timeout=(timeout_sec or 3600) + 60,
+        request_timeout_sec = effective_timeout_sec + 60
+        attempts = _execd_request_attempts()
+        for attempt in range(attempts):
+            try:
+                session = requests.Session()
+                session.trust_env = False
+                response = session.post(
+                    self._command_url,
+                    headers=self._signed_headers(body),
+                    data=body,
+                    timeout=request_timeout_sec,
+                )
+                response.raise_for_status()
+                response_text = response.text
+                break
+            except requests.RequestException as error:
+                if (
+                    not _retryable_execd_error(error)
+                    or attempt + 1 == attempts
+                ):
+                    raise
+                delay = min(2**attempt, 5)
+                self.logger.warning(
+                    "YiCloud execd command request failed transiently; "
+                    "retrying in %ss (attempt %s/%s): %s",
+                    delay,
+                    attempt + 1,
+                    attempts,
+                    error,
+                )
+                time.sleep(delay)
+        else:
+            raise AssertionError("unreachable")
+        try:
+            events = _parse_sse(response_text)
+            stdout = "".join(
+                str(event.get("text", ""))
+                for event in events
+                if event.get("type") == "stdout"
+            )
+            stderr = "".join(
+                str(event.get("text", ""))
+                for event in events
+                if event.get("type") == "stderr"
+            )
+            matches = re.findall(rf"{re.escape(EXIT_MARKER)}(\d+)", stdout)
+            return_code = int(matches[-1]) if matches else 1
+            stdout = re.sub(
+                rf"\n?{re.escape(EXIT_MARKER)}\d+\n?", "", stdout
+            )
+            return ExecResult(
+                stdout=stdout,
+                stderr=stderr,
+                return_code=return_code,
+            )
+        finally:
+            self._cleanup_remote_exec_paths_sync(*cleanup_paths)
+
+    def _run_command_detached_sync(
+        self,
+        command: str,
+        cwd: str | None,
+        env: dict[str, str],
+        timeout_sec: int,
+        uid: int | None = None,
+    ) -> ExecResult:
+        command_id = uuid.uuid4().hex
+        prefix = f"/tmp/harbor-detached-{command_id}"
+        script_path = f"{prefix}.sh"
+        stdout_path = f"{prefix}.stdout"
+        stderr_path = f"{prefix}.stderr"
+        status_path = f"{prefix}.status"
+        pid_path = f"{prefix}.pid"
+        launch_dir = f"{prefix}.launch"
+        cleanup_paths = (
+            script_path,
+            stdout_path,
+            stderr_path,
+            status_path,
+            f"{status_path}.tmp",
+            pid_path,
+            f"{pid_path}.tmp",
+            launch_dir,
         )
-        response.raise_for_status()
-        events = _parse_sse(response.text)
-        stdout = "".join(
-            str(event.get("text", ""))
-            for event in events
-            if event.get("type") == "stdout"
+        script = (
+            "#!/bin/sh\n"
+            "set +e\n"
+            f"printf '%s\\n' \"$$\" > {shlex.quote(pid_path)}.tmp\n"
+            f"mv -f {shlex.quote(pid_path)}.tmp {shlex.quote(pid_path)}\n"
+            "(\n"
+            f"{command}\n"
+            f") > {shlex.quote(stdout_path)} 2> {shlex.quote(stderr_path)}\n"
+            "harbor_rc=$?\n"
+            f"printf '%s\\n' \"$harbor_rc\" > {shlex.quote(status_path)}.tmp\n"
+            f"mv -f {shlex.quote(status_path)}.tmp {shlex.quote(status_path)}\n"
+            "exit \"$harbor_rc\"\n"
         )
-        stderr = "".join(
-            str(event.get("text", ""))
-            for event in events
-            if event.get("type") == "stderr"
+        encoded_script = base64.b64encode(script.encode()).decode()
+        launch_command = (
+            f"harbor_pid_path={shlex.quote(pid_path)}\n"
+            f"harbor_launch_dir={shlex.quote(launch_dir)}\n"
+            "harbor_detached_started() {\n"
+            f"  [ -f {shlex.quote(status_path)} ] && return 0\n"
+            "  [ -s \"$harbor_pid_path\" ] || return 1\n"
+            "  harbor_pid=$(cat \"$harbor_pid_path\")\n"
+            "  case \"$harbor_pid\" in ''|*[!0-9]*) return 1 ;; esac\n"
+            "  kill -0 \"$harbor_pid\" 2>/dev/null\n"
+            "}\n"
+            "if [ -d \"$harbor_launch_dir\" ] "
+            "&& ! harbor_detached_started; then\n"
+            "  for harbor_wait in 1 2 3 4 5; do\n"
+            "    sleep 1\n"
+            "    harbor_detached_started && break\n"
+            "  done\n"
+            "fi\n"
+            "if ! harbor_detached_started; then\n"
+            "  rm -rf \"$harbor_launch_dir\"\n"
+            "  mkdir \"$harbor_launch_dir\" || exit 75\n"
+            f"  printf %s {shlex.quote(encoded_script)} | base64 -d > "
+            f"{shlex.quote(script_path)} && chmod 700 {shlex.quote(script_path)} "
+            "|| { rm -rf \"$harbor_launch_dir\"; exit 75; }\n"
+            "  if command -v bash >/dev/null 2>&1; then\n"
+            "    harbor_shell=$(command -v bash)\n"
+            "  else\n"
+            "    harbor_shell=/bin/sh\n"
+            "  fi\n"
+            "  if command -v setsid >/dev/null 2>&1; then\n"
+            f"    nohup setsid \"$harbor_shell\" {shlex.quote(script_path)} "
+            "</dev/null >/dev/null 2>&1 9>&- &\n"
+            "  else\n"
+            f"    nohup \"$harbor_shell\" {shlex.quote(script_path)} "
+            "</dev/null >/dev/null 2>&1 9>&- &\n"
+            "  fi\n"
+            "  for harbor_wait in 1 2 3 4 5; do\n"
+            "    harbor_detached_started && break\n"
+            "    sleep 1\n"
+            "  done\n"
+            "  rm -rf \"$harbor_launch_dir\"\n"
+            "  harbor_detached_started || exit 75\n"
+            "fi\n"
         )
-        matches = re.findall(rf"{re.escape(EXIT_MARKER)}(\d+)", stdout)
-        return_code = int(matches[-1]) if matches else 1
-        stdout = re.sub(
-            rf"\n?{re.escape(EXIT_MARKER)}\d+\n?", "", stdout
+        launched = self._run_command_direct_sync(
+            launch_command,
+            cwd,
+            env,
+            60,
+            uid,
         )
-        return ExecResult(stdout=stdout, stderr=stderr, return_code=return_code)
+        if launched.return_code != 0:
+            self._cleanup_remote_exec_paths_sync(*cleanup_paths)
+            return launched
+
+        poll_command = (
+            f"if [ ! -f {shlex.quote(status_path)} ]; then\n"
+            f"  if [ -f {shlex.quote(pid_path)} ] "
+            f"&& ! kill -0 \"$(cat {shlex.quote(pid_path)})\" 2>/dev/null; then\n"
+            "    printf 'detached command exited without status\\n' >&2\n"
+            "    exit 125\n"
+            "  fi\n"
+            f"  printf %s {shlex.quote(DETACHED_PENDING_MARKER)}\n"
+            "  exit 0\n"
+            "fi\n"
+            f"cat {shlex.quote(stdout_path)} 2>/dev/null\n"
+            f"cat {shlex.quote(stderr_path)} >&2 2>/dev/null\n"
+            f"harbor_rc=$(cat {shlex.quote(status_path)})\n"
+            "exit \"$harbor_rc\"\n"
+        )
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            result = self._run_command_direct_sync(
+                poll_command,
+                "/",
+                {},
+                60,
+                uid,
+            )
+            if result.stdout != DETACHED_PENDING_MARKER:
+                self._cleanup_remote_exec_paths_sync(*cleanup_paths)
+                return result
+            time.sleep(
+                min(
+                    EXECD_DETACHED_POLL_INTERVAL_SEC,
+                    max(deadline - time.monotonic(), 0),
+                )
+            )
+
+        terminate_command = (
+            f"if [ -s {shlex.quote(pid_path)} ]; then\n"
+            f"  harbor_pid=$(cat {shlex.quote(pid_path)})\n"
+            "  if kill -TERM -- \"-$harbor_pid\" 2>/dev/null; then\n"
+            "    sleep 2\n"
+            "    kill -KILL -- \"-$harbor_pid\" 2>/dev/null || true\n"
+            "  else\n"
+            "    harbor_process_tree=\"$harbor_pid\"\n"
+            "    harbor_frontier=\"$harbor_pid\"\n"
+            "    while [ -n \"$harbor_frontier\" ]; do\n"
+            "      harbor_next=\"\"\n"
+            "      for harbor_parent in $harbor_frontier; do\n"
+            "        for harbor_status in /proc/[0-9]*/status; do\n"
+            "          [ -r \"$harbor_status\" ] || continue\n"
+            "          harbor_child=${harbor_status#/proc/}\n"
+            "          harbor_child=${harbor_child%/status}\n"
+            "          harbor_ppid=\"\"\n"
+            "          while IFS=: read -r harbor_key harbor_value; do\n"
+            "            if [ \"$harbor_key\" = PPid ]; then\n"
+            "              harbor_ppid=\"${harbor_value#\"${harbor_value%%[![:space:]]*}\"}\"\n"
+            "              break\n"
+            "            fi\n"
+            "          done < \"$harbor_status\"\n"
+            "          if [ \"$harbor_ppid\" = \"$harbor_parent\" ]; then\n"
+            "            harbor_next=\"$harbor_next $harbor_child\"\n"
+            "          fi\n"
+            "        done\n"
+            "      done\n"
+            "      [ -n \"$harbor_next\" ] || break\n"
+            "      harbor_process_tree=\"$harbor_next $harbor_process_tree\"\n"
+            "      harbor_frontier=\"$harbor_next\"\n"
+            "    done\n"
+            "    for harbor_tree_pid in $harbor_process_tree; do\n"
+            "      kill -TERM \"$harbor_tree_pid\" 2>/dev/null || true\n"
+            "    done\n"
+            "    sleep 2\n"
+            "    for harbor_tree_pid in $harbor_process_tree; do\n"
+            "      kill -KILL \"$harbor_tree_pid\" 2>/dev/null || true\n"
+            "    done\n"
+            "  fi\n"
+            "fi\n"
+        )
+        self._run_command_direct_sync(
+            terminate_command,
+            "/",
+            {},
+            60,
+            uid,
+        )
+        self._cleanup_remote_exec_paths_sync(*cleanup_paths)
+        return ExecResult(
+            stdout="",
+            stderr=f"command timed out after {timeout_sec}s",
+            return_code=124,
+        )
+
+    def _run_command_sync(
+        self,
+        command: str,
+        cwd: str | None,
+        env: dict[str, str],
+        timeout_sec: int | None,
+        uid: int | None = None,
+    ) -> ExecResult:
+        if (
+            timeout_sec is not None
+            and timeout_sec > EXECD_DETACHED_COMMAND_MIN_TIMEOUT_SEC
+        ):
+            return self._run_command_detached_sync(
+                command,
+                cwd,
+                env,
+                timeout_sec,
+                uid,
+            )
+        return self._run_command_direct_sync(
+            command,
+            cwd,
+            env,
+            timeout_sec,
+            uid,
+        )
 
     def _resolve_exec_uid(self, user: str | int | None) -> int | None:
         if user is None:
@@ -1809,11 +2564,11 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
             ) as tmp:
                 source = Path(tmp) / "http-get.sh"
                 source.write_text(S3_HTTP_BOOTSTRAP, encoding="utf-8")
-                await asyncio.to_thread(
-                    self._upload_file_fast_sync,
+                await self._upload_file_fast(
                     source,
                     S3_HTTP_BOOTSTRAP_PATH,
                     upload_url,
+                    "700",
                 )
             prepared = await self.exec(
                 f"chmod 700 {shlex.quote(S3_HTTP_BOOTSTRAP_PATH)}",
@@ -1957,11 +2712,11 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
         if prepare.return_code != 0:
             raise RuntimeError(f"failed to prepare upload target {target_path!r}")
         if fast_upload_url:
-            await asyncio.to_thread(
-                self._upload_file_fast_sync,
+            await self._upload_file_fast(
                 source,
                 target_path,
                 fast_upload_url,
+                mode,
             )
             return
         handle = None

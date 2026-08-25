@@ -269,6 +269,9 @@ validate_environment_backend() {
         exit 1
       fi
       echo "[INFO] OpenSandbox environment binding: id=${YICLOUD_SANDBOX_ENVIRONMENT_ID:-<resolved-by-name>} name=${YICLOUD_SANDBOX_ENVIRONMENT_NAME:-<lookup-by-id>}"
+      if ! resolve_opensandbox_task_image_ref; then
+        exit 1
+      fi
       if [[ -z "$HARBOR_OPENSANDBOX_IMAGE_REF" \
         && -z "$HARBOR_OPENSANDBOX_BUNDLE_MANIFEST" ]]; then
         if [[ -z "$YICLOUD_HARBOR_PROJECT" ]]; then
@@ -345,6 +348,54 @@ validate_environment_backend() {
   fi
 }
 
+opensandbox_task_image_ref() {
+  local task_dir="${DATASET_PATH:-}/${INCLUDE_TASKS:-}"
+  local task_config="$task_dir/task.toml"
+  local parser_python="${HARBOR_OPIK_PYTHON:-}"
+  [[ -f "$task_config" ]] || return 0
+  if [[ -z "$parser_python" || ! -x "$parser_python" ]]; then
+    parser_python="$(command -v python3 2>/dev/null || true)"
+  fi
+  if [[ -z "$parser_python" || ! -x "$parser_python" ]]; then
+    echo "[ERROR] Python 3 is required to read $task_config" >&2
+    return 1
+  fi
+  "$parser_python" -c '
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from qz_template_mapping import QzTemplateMappingError, load_task_image
+
+try:
+    print(load_task_image(Path(sys.argv[2])))
+except QzTemplateMappingError as error:
+    if "missing environment.docker_image" not in str(error):
+        raise
+' "$SCRIPT_DIR" "$task_dir"
+}
+
+resolve_opensandbox_task_image_ref() {
+  if [[ "$HARBOR_ENVIRONMENT_TYPE" != "opensandbox" \
+    || -n "$HARBOR_OPENSANDBOX_IMAGE_REF" \
+    || -n "$HARBOR_OPENSANDBOX_BUNDLE_MANIFEST" ]]; then
+    return 0
+  fi
+  local task_image_ref
+  if ! task_image_ref="$(opensandbox_task_image_ref)"; then
+    echo "[ERROR] failed to read OpenSandbox image from task.toml" >&2
+    return 1
+  fi
+  if [[ "$task_image_ref" =~ [[:space:]] ]]; then
+    echo "[ERROR] task docker_image must be a single image reference" >&2
+    return 1
+  fi
+  if [[ -n "$task_image_ref" ]]; then
+    HARBOR_OPENSANDBOX_IMAGE_REF="$task_image_ref"
+    export HARBOR_OPENSANDBOX_IMAGE_REF
+  fi
+}
+
 ensure_environment_backend() {
   validate_environment_backend
   if [[ "$HARBOR_ENVIRONMENT_TYPE" == "docker" ]]; then
@@ -402,6 +453,11 @@ print(ref)
   if [[ -n "$HARBOR_OPENSANDBOX_IMAGE_REF" ]]; then
     # Legacy explicit single-image mode remains supported until the runtime
     # environment consumes Bundle Manifests exclusively.
+    return 0
+  fi
+  resolve_opensandbox_task_image_ref || return 1
+  if [[ -n "$HARBOR_OPENSANDBOX_IMAGE_REF" ]]; then
+    echo "[INFO] using task prebuilt OpenSandbox image: $HARBOR_OPENSANDBOX_IMAGE_REF" >&2
     return 0
   fi
   # DATASET_NAME can have a Harbor Registry alias (for example, seta ->
@@ -794,7 +850,7 @@ run_oracle_task() {
   if [[ "$HARBOR_DRY_RUN" != "1" ]]; then
     harbor_validate_runner_cli
   fi
-  prepare_opensandbox_image_ref "$out_dir/opensandbox-bundle.json"
+  prepare_opensandbox_image_ref "$out_dir/opensandbox-bundle.json" || return 1
 
   local cmd=(
     "$HARBOR_CLI_BIN" run
@@ -1078,7 +1134,7 @@ run_harbor() {
   else
     cmd+=( --path "$DATASET_PATH" )
   fi
-  prepare_opensandbox_image_ref "$out_dir/opensandbox-bundle.json"
+  prepare_opensandbox_image_ref "$out_dir/opensandbox-bundle.json" || return 1
   append_environment_backend_args
   if [[ -n "${HARBOR_VERIFIER_UV_HOME:-}" ]]; then
     cmd+=( --ve "HOME=$HARBOR_VERIFIER_UV_HOME" )
@@ -1434,7 +1490,7 @@ run_opencode_task() {
     else
       cmd+=( --path "$DATASET_PATH" )
     fi
-    prepare_opensandbox_image_ref "$out_dir/opensandbox-bundle.json"
+    prepare_opensandbox_image_ref "$out_dir/opensandbox-bundle.json" || return 1
     append_environment_backend_args
 
     if [[ -n "${HARBOR_AGENT_TIMEOUT_MULTIPLIER:-}" ]]; then

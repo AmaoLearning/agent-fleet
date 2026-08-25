@@ -7,7 +7,9 @@ import io
 import json
 import os
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
@@ -318,6 +320,87 @@ class RolloutRequestContextTest(unittest.TestCase):
 
         self.assertEqual(session, expected_session)
         helper.assert_not_called()
+
+    def test_concurrent_requests_share_one_zellij_initialization(self) -> None:
+        expected_session = MODULE._submission_session_name("ray-submission-test", "seta")
+        helper_started = threading.Event()
+        release_helper = threading.Event()
+
+        def run_helper(*args, **kwargs):
+            helper_started.set()
+            self.assertTrue(release_helper.wait(timeout=5))
+            return 0, f"{expected_session}\n", ""
+
+        self.stack.enter_context(mock.patch.object(MODULE, "JOB_ZELLIJ_LOCKS", {}))
+        self.stack.enter_context(mock.patch.object(MODULE, "JOB_ZELLIJ_READY", {}))
+        exists = self.stack.enter_context(
+            mock.patch.object(MODULE, "_zellij_session_exists", mock.Mock(return_value=True))
+        )
+        helper = self.stack.enter_context(
+            mock.patch.object(MODULE, "_run_helper", mock.Mock(side_effect=run_helper))
+        )
+
+        def ensure() -> str:
+            return MODULE._ensure_submission_zellij(
+                "ray-submission-test",
+                "seta",
+                Path("/tmp/queue"),
+                "model-from-request",
+                "ray-submission-test",
+            )
+
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            first = executor.submit(ensure)
+            self.assertTrue(helper_started.wait(timeout=5))
+            remaining = [executor.submit(ensure) for _ in range(15)]
+            release_helper.set()
+            sessions = [first.result(timeout=5)] + [
+                future.result(timeout=5) for future in remaining
+            ]
+
+        self.assertEqual(sessions, [expected_session] * 16)
+        helper.assert_called_once()
+        self.assertGreaterEqual(exists.call_count, 1)
+
+    def test_cached_session_created_while_waiting_is_revalidated(self) -> None:
+        expected_session = MODULE._submission_session_name(
+            "ray-submission-test", "seta"
+        )
+        helper = mock.Mock(return_value=(0, f"{expected_session}\n", ""))
+
+        self.stack.enter_context(mock.patch.object(MODULE, "JOB_ZELLIJ_LOCKS", {}))
+        self.stack.enter_context(mock.patch.object(MODULE, "JOB_ZELLIJ_READY", {}))
+        self.stack.enter_context(
+            mock.patch.object(
+                MODULE,
+                "_cached_job_session",
+                mock.Mock(side_effect=["", expected_session]),
+            )
+        )
+        exists = self.stack.enter_context(
+            mock.patch.object(
+                MODULE,
+                "_zellij_session_exists",
+                mock.Mock(return_value=False),
+            )
+        )
+        clear = self.stack.enter_context(
+            mock.patch.object(MODULE, "_clear_cached_job_session")
+        )
+        self.stack.enter_context(mock.patch.object(MODULE, "_run_helper", helper))
+
+        session = MODULE._ensure_submission_zellij(
+            "ray-submission-test",
+            "seta",
+            Path("/tmp/queue"),
+            "model-from-request",
+            "ray-submission-test",
+        )
+
+        self.assertEqual(session, expected_session)
+        exists.assert_called_once_with(expected_session)
+        clear.assert_called_once_with(expected_session, expected_session)
+        helper.assert_called_once()
 
     def test_legacy_raw_zellij_session_is_not_reused_for_hashed_queue(self) -> None:
         legacy_session = "harbor-rollout-claude-code-seta-ray-submission-test"
