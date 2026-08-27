@@ -23,13 +23,14 @@ TASKS_DIR="${TASKS_DIR:-$REPO_ROOT/Tasks}"
 HARBOR_CLAUDE_CODE_DIR="${HARBOR_CLAUDE_CODE_DIR:-$AGENTS_DIR/Harbor-claude-code}"
 HARBOR_OPENCODE_DIR="${HARBOR_OPENCODE_DIR:-$AGENTS_DIR/Harbor-opencode}"
 HARBOR_PI_DIR="${HARBOR_PI_DIR:-$AGENTS_DIR/Harbor-pi}"
+HARBOR_DSH_DIR="${HARBOR_DSH_DIR:-$AGENTS_DIR/Harbor-dsh}"
 WORKSPACE_DIR="${WORKSPACE_DIR:-/workspace}"
 
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d-%H%M)-harbor-tui}"
 TOTAL_WORKERS="${TOTAL_WORKERS:-10}"
 N_ATTEMPTS="${N_ATTEMPTS:-1}"
 MAX_RETRIES="${MAX_RETRIES:-${HARBOR_MAX_RETRIES:-2}}"
-# AGENT selects the runner: claude-code (default), opencode, or pi.
+# AGENT selects the runner: claude-code (default), opencode, pi, or dsh.
 AGENT="${AGENT:-claude-code}"
 MODEL="${MODEL:-minimax2.7}"
 _HARBOR_EFFECTIVE_MODEL="${HARBOR_MODEL:-$MODEL}"
@@ -180,6 +181,18 @@ PI_TGZ_BASENAME="${PI_TGZ_BASENAME:-pi-coding-agent-${PI_VERSION}.tgz}"
 PI_NODE_RUNTIME_BASENAME="${PI_NODE_RUNTIME_BASENAME:-pi-node-runtime.tar.gz}"
 PI_RUNTIME_BASENAME="${PI_RUNTIME_BASENAME:-pi-runtime-${PI_VERSION}.tar.gz}"
 PI_THINKING_LEVEL="${PI_THINKING_LEVEL:-high}"
+DSH_VERSION="${DSH_VERSION:-0.1.1-rc.2}"
+DSH_RUNTIME_BASENAME="${DSH_RUNTIME_BASENAME:-dsh-runtime-${DSH_VERSION}.tar.gz}"
+DSH_RUNTIME_VERSION_BASENAME="${DSH_RUNTIME_VERSION_BASENAME:-dsh-runtime.version}"
+DSH_PROVIDER="${DSH_PROVIDER:-deepseek}"
+DSH_THINKING_FORMAT="${DSH_THINKING_FORMAT:-deepseek}"
+DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-danger-full-access}"
+DSH_THINKING="${DSH_THINKING:-enabled}"
+DSH_REASONING_EFFORT="${DSH_REASONING_EFFORT:-max}"
+DSH_CONTEXT_WINDOW="${DSH_CONTEXT_WINDOW:-1000000}"
+DSH_PROVIDER_RETRY_MAX="${DSH_PROVIDER_RETRY_MAX:-0}"
+DSH_REQUEST_TIMEOUT_MS="${DSH_REQUEST_TIMEOUT_MS:-300000}"
+DSH_STREAM_IDLE_TIMEOUT_MS="${DSH_STREAM_IDLE_TIMEOUT_MS:-300000}"
 LOCAL_WHEEL_DIR="${LOCAL_WHEEL_DIR:-$AGENT_FLEET_CACHE_DIR/harbor-deps}"
 LOCAL_WHEEL_PORT="${LOCAL_WHEEL_PORT:-18765}"
 LOCAL_WHEEL_PORT_ATTEMPTS="${LOCAL_WHEEL_PORT_ATTEMPTS:-3}"
@@ -229,6 +242,9 @@ HARBOR_MODEL="${HARBOR_MODEL:-$_HARBOR_EFFECTIVE_MODEL}"
 if [[ "$AGENT" == "pi" && -z "$HARBOR_AGENT_IMPORT_PATH" ]]; then
   HARBOR_AGENT_IMPORT_PATH="pi_harbor:AgentFleetPi"
 fi
+if [[ "$AGENT" == "dsh" && -z "$HARBOR_AGENT_IMPORT_PATH" ]]; then
+  HARBOR_AGENT_IMPORT_PATH="dsh_harbor:AgentFleetDsh"
+fi
 if [[ "$AGENT" == "pi" && -z "$PI_PROVIDER" && -n "$HARBOR_ANTHROPIC_BASE_URL" ]]; then
   # Keep the Pi provider name tied to the gateway host. env.py uses the same
   # derivation while rendering models.json, so the CLI model and config agree.
@@ -245,6 +261,9 @@ if [[ "$AGENT" == "opencode" && "$HARBOR_MODEL" != */* && -n "$OPENCODE_PROVIDER
 fi
 if [[ "$AGENT" == "pi" && "$HARBOR_MODEL" != */* && -n "$PI_PROVIDER" ]]; then
   HARBOR_MODEL="${PI_PROVIDER}/${HARBOR_MODEL}"
+fi
+if [[ "$AGENT" == "dsh" && "$HARBOR_MODEL" != "${DSH_PROVIDER}/"* ]]; then
+  HARBOR_MODEL="${DSH_PROVIDER}/${HARBOR_MODEL}"
 fi
 INCLUDE_TASKS="${INCLUDE_TASKS:-${HARBOR_INCLUDE_TASKS:-}}"
 HARBOR_DRY_RUN="${HARBOR_DRY_RUN:-0}"
@@ -264,6 +283,10 @@ ROLLOUT="${ROLLOUT:-0}"
 HARBOR_TEMPERATURE="${HARBOR_TEMPERATURE:-}"
 HARBOR_TOP_P="${HARBOR_TOP_P:-}"
 HARBOR_MAX_TOKENS="${HARBOR_MAX_TOKENS:-}"
+DSH_TEMPERATURE="${DSH_TEMPERATURE:-${HARBOR_TEMPERATURE:-1.0}}"
+DSH_MAX_TOKENS="${DSH_MAX_TOKENS:-${HARBOR_MAX_TOKENS:-256000}}"
+DSH_API_KEY="${DSH_API_KEY:-$HARBOR_ANTHROPIC_AUTH_TOKEN}"
+DSH_BASE_URL="${DSH_BASE_URL:-${HARBOR_ANTHROPIC_BASE_URL:+${HARBOR_ANTHROPIC_BASE_URL}/v1}}"
 if [[ "$ROLLOUT" == "1" ]]; then
   HARBOR_TEMPERATURE=""
   HARBOR_TOP_P=""
@@ -642,7 +665,7 @@ HARBOR_OPENSANDBOX_BUILD_NETWORK="${HARBOR_OPENSANDBOX_BUILD_NETWORK:-host}"
 HARBOR_OPENSANDBOX_BUILD_PROXY_URL="${HARBOR_OPENSANDBOX_BUILD_PROXY_URL:-}"
 HARBOR_OPENSANDBOX_IMAGE_MANAGER="${HARBOR_OPENSANDBOX_IMAGE_MANAGER:-$SCRIPT_DIR/opensandbox_image_manager.py}"
 
-export SCRIPT_DIR REPO_ROOT AGENTS_DIR TASKS_DIR HARBOR_CLAUDE_CODE_DIR HARBOR_OPENCODE_DIR HARBOR_PI_DIR WORKSPACE_DIR RUN_ID TOTAL_WORKERS N_ATTEMPTS MODEL AGENT MAX_RETRIES
+export SCRIPT_DIR REPO_ROOT AGENTS_DIR TASKS_DIR HARBOR_CLAUDE_CODE_DIR HARBOR_OPENCODE_DIR HARBOR_PI_DIR HARBOR_DSH_DIR WORKSPACE_DIR RUN_ID TOTAL_WORKERS N_ATTEMPTS MODEL AGENT MAX_RETRIES
 export HARBOR_ROOT DATASET_PATH DATASET_NAME METRIC_MODE OUTPUT_ROOT OUTPUT_PATH TASK_SOURCE_FILE TASK_FILE FLEET_TASKS QUEUE_DIR RUNTIME_DIR LAYOUT_FILE JOBS_ROOT
 export HARBOR_ONLINE_ANALYSIS HARBOR_ONLINE_ANALYSIS_POLL_INTERVAL HARBOR_ONLINE_ANALYSIS_DIR HARBOR_ONLINE_ANALYSIS_PID_FILE HARBOR_ONLINE_ANALYSIS_LOG_FILE HARBOR_EARLY_STOP HARBOR_ZELLIJ_CLOSE_ON_COMPLETE HARBOR_ZELLIJ_KEEP_ON_FAILURE
 export HARBOR_MONITOR_ENABLED HARBOR_MONITOR_DIR HARBOR_MONITOR_PID_FILE HARBOR_MONITOR_LOG_FILE HARBOR_BENCHMARK_PID_FILE HARBOR_BENCHMARK_EXIT_FILE HARBOR_JOB_DIR_FILE HARBOR_MONITOR_RESTART_CMD HARBOR_MONITOR_STOP_CMD HARBOR_MONITOR_INTERVAL HARBOR_MONITOR_STARTUP_GRACE HARBOR_MONITOR_STALL_SECONDS HARBOR_MONITOR_MAX_RETRIES HARBOR_MONITOR_CONFIGURED_TIMEOUT
@@ -650,6 +673,7 @@ export API_KEY BASE_URL HARBOR_ANALYZER_API_KEY HARBOR_ANALYZER_BASE_URL HARBOR_
 export HARBOR_RUN_TIMESTAMP HARBOR_SESSION_TIMESTAMP HARBOR_RUN_AGENT_NAME HARBOR_RUN_DATASET_NAME HARBOR_RUN_MODEL_NAME HARBOR_ZELLIJ_SESSION_NAME
 export CLAUDE_CODE_VERSION CLAUDE_CODE_TGZ_BASENAME LOCAL_WHEEL_DIR LOCAL_WHEEL_PORT LOCAL_WHEEL_PORT_ATTEMPTS LOCAL_WHEEL_HOST_IP
 export PI_PROVIDER PI_VERSION PI_TGZ_BASENAME PI_NODE_RUNTIME_BASENAME PI_RUNTIME_BASENAME PI_THINKING_LEVEL PI_MODELS_CONFIG PI_SETTINGS_CONFIG PI_SUPPORTS_REASONING_EFFORT PI_THINKING_LEVEL_MAP PI_EXTENSION_SOURCE PI_EXTENSION_DIR
+export DSH_VERSION DSH_RUNTIME_BASENAME DSH_RUNTIME_VERSION_BASENAME DSH_PROVIDER DSH_THINKING_FORMAT DSH_PERMISSION_MODE DSH_THINKING DSH_REASONING_EFFORT DSH_TEMPERATURE DSH_MAX_TOKENS DSH_CONTEXT_WINDOW DSH_PROVIDER_RETRY_MAX DSH_REQUEST_TIMEOUT_MS DSH_STREAM_IDLE_TIMEOUT_MS DSH_API_KEY DSH_BASE_URL
 export HARBOR_LOCAL_WHEEL_SERVER_URL HARBOR_LOCAL_CLAUDE_TGZ_URL HARBOR_REMOTE_WHEEL_SERVER_URLS EFFECTIVE_WHEEL_URL_FILE EFFECTIVE_CLAUDE_TGZ_URL_FILE LOCAL_DEPS_LOG_FILE HARBOR_RUNNER_PREPARE HARBOR_RUNNER_IMAGE_DIR HARBOR_RUNNER_HOST_DIR HARBOR_RUNNER_PYTHON_VERSION HARBOR_RUNNER_DIR HARBOR_OPIK_BIN HARBOR_CLI_BIN HARBOR_OPIK_PYTHON HARBOR_RUNNER_REQUIREMENTS HARBOR_RUNNER_PREPARE_STATUS_FILE HARBOR_RUNNER_PREPARE_LOG_FILE
 export HARBOR_LIMIT HARBOR_RUNS HARBOR_AGENT_IMPORT_PATH HARBOR_MODEL INCLUDE_TASKS HARBOR_DRY_RUN MIN_TEST MIN_TEST_INCLUDE_TASK
 export HARBOR_ENVIRONMENT_TYPE HARBOR_ENVIRONMENT_SPEC HARBOR_OPENSANDBOX_IMAGE_REF HARBOR_OPENSANDBOX_BUNDLE_MANIFEST HARBOR_OPENSANDBOX_REGISTRY HARBOR_OPENSANDBOX_IMAGE_REPOSITORY HARBOR_OPENSANDBOX_SANDBOX_IMAGE_PREFIX HARBOR_OPENSANDBOX_DOCKER_CONFIG HARBOR_OPENSANDBOX_IMAGE_CACHE_ROOT HARBOR_OPENSANDBOX_IMAGE_PLATFORM HARBOR_OPENSANDBOX_IMAGE_TAG_PREFIX HARBOR_OPENSANDBOX_DOCKERHUB_MIRROR_PREFIX HARBOR_OPENSANDBOX_APT_MIRROR HARBOR_OPENSANDBOX_PIP_INDEX_URL HARBOR_OPENSANDBOX_NPM_REGISTRY HARBOR_OPENSANDBOX_GOPROXY HARBOR_OPENSANDBOX_GOSUMDB HARBOR_OPENSANDBOX_CARGO_REGISTRY_URL HARBOR_OPENSANDBOX_RUSTUP_DIST_SERVER HARBOR_OPENSANDBOX_RUSTUP_UPDATE_ROOT HARBOR_OPENSANDBOX_RUSTUP_INIT_URL HARBOR_OPENSANDBOX_PYTORCH_INDEX_URL HARBOR_OPENSANDBOX_PACKAGE_SOURCE_HEALTH_URL HARBOR_OPENSANDBOX_BUILD_ARGS_JSON HARBOR_OPENSANDBOX_BUILD_USE_PROXY HARBOR_OPENSANDBOX_BUILD_NETWORK HARBOR_OPENSANDBOX_BUILD_PROXY_URL HARBOR_OPENSANDBOX_IMAGE_MANAGER YICLOUD_HARBOR_HOST YICLOUD_HARBOR_PROJECT YICLOUD_HARBOR_TLS_VERIFY HARBOR_OPENSANDBOX_BENCHMARK
@@ -691,11 +715,17 @@ harbor_agent_is_pi() {
   [[ "$AGENT" == "pi" ]]
 }
 
+harbor_agent_is_dsh() {
+  [[ "$AGENT" == "dsh" ]]
+}
+
 harbor_agent_tgz_basename() {
   if harbor_agent_is_opencode; then
     printf '%s\n' "$OPENCODE_TGZ_BASENAME"
   elif harbor_agent_is_pi; then
     printf '%s\n' "$PI_RUNTIME_BASENAME"
+  elif harbor_agent_is_dsh; then
+    printf '%s\n' "$DSH_RUNTIME_BASENAME"
   else
     printf '%s\n' "$CLAUDE_CODE_TGZ_BASENAME"
   fi
@@ -715,6 +745,10 @@ harbor_validate_generation_controls() {
     fi
     echo "[ERROR] $agent_display does not expose temperature or top_p controls." >&2
     echo "[ERROR] Use AGENT=opencode for these settings, or leave them unset." >&2
+    return 1
+  fi
+  if harbor_agent_is_dsh && [[ -n "$HARBOR_TOP_P" ]]; then
+    echo "[ERROR] DSH $DSH_VERSION does not expose top_p; refusing to ignore HARBOR_TOP_P." >&2
     return 1
   fi
 }
@@ -789,9 +823,9 @@ harbor_agent_is_oracle() {
 
 harbor_validate_agent() {
   case "$AGENT" in
-    claude-code|opencode|pi|oracle) ;;
+    claude-code|opencode|pi|dsh|oracle) ;;
     *)
-      echo "[ERROR] AGENT must be claude-code, opencode, pi, or oracle, got: $AGENT" >&2
+      echo "[ERROR] AGENT must be claude-code, opencode, pi, dsh, or oracle, got: $AGENT" >&2
       exit 1
       ;;
   esac
@@ -810,6 +844,44 @@ harbor_validate_agent() {
         exit 1
         ;;
     esac
+  fi
+  if harbor_agent_is_dsh; then
+    case "$DSH_PROVIDER" in
+      deepseek|harbor) ;;
+      *)
+        echo "[ERROR] DSH_PROVIDER must be deepseek or harbor." >&2
+        exit 1
+        ;;
+    esac
+    if [[ "$DSH_PROVIDER" == "harbor" && -z "$DSH_THINKING_FORMAT" ]]; then
+      echo "[ERROR] DSH_PROVIDER=harbor requires DSH_THINKING_FORMAT." >&2
+      exit 1
+    fi
+    case "$DSH_PERMISSION_MODE" in
+      read-only|workspace-write|danger-full-access) ;;
+      *)
+        echo "[ERROR] invalid DSH_PERMISSION_MODE: $DSH_PERMISSION_MODE" >&2
+        exit 1
+        ;;
+    esac
+    case "$DSH_THINKING" in
+      enabled|disabled) ;;
+      *)
+        echo "[ERROR] DSH_THINKING must be enabled or disabled." >&2
+        exit 1
+        ;;
+    esac
+    case "$DSH_REASONING_EFFORT" in
+      off|low|high|max) ;;
+      *)
+        echo "[ERROR] DSH_REASONING_EFFORT must be off, low, high, or max." >&2
+        exit 1
+        ;;
+    esac
+    if [[ "$DSH_THINKING" == "disabled" && "$DSH_REASONING_EFFORT" != "off" ]]; then
+      echo "[ERROR] DSH_THINKING=disabled requires DSH_REASONING_EFFORT=off." >&2
+      exit 1
+    fi
   fi
 }
 
@@ -1258,6 +1330,8 @@ harbor_ensure_local_wheels_server() {
       urls+=("${HARBOR_LOCAL_WHEEL_SERVER_URL%/}/${OPENCODE_LINUX_X64_TGZ_BASENAME}")
     elif harbor_agent_is_pi; then
       urls+=("${HARBOR_LOCAL_WHEEL_SERVER_URL%/}/${PI_NODE_RUNTIME_BASENAME}")
+    elif harbor_agent_is_dsh; then
+      urls+=("${HARBOR_LOCAL_WHEEL_SERVER_URL%/}/${DSH_RUNTIME_VERSION_BASENAME}")
     else
       urls+=("${HARBOR_LOCAL_WHEEL_SERVER_URL%/}/npm-cache-ready")
     fi
@@ -1341,6 +1415,11 @@ harbor_local_cache_ready() {
           && harbor_tar_file_ready "$LOCAL_WHEEL_DIR/${PI_NODE_RUNTIME_BASENAME}" \
           && harbor_tar_file_ready "$LOCAL_WHEEL_DIR/${PI_RUNTIME_BASENAME}" \
           && grep -qx "pi_runtime_version=${PI_VERSION}" "$LOCAL_WHEEL_DIR/manifest.txt"
+      elif harbor_agent_is_dsh; then
+        harbor_tar_file_ready "$LOCAL_WHEEL_DIR/node-runtime.tar.gz" \
+          && harbor_tar_file_ready "$LOCAL_WHEEL_DIR/${DSH_RUNTIME_BASENAME}" \
+          && [[ -f "$LOCAL_WHEEL_DIR/${DSH_RUNTIME_VERSION_BASENAME}" ]] \
+          && grep -qx "$DSH_VERSION" "$LOCAL_WHEEL_DIR/${DSH_RUNTIME_VERSION_BASENAME}"
       else
         [[ -f "$LOCAL_WHEEL_DIR/${CLAUDE_CODE_TGZ_BASENAME}" ]] \
           && [[ -d "$LOCAL_WHEEL_DIR/npm-cache/_cacache" ]] \
@@ -1351,9 +1430,9 @@ harbor_local_cache_ready() {
 }
 
 harbor_pick_remote_wheel_url() {
-  # Pi unpacks its pinned runtime from the read-only dependency mount. A
-  # remote URL cannot materialize that mount, so Pi always prepares locally.
-  if harbor_agent_is_pi; then
+  # Pi and DSH unpack pinned runtimes from the read-only dependency mount. A
+  # remote URL cannot materialize that mount, so both prepare locally.
+  if harbor_agent_is_pi || harbor_agent_is_dsh; then
     return 1
   fi
   local candidates=()
@@ -1405,6 +1484,20 @@ harbor_write_effective_wheel_source() {
   printf '%s\n' "${wheel_url%/}/${CLAUDE_CODE_TGZ_BASENAME}" > "$EFFECTIVE_CLAUDE_TGZ_URL_FILE"
   export HARBOR_LOCAL_WHEEL_SERVER_URL="$wheel_url"
   export HARBOR_LOCAL_CLAUDE_TGZ_URL="${wheel_url%/}/${CLAUDE_CODE_TGZ_BASENAME}"
+}
+
+harbor_prepare_local_runtime_transport() {
+  if harbor_agent_is_pi || harbor_agent_is_dsh; then
+    # These agents consume their complete portable runtimes from the read-only
+    # dependency mount. Starting a host HTTP server is unnecessary and can
+    # fail on managed runners where the default gateway is not a host address.
+    : > "$EFFECTIVE_WHEEL_URL_FILE"
+    : > "$EFFECTIVE_CLAUDE_TGZ_URL_FILE"
+    unset HARBOR_LOCAL_WHEEL_SERVER_URL HARBOR_LOCAL_CLAUDE_TGZ_URL
+    return 0
+  fi
+  harbor_ensure_local_wheels_server
+  harbor_write_effective_wheel_source "$HARBOR_LOCAL_WHEEL_SERVER_URL"
 }
 
 harbor_apply_effective_wheel_source() {
@@ -1466,8 +1559,7 @@ harbor_prepare_or_select_wheels() {
 
   if harbor_local_cache_ready; then
     echo "using local wheel cache"
-    harbor_ensure_local_wheels_server
-    harbor_write_effective_wheel_source "$HARBOR_LOCAL_WHEEL_SERVER_URL"
+    harbor_prepare_local_runtime_transport
     harbor_prewarm_s3_upload_cache || {
       echo "failed" > "$status_file"
       touch "$WORKERS_FAILED_FILE"
@@ -1504,8 +1596,21 @@ harbor_prepare_or_select_wheels() {
     prepare_pi_cache=1
   fi
   if (cd "$SCRIPT_DIR" && WHEEL_DIR="$LOCAL_WHEEL_DIR" CACHE_SCHEMA=3 CLAUDE_CODE_VERSION="$CLAUDE_CODE_VERSION" CLAUDE_CODE_TGZ_BASENAME="$CLAUDE_CODE_TGZ_BASENAME" PREPARE_OPENCODE_CACHE="$prepare_opencode_cache" OPENCODE_VERSION="$OPENCODE_VERSION" OPENCODE_TGZ_BASENAME="$OPENCODE_TGZ_BASENAME" OPENCODE_LINUX_X64_TGZ_BASENAME="$OPENCODE_LINUX_X64_TGZ_BASENAME" PREPARE_PI_CACHE="$prepare_pi_cache" PI_VERSION="$PI_VERSION" PI_TGZ_BASENAME="$PI_TGZ_BASENAME" PI_NODE_RUNTIME_BASENAME="$PI_NODE_RUNTIME_BASENAME" PI_RUNTIME_BASENAME="$PI_RUNTIME_BASENAME" ./prepare_local_deps.sh 2>&1 | tee -a "$LOCAL_DEPS_LOG_FILE"); then
-    harbor_ensure_local_wheels_server
-    harbor_write_effective_wheel_source "$HARBOR_LOCAL_WHEEL_SERVER_URL"
+    if harbor_agent_is_dsh; then
+      if ! (cd "$SCRIPT_DIR" && \
+        WHEEL_DIR="$LOCAL_WHEEL_DIR" \
+        DSH_VERSION="$DSH_VERSION" \
+        DSH_RUNTIME_BASENAME="$DSH_RUNTIME_BASENAME" \
+        DSH_RUNTIME_VERSION_FILE="$LOCAL_WHEEL_DIR/$DSH_RUNTIME_VERSION_BASENAME" \
+        NPM_CONFIG_REGISTRY="$NPM_CONFIG_REGISTRY" \
+        python3 ./prepare_dsh_runtime.py 2>&1 | tee -a "$LOCAL_DEPS_LOG_FILE"); then
+        echo "failed to prepare DSH runtime" >&2
+        echo "failed" > "$status_file"
+        touch "$WORKERS_FAILED_FILE"
+        return 1
+      fi
+    fi
+    harbor_prepare_local_runtime_transport
     harbor_prewarm_s3_upload_cache || {
       echo "failed" > "$status_file"
       touch "$WORKERS_FAILED_FILE"
