@@ -1109,6 +1109,9 @@ run_harbor() {
       --ae "DSH_MINIMAL_RUNTIME_TAR_PATH=$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH/$DSH_MINIMAL_RUNTIME_BASENAME"
       --ae "DSH_TELEMETRY_DISABLED=1"
     )
+    if [[ -n "$DSH_MINIMAL_MAX_TOKENS" ]]; then
+      cmd+=( --ak "max_tokens=$DSH_MINIMAL_MAX_TOKENS" )
+    fi
   elif harbor_agent_is_dsh; then
     cmd+=(
       --ak "version=$DSH_VERSION"

@@ -1,40 +1,43 @@
 #!/usr/bin/env python3
-"""Run one official DeepSeek Harness minimal SDK turn."""
+"""Run one minimal-agent turn through the bundled Python SDK runtime."""
 
 from __future__ import annotations
 
 import argparse
 import os
-import sys
 from pathlib import Path
 
-from deepseek_harness import DeepSeekHarness  # type: ignore[import-not-found]
+from deepseek_harness import DeepSeekHarness
 
 
-def main() -> int:
+CONFIG = Path(__file__).with_name("minimal.cordis.yml")
+
+
+def main() -> None:
+    """Parse one task and print the agent's final response."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("prompt")
-    parser.add_argument("--cordis", type=Path, required=True)
+    parser.add_argument("prompt", help="Task for the minimal agent")
+    parser.add_argument("--workspace", type=Path, default=Path.cwd())
+    parser.add_argument("--session-root", type=Path, default=Path(".dsh-sessions"))
+    parser.add_argument("--session-id")
+    parser.add_argument("--provider", default="deepseek-official")
+    parser.add_argument("--model", default=os.environ.get("DSH_MODEL", "deepseek-v4-flash"))
+    parser.add_argument("--max-tokens", type=int)
     args = parser.parse_args()
 
+    workspace = args.workspace.resolve()
+    session_root = args.session_root.resolve()
     with DeepSeekHarness(
-        provider="deepseek-official",
-        model=os.environ["DSH_MODEL"],
-        cwd=str(Path.cwd()),
-        session_root=os.environ["DSH_SESSION_ROOT"],
-        cordis=str(args.cordis),
+        provider=args.provider,
+        model=args.model,
+        max_tokens=args.max_tokens,
+        cwd=str(workspace),
+        session_root=str(session_root),
+        cordis=str(CONFIG.resolve()),
     ) as harness:
-        result = harness.run(args.prompt)
-
+        result = harness.run(args.prompt, session_id=args.session_id)
     print(result.final_response)
-    if result.finish_reason != "completed":
-        print(
-            f"dsh-minimal finished with {result.finish_reason or 'no reason'}",
-            file=sys.stderr,
-        )
-        return 1
-    return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

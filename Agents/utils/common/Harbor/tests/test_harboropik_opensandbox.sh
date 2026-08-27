@@ -89,6 +89,7 @@ run_dry() {
     MODEL=test-model \
     DSH_PROVIDER="${DSH_PROVIDER_OVERRIDE:-deepseek}" \
     DSH_THINKING_FORMAT=deepseek \
+    DSH_MINIMAL_MAX_TOKENS="${DSH_MINIMAL_MAX_TOKENS_OVERRIDE:-}" \
     HARBOR_ANTHROPIC_AUTH_TOKEN=fake-api-key \
     HARBOR_LLM_KWARGS='{"temperature":1.0}' \
     HARBOR_CC_CLAUDE_TGZ_SOURCE="$tmp/deps/claude.tgz" \
@@ -387,6 +388,19 @@ if grep -F -- 'FAKE_HARBOR_ARG=reasoning_effort=' \
   echo 'DSH minimal unexpectedly added a reasoning_effort override' >&2
   exit 1
 fi
+if grep -F -- 'FAKE_HARBOR_ARG=max_tokens=' \
+  <<< "$dsh_minimal_opensandbox" >/dev/null; then
+  echo 'DSH minimal unexpectedly added an unset max_tokens override' >&2
+  exit 1
+fi
+
+dsh_minimal_with_max_tokens="$(
+  DSH_MINIMAL_MAX_TOKENS_OVERRIDE=49152 run_dry \
+    'test-project/manual:immutable' "$tmp/does-not-exist.py" '{}' auto \
+    opensandbox 0 dsh-minimal 0
+)"
+grep -F -- 'FAKE_HARBOR_ARG=max_tokens=49152' \
+  <<< "$dsh_minimal_with_max_tokens" >/dev/null
 
 dsh_generic_opensandbox="$(
   DSH_PROVIDER_OVERRIDE=harbor run_dry \

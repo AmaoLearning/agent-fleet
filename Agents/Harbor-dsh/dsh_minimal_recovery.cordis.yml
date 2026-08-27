@@ -1,49 +1,50 @@
-# Complete unattended minimal-agent composition for the Python SDK. The model
-# sees one deployment-selected system prompt and only the owner-scoped
-# persistent Bash and string-replace editor tools. Runtime-context injection and
-# context compaction are absent.
-
+# Optional YiCloud recovery variant of the official minimal composition.
+# The model-facing spine, prompt, tools, and persistence remain identical.
 - id: sdk-jsonrpc-server
   name: '@deepseek-ai/dsh-sdk-jsonrpc-server'
   config:
     maxTokensAsSuccess: false
-
 - id: llm-deepseek
   name: '@deepseek-ai/dsh-llm-deepseek'
   config:
     apiKeyEnv: DEEPSEEK_API_KEY
     streamIdleTimeoutMs: 172800000
+    retryPolicy:
+      mode: normal
+      maxRetries: !!js Number(process.env.DSH_PROVIDER_RETRY_MAX)
+      retryableCodes:
+        - EMPTY_RESPONSE
+        - RATE_LIMIT
+        - SERVER
+        - TIMEOUT
+        - TRANSPORT
+        - HTTP_405
+      backoff:
+        initialDelayMs: 1000
+        maxDelayMs: 30000
+        jitterRatio: 0.2
     models:
       - id: !!js process.env.DSH_MODEL ?? 'deepseek-v4-flash'
         contextWindow: !!js Number(process.env.DSH_CONTEXT_WINDOW ?? 1000000)
-
 - id: sandbox
   name: '@deepseek-ai/dsh-sandbox-local'
-
 - id: sandbox-policy
   name: '@deepseek-ai/dsh-sandbox-policy'
   config:
     mode: danger-full-access
     workspaceRoot: !!js process.env.DSH_CWD ?? process.cwd()
-
 - id: subprocess
   name: '@deepseek-ai/dsh-subprocess-local'
-
 - id: pty
   name: '@deepseek-ai/dsh-terminal'
-
 - id: terminal-bash
   name: '@deepseek-ai/dsh-terminal-bash'
   config:
     timeoutMs: 300000
-
-# The editor uses the bare local filesystem; persistent Bash still consumes the
-# shared danger-full-access sandbox policy above.
 - id: fs-local
   name: '@deepseek-ai/dsh-fs-local'
   config:
     cwd: !!js process.env.DSH_CWD ?? process.cwd()
-
 - id: agent-spine
   name: '@deepseek-ai/dsh-agent-spine-demo'
   config:
@@ -55,7 +56,6 @@
       enabled: false
     toolBash: false
     toolJobs: false
-
 - id: persistent-bash
   name: '@deepseek-ai/dsh-tool-bash-persistent'
   config:
@@ -69,12 +69,10 @@
       * To inspect a particular line range of a file, e.g. lines 10-25, try 'sed -n 10,25p /path/to/the/file'.
       * Please avoid commands that may produce a very large amount of output.
       * Please run long lived commands in the background, e.g. 'sleep 10 &' or start a server in the background.
-
 - id: str-replace-editor
   name: '@deepseek-ai/dsh-tool-str-replace-editor'
   config:
     maxOutputChars: 16000
-
 - id: sessions
   name: '@deepseek-ai/dsh-session-persistence-jsonl'
   config:
