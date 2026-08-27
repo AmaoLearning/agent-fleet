@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 MODULE_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(MODULE_DIR))
 
-from dsh_minimal_harbor import AgentFleetDshMinimal  # noqa: E402
+from dsh_minimal_harbor import AgentFleetDshMinimal
 
 
 class AgentFleetDshMinimalTests(unittest.IsolatedAsyncioTestCase):
@@ -37,7 +37,11 @@ class AgentFleetDshMinimalTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(env["DEEPSEEK_API_KEY"], "fake-key")
         self.assertEqual(
-            env["DEEPSEEK_BASE_URL"], "https://gateway.example.test/v1"
+            env["DEEPSEEK_BASE_URL"], "http://127.0.0.1:18100/v1"
+        )
+        self.assertEqual(
+            env["DSH_SAMPLING_UPSTREAM_BASE_URL"],
+            "https://gateway.example.test/v1",
         )
         self.assertEqual(env["DSH_MODEL"], "private/deepseek-v4-flash-0731")
         self.assertEqual(env["DSH_CONTEXT_WINDOW"], "1000000")
@@ -106,7 +110,7 @@ class AgentFleetDshMinimalTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('tar -xzf "${DSH_MINIMAL_RUNTIME_TAR_PATH}"', command)
         self.assertNotIn("curl", command)
         self.assertNotIn("pip install", command)
-        self.assertEqual(agent_exec.await_count, 3)
+        self.assertEqual(agent_exec.await_count, 4)
 
     async def test_run_invokes_sdk_runner_in_task_environment(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_name:
@@ -123,6 +127,9 @@ class AgentFleetDshMinimalTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("dsh_minimal_runner.py", call.kwargs["command"])
         self.assertIn("fix the tests", call.kwargs["command"])
         self.assertIn("retry >= 0", call.kwargs["command"])
+        self.assertIn("dsh_sampling_relay.py", call.kwargs["command"])
+        self.assertIn("sampling-relay.jsonl", str(call.kwargs["env"]))
+        self.assertIn("trap cleanup_relay", call.kwargs["command"])
         self.assertEqual(
             call.kwargs["env"]["DSH_MODEL"],
             "private/deepseek-v4-flash-0731",
@@ -157,6 +164,8 @@ class AgentFleetDshMinimalTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("mode: normal", content)
         self.assertIn("HTTP_405", content)
         self.assertIn("TRANSPORT", content)
+        self.assertIn("thinking: enabled", content)
+        self.assertIn("reasoningEffort: max", content)
 
 
 if __name__ == "__main__":
