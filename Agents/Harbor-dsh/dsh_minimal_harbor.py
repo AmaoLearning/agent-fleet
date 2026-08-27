@@ -6,6 +6,7 @@ import base64
 import json
 import os
 import shlex
+import uuid
 from pathlib import Path
 from typing import Any, override
 
@@ -21,8 +22,8 @@ class AgentFleetDshMinimal(BaseInstalledAgent):
     _PYTHON = f"{_PYTHON_ROOT}/bin/python3.12"
     _RUNTIME_ROOT = "/opt/dsh-minimal-runtime"
     _SITE_PACKAGES = f"{_RUNTIME_ROOT}/site-packages"
-    _REMOTE_RUNNER = "/installed-agent/dsh_minimal_runner.py"
-    _REMOTE_CONFIG = "/installed-agent/dsh_minimal.cordis.yml"
+    _REMOTE_RUNNER = "/installed-agent/minimal.py"
+    _REMOTE_CONFIG = "/installed-agent/minimal.cordis.yml"
     _REMOTE_RELAY = "/installed-agent/dsh_sampling_relay.py"
     _RELAY_PORT = 18100
     _SESSION_ROOT = "/logs/agent/dsh-sessions"
@@ -39,6 +40,7 @@ class AgentFleetDshMinimal(BaseInstalledAgent):
         permission_mode: str = "danger-full-access",
         provider_route: str = "deepseek",
         context_window: str | int = "1000000",
+        max_tokens: str | int | None = None,
         provider_retry_max: str | int = "0",
         process_retry_max: str | int = "0",
         **kwargs: Any,
@@ -56,6 +58,11 @@ class AgentFleetDshMinimal(BaseInstalledAgent):
         if self.skills_dir or self.mcp_servers:
             raise ValueError("dsh-minimal does not support Skills or MCP servers")
         self._context_window = self._positive_int("context_window", context_window)
+        self._max_tokens = (
+            None
+            if max_tokens in (None, "")
+            else self._positive_int("max_tokens", max_tokens)
+        )
         self._provider_retry_max = self._nonnegative_int(
             "provider_retry_max", provider_retry_max
         )
@@ -183,9 +190,14 @@ class AgentFleetDshMinimal(BaseInstalledAgent):
             },
         )
 
+        cordis_filename = (
+            "dsh_minimal_recovery.cordis.yml"
+            if self._provider_retry_max
+            else "dsh_minimal.cordis.yml"
+        )
         for filename, remote in (
             ("dsh_minimal_runner.py", self._REMOTE_RUNNER),
-            ("dsh_minimal.cordis.yml", self._REMOTE_CONFIG),
+            (cordis_filename, self._REMOTE_CONFIG),
             ("dsh_sampling_relay.py", self._REMOTE_RELAY),
         ):
             await self._upload_text(
@@ -206,14 +218,34 @@ class AgentFleetDshMinimal(BaseInstalledAgent):
         environment: BaseEnvironment,
         context: AgentContext,
     ) -> None:
-        runner = (
-            f"{self._PYTHON} {self._REMOTE_RUNNER} "
-            f"--cordis {self._REMOTE_CONFIG} {shlex.quote(instruction)}"
+        session_id = f"harbor-{uuid.uuid4().hex}"
+        runner_parts = [
+            shlex.quote(self._PYTHON),
+            shlex.quote(self._REMOTE_RUNNER),
+            '--workspace "$PWD"',
+            "--session-root",
+            shlex.quote(self._SESSION_ROOT),
+            "--provider",
+            "deepseek-official",
+            "--model",
+            shlex.quote(self._model_id()),
+        ]
+        if self._max_tokens is not None:
+            runner_parts.extend(("--max-tokens", str(self._max_tokens)))
+        runner_parts.extend(
+            (
+                '--session-id "$1"',
+                shlex.quote(instruction),
+            )
         )
+        runner = " ".join(runner_parts)
         output = f"/logs/agent/{self._OUTPUT_FILENAME}"
         script = f"""\
 set -o pipefail
 relay_log=/logs/agent/sampling-relay.log
+dsh_session_id={shlex.quote(session_id)}
+printf '%s\n' "$PWD" > /logs/agent/dsh-workspace.txt
+printf '%s\n' "$dsh_session_id" > /logs/agent/dsh-session-id.txt
 {self._PYTHON} {self._REMOTE_RELAY} >>"$relay_log" 2>&1 &
 relay_pid=$!
 cleanup_relay() {{
@@ -238,10 +270,14 @@ run_dsh() {{
 }}
 retry=0
 while true; do
+  attempt_session_id="$dsh_session_id"
+  if (( retry > 0 )); then
+    attempt_session_id="$dsh_session_id-retry-$retry"
+  fi
   if (( retry == 0 )); then
-    run_dsh 2>&1 | stdbuf -oL tee {shlex.quote(output)}
+    run_dsh "$attempt_session_id" 2>&1 | stdbuf -oL tee {shlex.quote(output)}
   else
-    run_dsh 2>&1 | stdbuf -oL tee -a {shlex.quote(output)}
+    run_dsh "$attempt_session_id" 2>&1 | stdbuf -oL tee -a {shlex.quote(output)}
   fi
   status=${{PIPESTATUS[0]}}
   if (( status == 0 || retry >= {self._process_retry_max} )); then

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import sys
 import tempfile
 import unittest
@@ -71,6 +72,13 @@ class AgentFleetDshMinimalTests(unittest.IsolatedAsyncioTestCase):
         ):
             self.make_agent(Path(temporary_name), process_retry_max="-1")
 
+    def test_rejects_invalid_max_tokens(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as temporary_name,
+            self.assertRaisesRegex(ValueError, "must be positive"),
+        ):
+            self.make_agent(Path(temporary_name), max_tokens="0")
+
     def test_rejects_non_official_capabilities(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_name:
             with self.assertRaisesRegex(ValueError, "danger-full-access"):
@@ -124,8 +132,15 @@ class AgentFleetDshMinimalTests(unittest.IsolatedAsyncioTestCase):
         call = agent_exec.await_args
         self.assertIsNotNone(call)
         assert call is not None
-        self.assertIn("dsh_minimal_runner.py", call.kwargs["command"])
+        self.assertIn("/installed-agent/minimal.py", call.kwargs["command"])
         self.assertIn("fix the tests", call.kwargs["command"])
+        self.assertIn('--workspace "$PWD"', call.kwargs["command"])
+        self.assertIn("--session-root", call.kwargs["command"])
+        self.assertIn("--session-id", call.kwargs["command"])
+        self.assertIn("--provider deepseek-official", call.kwargs["command"])
+        self.assertIn("--model private/deepseek-v4-flash-0731", call.kwargs["command"])
+        self.assertIn("dsh-session-id.txt", call.kwargs["command"])
+        self.assertIn("dsh-workspace.txt", call.kwargs["command"])
         self.assertIn("retry >= 0", call.kwargs["command"])
         self.assertIn("dsh_sampling_relay.py", call.kwargs["command"])
         self.assertIn("sampling-relay.jsonl", str(call.kwargs["env"]))
@@ -134,6 +149,20 @@ class AgentFleetDshMinimalTests(unittest.IsolatedAsyncioTestCase):
             call.kwargs["env"]["DSH_MODEL"],
             "private/deepseek-v4-flash-0731",
         )
+
+    async def test_run_passes_optional_official_max_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            agent = self.make_agent(Path(temporary_name), max_tokens="49152")
+            environment = AsyncMock()
+            agent_exec = AsyncMock()
+            agent.exec_as_agent = agent_exec
+
+            await agent.run("fix the tests", environment, AsyncMock())
+
+        call = agent_exec.await_args
+        self.assertIsNotNone(call)
+        assert call is not None
+        self.assertIn("--max-tokens 49152", call.kwargs["command"])
 
     async def test_run_configures_same_prompt_process_retries(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_name:
@@ -150,22 +179,53 @@ class AgentFleetDshMinimalTests(unittest.IsolatedAsyncioTestCase):
         command = call.kwargs["command"]
         self.assertIn("retry >= 2", command)
         self.assertIn("restarting dsh-minimal process", command)
+        self.assertIn('attempt_session_id="$dsh_session_id-retry-$retry"', command)
         self.assertEqual(command.count("fix the tests"), 1)
 
-    def test_cordis_exposes_only_official_minimal_tools(self) -> None:
-        content = (MODULE_DIR / "dsh_minimal.cordis.yml").read_text(
-            encoding="utf-8"
+    def test_default_cordis_matches_official_minimal_behavior(self) -> None:
+        path = MODULE_DIR / "dsh_minimal.cordis.yml"
+        content = path.read_text(encoding="utf-8")
+        self.assertEqual(
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+            "4ddf99b5492fac7b578e3caddb0158815e44d5db176ba0aeab57012d35299fca",
         )
         self.assertIn("@deepseek-ai/dsh-tool-bash-persistent", content)
         self.assertIn("@deepseek-ai/dsh-tool-str-replace-editor", content)
         self.assertNotIn("dsh-tool-web", content)
         self.assertNotIn("dsh-tool-jobs", content)
         self.assertIn("skills:\n      enabled: false", content)
+        self.assertNotIn("retryPolicy", content)
+        self.assertNotIn("reasoningEffort", content)
+        self.assertNotIn("baseURL", content)
+
+    def test_recovery_cordis_changes_only_provider_recovery_policy(self) -> None:
+        content = (MODULE_DIR / "dsh_minimal_recovery.cordis.yml").read_text(
+            encoding="utf-8"
+        )
         self.assertIn("mode: normal", content)
         self.assertIn("HTTP_405", content)
         self.assertIn("TRANSPORT", content)
-        self.assertIn("thinking: enabled", content)
-        self.assertIn("reasoningEffort: max", content)
+        self.assertIn("@deepseek-ai/dsh-tool-bash-persistent", content)
+        self.assertIn("@deepseek-ai/dsh-tool-str-replace-editor", content)
+
+    def test_runner_exposes_official_workspace_session_and_token_flags(self) -> None:
+        path = MODULE_DIR / "dsh_minimal_runner.py"
+        content = path.read_text(encoding="utf-8")
+        self.assertEqual(
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+            "0ccda1dac75d73f7bf61ee4f0bc072344b0ddcd2c114579d85342e22010d67fb",
+        )
+        for flag in (
+            '"--workspace"',
+            '"--session-root"',
+            '"--session-id"',
+            '"--provider"',
+            '"--model"',
+            '"--max-tokens"',
+        ):
+            self.assertIn(flag, content)
+        self.assertIn("session_id=args.session_id", content)
+        self.assertNotIn("result.finish_reason", content)
 
 
 if __name__ == "__main__":
