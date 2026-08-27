@@ -125,8 +125,24 @@ render_report() {
     echo "LOCAL_DEPS_PREP: $prep_status"
     echo "LOCAL_WHEEL_URL: ${HARBOR_LOCAL_WHEEL_SERVER_URL:-<none>}"
     echo "LOCAL_WHEEL_LOG: $LOCAL_DEPS_LOG_FILE"
+  elif harbor_agent_is_dsh; then
+    echo "DSH_VERSION:   $DSH_VERSION"
+    echo "DSH_PROVIDER:  $DSH_PROVIDER"
+    if [[ "$DSH_PROVIDER" == "deepseek" ]]; then
+      echo "DSH_REASONING: $DSH_THINKING/$DSH_REASONING_EFFORT"
+    else
+      echo "DSH_THINKING_FORMAT: $DSH_THINKING_FORMAT"
+      echo "DSH_REASONING: generic route has no native reasoning_effort control"
+    fi
+    echo "DSH_TEMPERATURE: $DSH_TEMPERATURE"
+    echo "MODEL:         $HARBOR_MODEL"
+    prep_status="unknown"
+    [[ -f "$RUNTIME_DIR/local-deps-prepare.status" ]] && prep_status="$(cat "$RUNTIME_DIR/local-deps-prepare.status" 2>/dev/null || true)"
+    echo "LOCAL_DEPS_PREP: $prep_status"
+    echo "LOCAL_WHEEL_URL: ${HARBOR_LOCAL_WHEEL_SERVER_URL:-<none>}"
+    echo "LOCAL_WHEEL_LOG: $LOCAL_DEPS_LOG_FILE"
   else
-    # oracle and any non-pi agent keep the previous opencode-style summary:
+    # Oracle keeps the previous opencode-style summary:
     # the runner-CLI prep state and log are the only diagnostics available.
     echo "OPENCODE_VERSION: $OPENCODE_VERSION"
     prep_status="unknown"

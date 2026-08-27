@@ -91,4 +91,30 @@ opensandbox_wheel_url="$(
 )"
 [[ -z "$opensandbox_wheel_url" ]]
 
+mkdir -p "$TEST_ROOT/mount-only-runtime"
+mount_only_transport="$(
+  env \
+    HOME="$TEST_ROOT/home" \
+    AGENT=dsh \
+    RUNTIME_DIR="$TEST_ROOT/mount-only-runtime" \
+    HARBOR_LOCAL_WHEEL_SERVER_URL=http://unreachable.example:18765 \
+    HARBOR_LOCAL_CLAUDE_TGZ_URL=http://unreachable.example:18765/claude.tgz \
+    AGENT_FLEET_PATHS_FILE="$TEST_ROOT/missing-paths.env" \
+    AGENT_FLEET_RUNTIME_DIR="$TEST_ROOT/runtime" \
+    bash -c '
+      source "$1"
+      harbor_ensure_local_wheels_server() {
+        echo unexpected-http-server
+        return 1
+      }
+      harbor_prepare_local_runtime_transport
+      [[ ! -s "$EFFECTIVE_WHEEL_URL_FILE" ]]
+      [[ ! -s "$EFFECTIVE_CLAUDE_TGZ_URL_FILE" ]]
+      [[ -z "${HARBOR_LOCAL_WHEEL_SERVER_URL+x}" ]]
+      [[ -z "${HARBOR_LOCAL_CLAUDE_TGZ_URL+x}" ]]
+      echo mount-only
+    ' bash "$HARBOR_DIR/env.sh"
+)"
+[[ "$mount_only_transport" == "mount-only" ]]
+
 echo "host default tests passed"

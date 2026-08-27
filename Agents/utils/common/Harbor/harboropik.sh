@@ -252,6 +252,10 @@ validate_environment_backend() {
         echo "[ERROR] AGENT=pi with HARBOR_ENVIRONMENT_TYPE=$HARBOR_ENVIRONMENT_TYPE is unsupported: Pi's pinned Node/runtime archives and local extensions require host bind mounts." >&2
         echo "[ERROR] use HARBOR_ENVIRONMENT_TYPE=docker or opensandbox for AGENT=pi." >&2
         exit 1
+      elif harbor_agent_is_dsh; then
+        echo "[ERROR] AGENT=dsh with HARBOR_ENVIRONMENT_TYPE=$HARBOR_ENVIRONMENT_TYPE is unsupported: DSH's pinned runtime requires host bind mounts." >&2
+        echo "[ERROR] use HARBOR_ENVIRONMENT_TYPE=docker or opensandbox for AGENT=dsh." >&2
+        exit 1
       fi
       ;;
     opensandbox)
@@ -288,6 +292,10 @@ validate_environment_backend() {
       if harbor_agent_is_pi; then
         echo "[ERROR] AGENT=pi with HARBOR_ENVIRONMENT_TYPE=$HARBOR_ENVIRONMENT_TYPE is unsupported: Pi's pinned Node/runtime archives and local extensions require host bind mounts." >&2
         echo "[ERROR] use HARBOR_ENVIRONMENT_TYPE=docker or opensandbox for AGENT=pi." >&2
+        exit 1
+      elif harbor_agent_is_dsh; then
+        echo "[ERROR] AGENT=dsh with HARBOR_ENVIRONMENT_TYPE=$HARBOR_ENVIRONMENT_TYPE is unsupported: DSH's pinned runtime requires host bind mounts." >&2
+        echo "[ERROR] use HARBOR_ENVIRONMENT_TYPE=docker or opensandbox for AGENT=dsh." >&2
         exit 1
       fi
       if [[ -z "${SBX_API_KEY:-}" && -z "${QZ_SANDBOX_API_KEY:-}" \
@@ -1086,6 +1094,34 @@ run_harbor() {
       --ae "PI_SETTINGS_CONFIG=$PI_SETTINGS_CONFIG"
       --ae "PI_EXTENSION_DIR=$PI_EXTENSION_DIR"
     )
+  elif harbor_agent_is_dsh; then
+    cmd+=(
+      --ak "version=$DSH_VERSION"
+      --ak "permission_mode=$DSH_PERMISSION_MODE"
+      --ak "provider_route=$DSH_PROVIDER"
+      --ak "thinking_format=$DSH_THINKING_FORMAT"
+      --ak "temperature=$DSH_TEMPERATURE"
+      --ak "max_tokens=$DSH_MAX_TOKENS"
+      --ak "context_window=$DSH_CONTEXT_WINDOW"
+      --ak "provider_retry_max=$DSH_PROVIDER_RETRY_MAX"
+      --ak "request_timeout_ms=$DSH_REQUEST_TIMEOUT_MS"
+      --ak "stream_idle_timeout_ms=$DSH_STREAM_IDLE_TIMEOUT_MS"
+      # Harbor resolves ${VAR} templates from its host environment immediately
+      # before creating the task environment. Keep the credential out of the
+      # Harbor process argv and persisted command receipts.
+      --ae 'DSH_API_KEY=${DSH_API_KEY}'
+      --ae "DSH_BASE_URL=$DSH_BASE_URL"
+      --ae "DSH_CACHE_DIR=$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH"
+      --ae "DSH_NODE_RUNTIME_PATH=$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH/node-runtime.tar.gz"
+      --ae "DSH_RUNTIME_TAR_PATH=$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH/$DSH_RUNTIME_BASENAME"
+      --ae "DSH_TELEMETRY_DISABLED=1"
+    )
+    if [[ "$DSH_PROVIDER" == "deepseek" ]]; then
+      cmd+=(
+        --ak "thinking=$DSH_THINKING"
+        --ak "reasoning_effort=$DSH_REASONING_EFFORT"
+      )
+    fi
   else
     cmd+=(
       --ak "version=$CLAUDE_CODE_VERSION"
@@ -1164,20 +1200,30 @@ run_harbor() {
     python3 "$SCRIPT_DIR/harbor_shell_utils.py" url-hostname \
       "${HARBOR_LOCAL_WHEEL_SERVER_URL:-}"
   )"
-  model_host="$(
-    python3 "$SCRIPT_DIR/harbor_shell_utils.py" url-hostname \
-      "$HARBOR_ANTHROPIC_BASE_URL"
-  )"
+  if harbor_agent_is_dsh; then
+    model_host="$(
+      python3 "$SCRIPT_DIR/harbor_shell_utils.py" url-hostname "$DSH_BASE_URL"
+    )"
+  else
+    model_host="$(
+      python3 "$SCRIPT_DIR/harbor_shell_utils.py" url-hostname \
+        "$HARBOR_ANTHROPIC_BASE_URL"
+    )"
+  fi
   no_proxy_value="127.0.0.1,localhost,host.docker.internal"
-  if [[ -n "$opik_host" ]]; then
-    no_proxy_value="$no_proxy_value,$opik_host"
-  fi
-  if [[ -n "$wheel_host" ]]; then
-    no_proxy_value="$no_proxy_value,$wheel_host"
-  fi
-  if harbor_agent_is_pi && [[ -n "$model_host" ]]; then
-    # Pi sends its OpenAI-compatible request straight to the gateway.
-    no_proxy_value="$no_proxy_value,$model_host"
+  append_no_proxy_host() {
+    local host="$1"
+    [[ -n "$host" ]] || return 0
+    case ",$no_proxy_value," in
+      *",$host,"*) ;;
+      *) no_proxy_value="$no_proxy_value,$host" ;;
+    esac
+  }
+  append_no_proxy_host "$opik_host"
+  append_no_proxy_host "$wheel_host"
+  if harbor_agent_is_pi || harbor_agent_is_dsh; then
+    # Pi and DSH send requests straight to their configured gateway.
+    append_no_proxy_host "$model_host"
   fi
   cmd+=( --ae "NO_PROXY=$no_proxy_value" --ae "no_proxy=$no_proxy_value" )
 
@@ -1204,7 +1250,7 @@ run_harbor() {
   fi
 
   local mounts_json="[]" agent_package_source="$HARBOR_CC_CLAUDE_TGZ_SOURCE"
-  if harbor_agent_is_pi; then
+  if harbor_agent_is_pi || harbor_agent_is_dsh; then
     agent_package_source=""
   fi
   if [[ "$HARBOR_ENVIRONMENT_TYPE" == "docker" || "$HARBOR_ENVIRONMENT_TYPE" == "opensandbox" ]]; then
@@ -1215,7 +1261,21 @@ run_harbor() {
     if [[ -n "$agent_package_source" ]]; then
       mount_args+=( --mount "$agent_package_source" "$HARBOR_CC_CLAUDE_TGZ_MOUNT_PATH" exists )
     fi
-    if [[ -n "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" ]]; then
+    if harbor_agent_is_dsh && [[ -n "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" ]]; then
+      # DSH needs only its pinned Node and package archives. Uploading the
+      # entire shared Harbor dependency cache costs hundreds of MiB per
+      # OpenSandbox trial and can dominate environment setup time.
+      mount_args+=(
+        --mount
+        "$HARBOR_CC_PY_WHEEL_DIR_SOURCE/node-runtime.tar.gz"
+        "$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH/node-runtime.tar.gz"
+        exists
+        --mount
+        "$HARBOR_CC_PY_WHEEL_DIR_SOURCE/$DSH_RUNTIME_BASENAME"
+        "$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH/$DSH_RUNTIME_BASENAME"
+        exists
+      )
+    elif [[ -n "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" ]]; then
       mount_args+=( --mount "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" "$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH" exists )
     fi
     if [[ -n "$VERIFIER_UV_BIN_DIR_SOURCE" ]]; then
@@ -1259,7 +1319,7 @@ run_harbor() {
     cmd+=( --debug )
   fi
 
-  if [[ -n "$AGENT" ]] && ! harbor_agent_is_pi; then
+  if [[ -n "$AGENT" && -z "$HARBOR_AGENT_IMPORT_PATH" ]]; then
     cmd+=( -a "$AGENT" )
   fi
 
@@ -1336,6 +1396,8 @@ run_harbor() {
   echo "[INFO] environment: $HARBOR_ENVIRONMENT_TYPE"
   if harbor_agent_is_pi; then
     echo "[INFO] pi version: $PI_VERSION | thinking: $PI_THINKING_LEVEL"
+  elif harbor_agent_is_dsh; then
+    echo "[INFO] dsh version: $DSH_VERSION | thinking: $DSH_THINKING/$DSH_REASONING_EFFORT | temperature: $DSH_TEMPERATURE"
   else
     echo "[INFO] claude max_turns: ${HARBOR_AK_MAX_TURNS:-<default>}"
   fi
@@ -1364,6 +1426,8 @@ run_harbor() {
 
   if harbor_agent_is_pi; then
     export PYTHONPATH="$HARBOR_PI_DIR:$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+  elif harbor_agent_is_dsh; then
+    export PYTHONPATH="$HARBOR_DSH_DIR:$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
   else
     export PYTHONPATH="$HARBOR_CLAUDE_CODE_DIR:$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
   fi

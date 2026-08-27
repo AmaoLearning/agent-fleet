@@ -37,6 +37,8 @@ printf '[environment]\nbuild_timeout_sec = 60\n' > "$tmp/dataset/1/task.toml"
 printf 'FROM alpine:3.20\n' > "$tmp/dataset/1/environment/Dockerfile"
 printf 'fake package\n' > "$tmp/deps/claude.tgz"
 printf 'fake wheel\n' > "$tmp/deps/wheels/dependency.whl"
+printf 'fake node runtime\n' > "$tmp/deps/wheels/node-runtime.tar.gz"
+printf 'fake dsh runtime\n' > "$tmp/deps/wheels/dsh-runtime-0.1.1-rc.2.tar.gz"
 
 run_dry() {
   local image_ref="$1"
@@ -76,9 +78,15 @@ run_dry() {
     HARBOR_FORCE_BUILD="$force_build" \
     HARBOR_N_CONCURRENT=1 \
     HARBOR_MAX_RETRIES=0 \
+    HARBOR_TEMPERATURE= \
+    HARBOR_TOP_P= \
+    OPIK_URL= \
+    TRACE_TO_OPIK= \
     API_KEY=fake-api-key \
     BASE_URL=https://model.example \
     MODEL=test-model \
+    DSH_PROVIDER="${DSH_PROVIDER_OVERRIDE:-deepseek}" \
+    DSH_THINKING_FORMAT=deepseek \
     HARBOR_ANTHROPIC_AUTH_TOKEN=fake-api-key \
     HARBOR_LLM_KWARGS='{"temperature":1.0}' \
     HARBOR_CC_CLAUDE_TGZ_SOURCE="$tmp/deps/claude.tgz" \
@@ -294,3 +302,71 @@ grep -F -- "\"source\": \"$tmp/pi-extensions\"" \
   <<< "$pi_opensandbox" >/dev/null
 grep -F -- '"target": "/opt/tb-pi/extensions"' <<< "$pi_opensandbox" >/dev/null
 grep -F -- '"read_only": true' <<< "$pi_opensandbox" >/dev/null
+
+dsh_opensandbox="$(run_dry \
+  'test-project/manual:immutable' "$tmp/does-not-exist.py" '{}' auto \
+  opensandbox 0 dsh 0)"
+grep -F -- 'FAKE_HARBOR_ARG=dsh_harbor:AgentFleetDsh' \
+  <<< "$dsh_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=DSH_RUNTIME_TAR_PATH=/opt/tb-opik/python-wheels/dsh-runtime-0.1.1-rc.2.tar.gz' \
+  <<< "$dsh_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=DSH_NODE_RUNTIME_PATH=/opt/tb-opik/python-wheels/node-runtime.tar.gz' \
+  <<< "$dsh_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=DSH_BASE_URL=https://model.example/v1' \
+  <<< "$dsh_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=DSH_API_KEY=${DSH_API_KEY}' \
+  <<< "$dsh_opensandbox" >/dev/null
+if grep -F -- 'FAKE_HARBOR_ARG=DSH_API_KEY=fake-key' \
+  <<< "$dsh_opensandbox" >/dev/null; then
+  echo 'DSH API key unexpectedly appeared in Harbor argv' >&2
+  exit 1
+fi
+grep -F -- 'FAKE_HARBOR_ARG=deepseek/test-model' \
+  <<< "$dsh_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=temperature=1.0' \
+  <<< "$dsh_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=request_timeout_ms=300000' \
+  <<< "$dsh_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=stream_idle_timeout_ms=300000' \
+  <<< "$dsh_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=provider_route=deepseek' \
+  <<< "$dsh_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=thinking=enabled' \
+  <<< "$dsh_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=reasoning_effort=max' \
+  <<< "$dsh_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=--mounts-json' <<< "$dsh_opensandbox" >/dev/null
+grep -F -- "\"source\": \"$tmp/deps/wheels/node-runtime.tar.gz\"" \
+  <<< "$dsh_opensandbox" >/dev/null
+grep -F -- '"target": "/opt/tb-opik/python-wheels/node-runtime.tar.gz"' \
+  <<< "$dsh_opensandbox" >/dev/null
+grep -F -- "\"source\": \"$tmp/deps/wheels/dsh-runtime-0.1.1-rc.2.tar.gz\"" \
+  <<< "$dsh_opensandbox" >/dev/null
+grep -F -- '"target": "/opt/tb-opik/python-wheels/dsh-runtime-0.1.1-rc.2.tar.gz"' \
+  <<< "$dsh_opensandbox" >/dev/null
+if grep -F -- "\"source\": \"$tmp/deps/wheels\", \"target\": \"/opt/tb-opik/python-wheels\"" \
+  <<< "$dsh_opensandbox" >/dev/null; then
+  echo 'DSH unexpectedly mounted the entire shared dependency cache' >&2
+  exit 1
+fi
+if grep -F -- 'FAKE_HARBOR_ARG=-a' <<< "$dsh_opensandbox" >/dev/null; then
+  echo 'custom DSH import unexpectedly also passed Harbor built-in -a dsh' >&2
+  exit 1
+fi
+
+dsh_generic_opensandbox="$(
+  DSH_PROVIDER_OVERRIDE=harbor run_dry \
+    'test-project/manual:immutable' "$tmp/does-not-exist.py" '{}' auto \
+    opensandbox 0 dsh 0
+)"
+grep -F -- 'FAKE_HARBOR_ARG=harbor/test-model' \
+  <<< "$dsh_generic_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=provider_route=harbor' \
+  <<< "$dsh_generic_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=thinking_format=deepseek' \
+  <<< "$dsh_generic_opensandbox" >/dev/null
+if grep -F -- 'FAKE_HARBOR_ARG=reasoning_effort=' \
+  <<< "$dsh_generic_opensandbox" >/dev/null; then
+  echo 'generic DSH route unexpectedly claimed native reasoning_effort' >&2
+  exit 1
+fi
