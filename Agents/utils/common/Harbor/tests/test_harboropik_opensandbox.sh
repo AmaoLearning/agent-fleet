@@ -39,6 +39,8 @@ printf 'fake package\n' > "$tmp/deps/claude.tgz"
 printf 'fake wheel\n' > "$tmp/deps/wheels/dependency.whl"
 printf 'fake node runtime\n' > "$tmp/deps/wheels/node-runtime.tar.gz"
 printf 'fake dsh runtime\n' > "$tmp/deps/wheels/dsh-runtime-0.1.1-rc.2.tar.gz"
+printf 'fake python runtime\n' > "$tmp/deps/wheels/dsh-minimal-python3.12-runtime.tar.gz"
+printf 'fake dsh minimal runtime\n' > "$tmp/deps/wheels/dsh-minimal-runtime-0.1.0-rc.6.tar.gz"
 
 run_dry() {
   local image_ref="$1"
@@ -351,6 +353,38 @@ if grep -F -- "\"source\": \"$tmp/deps/wheels\", \"target\": \"/opt/tb-opik/pyth
 fi
 if grep -F -- 'FAKE_HARBOR_ARG=-a' <<< "$dsh_opensandbox" >/dev/null; then
   echo 'custom DSH import unexpectedly also passed Harbor built-in -a dsh' >&2
+  exit 1
+fi
+
+dsh_minimal_opensandbox="$(run_dry \
+  'test-project/manual:immutable' "$tmp/does-not-exist.py" '{}' auto \
+  opensandbox 0 dsh-minimal 0)"
+grep -F -- 'FAKE_HARBOR_ARG=dsh_minimal_harbor:AgentFleetDshMinimal' \
+  <<< "$dsh_minimal_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=version=0.1.0-rc.6' \
+  <<< "$dsh_minimal_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=provider_route=deepseek' \
+  <<< "$dsh_minimal_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=provider_retry_max=0' \
+  <<< "$dsh_minimal_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=process_retry_max=0' \
+  <<< "$dsh_minimal_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=DSH_PYTHON_RUNTIME_PATH=/opt/tb-opik/python-wheels/dsh-minimal-python3.12-runtime.tar.gz' \
+  <<< "$dsh_minimal_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=DSH_MINIMAL_RUNTIME_TAR_PATH=/opt/tb-opik/python-wheels/dsh-minimal-runtime-0.1.0-rc.6.tar.gz' \
+  <<< "$dsh_minimal_opensandbox" >/dev/null
+grep -F -- "\"source\": \"$tmp/deps/wheels/dsh-minimal-python3.12-runtime.tar.gz\"" \
+  <<< "$dsh_minimal_opensandbox" >/dev/null
+grep -F -- "\"source\": \"$tmp/deps/wheels/dsh-minimal-runtime-0.1.0-rc.6.tar.gz\"" \
+  <<< "$dsh_minimal_opensandbox" >/dev/null
+if grep -F -- 'FAKE_HARBOR_ARG=temperature=' \
+  <<< "$dsh_minimal_opensandbox" >/dev/null; then
+  echo 'DSH minimal unexpectedly added a temperature override' >&2
+  exit 1
+fi
+if grep -F -- 'FAKE_HARBOR_ARG=reasoning_effort=' \
+  <<< "$dsh_minimal_opensandbox" >/dev/null; then
+  echo 'DSH minimal unexpectedly added a reasoning_effort override' >&2
   exit 1
 fi
 

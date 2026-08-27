@@ -12,7 +12,9 @@ make_runner() {
   mkdir -p "$runner_dir/bin"
   cat > "$runner_dir/bin/python" <<SH
 #!/usr/bin/env bash
-if [[ "\${3:-}" == "harbor" ]]; then
+if [[ "\${4:-}" == "commit" ]]; then
+  printf '%s\n' '4407eb5227a2ff4f0d3f16b2eb48849382fdf276'
+elif [[ "\${3:-}" == "harbor" ]]; then
   printf '%s\n' '$harbor_version'
 elif [[ "\${3:-}" == "e2b" ]]; then
   printf '%s\n' '2.32.1'
@@ -49,7 +51,7 @@ SH
 
 IMAGE_RUNNER="$TMP_DIR/image-runner"
 HOST_RUNNER="$TMP_DIR/host-runner"
-make_runner "$IMAGE_RUNNER" 0.18.0 2.1.32
+make_runner "$IMAGE_RUNNER" 0.22.0 2.1.32
 HARBOR_RUNNER_IMAGE_DIR="$IMAGE_RUNNER" \
 HARBOR_RUNNER_HOST_DIR="$HOST_RUNNER" \
 HARBOR_RUNNER_UV_BIN="$TMP_DIR/missing-uv" \
@@ -69,7 +71,7 @@ grep -q '0.20.0' "$TMP_DIR/image-mismatch.log"
 rm -rf "$IMAGE_RUNNER" "$HOST_RUNNER"
 FAKE_UV="$TMP_DIR/uv"
 FAKE_RUNNER="$TMP_DIR/fake-runner"
-make_runner "$FAKE_RUNNER" 0.18.0 2.1.32
+make_runner "$FAKE_RUNNER" 0.22.0 2.1.32
 UV_LOG="$TMP_DIR/uv.log"
 cat > "$FAKE_UV" <<'SH'
 #!/usr/bin/env bash
@@ -94,6 +96,7 @@ HARBOR_RUNNER_UV_BIN="$FAKE_UV" \
   "$HARBOR_DIR/setup_runner_env.sh"
 
 grep -q "venv --clear --python 3.12.13 $HOST_RUNNER" "$UV_LOG"
+grep -q "pip install --python $HOST_RUNNER/bin/python harbor @ git+https://github.com/harbor-framework/harbor.git@4407eb5227a2ff4f0d3f16b2eb48849382fdf276" "$UV_LOG"
 grep -q "pip install --only-binary :all: --python $HOST_RUNNER/bin/python --requirement $HARBOR_DIR/runner-requirements.txt" "$UV_LOG"
 grep -q "pip check --python $HOST_RUNNER/bin/python" "$UV_LOG"
 
@@ -125,7 +128,7 @@ selected_host="$(
 )"
 [[ "$selected_host" == "$HOST_RUNNER/bin/opik|$HOST_RUNNER/bin/harbor|$HOST_RUNNER/bin/python" ]]
 
-make_runner "$IMAGE_RUNNER" 0.18.0 2.1.32
+make_runner "$IMAGE_RUNNER" 0.22.0 2.1.32
 selected_image="$(
   env -i \
     HOME="$TMP_DIR/home" \

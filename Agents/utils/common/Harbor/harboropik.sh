@@ -76,6 +76,7 @@ write_harbor_registry_summary() {
 }
 
 if harbor_publishes_job_dir; then
+  mkdir -p "$RUNTIME_DIR"
   : > "$HARBOR_JOB_DIR_FILE"
   rm -f "$HARBOR_BENCHMARK_EXIT_FILE"
   # BASHPID needs bash >= 4; at this top-level scope $$ is the same pid.
@@ -1094,6 +1095,20 @@ run_harbor() {
       --ae "PI_SETTINGS_CONFIG=$PI_SETTINGS_CONFIG"
       --ae "PI_EXTENSION_DIR=$PI_EXTENSION_DIR"
     )
+  elif harbor_agent_is_dsh_minimal; then
+    cmd+=(
+      --ak "version=$DSH_MINIMAL_SDK_VERSION"
+      --ak "permission_mode=$DSH_PERMISSION_MODE"
+      --ak "provider_route=$DSH_PROVIDER"
+      --ak "context_window=$DSH_CONTEXT_WINDOW"
+      --ak "provider_retry_max=$DSH_PROVIDER_RETRY_MAX"
+      --ak "process_retry_max=$DSH_PROCESS_RETRY_MAX"
+      --ae 'DSH_API_KEY=${DSH_API_KEY}'
+      --ae "DSH_BASE_URL=$DSH_BASE_URL"
+      --ae "DSH_PYTHON_RUNTIME_PATH=$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH/$DSH_MINIMAL_PYTHON_RUNTIME_BASENAME"
+      --ae "DSH_MINIMAL_RUNTIME_TAR_PATH=$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH/$DSH_MINIMAL_RUNTIME_BASENAME"
+      --ae "DSH_TELEMETRY_DISABLED=1"
+    )
   elif harbor_agent_is_dsh; then
     cmd+=(
       --ak "version=$DSH_VERSION"
@@ -1179,7 +1194,6 @@ run_harbor() {
   if [[ -n "${HARBOR_AGENT_TIMEOUT_MULTIPLIER:-}" ]]; then
     cmd+=( --agent-timeout-multiplier "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" )
   fi
-
   if harbor_agent_is_claude_code; then
     if [[ -n "$HARBOR_AK_MAX_TURNS" ]]; then
       cmd+=( --ak "max_turns=$HARBOR_AK_MAX_TURNS" )
@@ -1261,7 +1275,18 @@ run_harbor() {
     if [[ -n "$agent_package_source" ]]; then
       mount_args+=( --mount "$agent_package_source" "$HARBOR_CC_CLAUDE_TGZ_MOUNT_PATH" exists )
     fi
-    if harbor_agent_is_dsh && [[ -n "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" ]]; then
+    if harbor_agent_is_dsh_minimal && [[ -n "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" ]]; then
+      mount_args+=(
+        --mount
+        "$HARBOR_CC_PY_WHEEL_DIR_SOURCE/$DSH_MINIMAL_PYTHON_RUNTIME_BASENAME"
+        "$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH/$DSH_MINIMAL_PYTHON_RUNTIME_BASENAME"
+        exists
+        --mount
+        "$HARBOR_CC_PY_WHEEL_DIR_SOURCE/$DSH_MINIMAL_RUNTIME_BASENAME"
+        "$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH/$DSH_MINIMAL_RUNTIME_BASENAME"
+        exists
+      )
+    elif harbor_agent_is_dsh && [[ -n "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" ]]; then
       # DSH needs only its pinned Node and package archives. Uploading the
       # entire shared Harbor dependency cache costs hundreds of MiB per
       # OpenSandbox trial and can dominate environment setup time.
@@ -1396,6 +1421,8 @@ run_harbor() {
   echo "[INFO] environment: $HARBOR_ENVIRONMENT_TYPE"
   if harbor_agent_is_pi; then
     echo "[INFO] pi version: $PI_VERSION | thinking: $PI_THINKING_LEVEL"
+  elif harbor_agent_is_dsh_minimal; then
+    echo "[INFO] dsh minimal SDK version: $DSH_MINIMAL_SDK_VERSION | official two-tool composition"
   elif harbor_agent_is_dsh; then
     echo "[INFO] dsh version: $DSH_VERSION | thinking: $DSH_THINKING/$DSH_REASONING_EFFORT | temperature: $DSH_TEMPERATURE"
   else
@@ -1560,7 +1587,6 @@ run_opencode_task() {
     if [[ -n "${HARBOR_AGENT_TIMEOUT_MULTIPLIER:-}" ]]; then
       cmd+=( --agent-timeout-multiplier "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" )
     fi
-
     if [[ -n "${OPENCODE_CONFIG_CONTENT:-}" ]]; then
       cmd+=( --ak "opencode_config=$OPENCODE_CONFIG_CONTENT" )
     fi
