@@ -22,6 +22,47 @@ forwarded. The generic route also does not claim to forward native
 `reasoningEffort`; its DeepSeek reasoning dialect is configured explicitly and
 must be audited from the resulting MaaS trajectory.
 
+## Official minimal SDK agent
+
+Set `AGENT=dsh-minimal` to run the separate official two-tool composition from
+the public Harbor `Add DeepSeek Harness minimal SDK agent` implementation. It
+uses only persistent Bash and `str_replace_editor`; it does not enable skills,
+web tools, subagents, workflow tools, or context compaction.
+
+Agent Fleet pins `deepseek-harness-sdk==0.1.0-rc.6`. The development host
+prepares the SDK and its native runtime together with the portable Python 3.12
+`python-build-standalone` runtime, then mounts the two archives read-only into
+each Docker/OpenSandbox
+task. The task environment performs no `curl`, `pip`, or package-manager
+installation during agent setup.
+
+```bash
+export AGENT=dsh-minimal
+export DSH_PROVIDER=deepseek
+export DSH_MINIMAL_SDK_VERSION=0.1.0-rc.6
+export DSH_BASE_URL=https://gateway.example.test/v1
+export DSH_API_KEY=replace-me
+export DSH_PROVIDER_RETRY_MAX=5
+export DSH_PROCESS_RETRY_MAX=2
+```
+
+The minimal SDK route intentionally supports only DSH's native
+`deepseek-official` provider with an optional custom `DEEPSEEK_BASE_URL`.
+`DSH_PROVIDER=harbor` remains available only to the headless `dsh` control
+agent. The minimal composition does not add thinking, reasoning-effort,
+temperature, or `top_p` overrides beyond the published Cordis composition.
+`DSH_PROVIDER_RETRY_MAX` opts into DSH's bounded `normal` request retry policy
+for empty responses, rate limits, server errors, timeouts, transport failures,
+and YiCloud's observed intermittent `HTTP_405`. Retries stay inside the failed
+DSH step and do not add a user turn or modify the system prompt.
+
+`DSH_PROCESS_RETRY_MAX` is a second, agent-fleet-only recovery layer and also
+defaults to `0`. After a non-zero DSH exit it starts a fresh DSH process in the
+same task sandbox, with the exact same benchmark instruction and existing
+filesystem state. It does not add or modify any prompt, persona, tool, or DSH
+agent-loop setting. Each process writes a separate DSH session JSONL so the
+restart remains auditable.
+
 ## Quick start
 
 Keep credentials and deployment-specific values in ignored `config.local.env`.

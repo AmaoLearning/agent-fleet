@@ -30,7 +30,7 @@ class RunnerValidationTest(unittest.TestCase):
         self.harbor = self.root / "bin/harbor"
         self.runtime = self.root / "runtime"
         self.requirements = HARBOR_DIR / "runner-requirements.txt"
-        self._write_python("0.18.0")
+        self._write_python("0.22.0")
         for executable in (self.opik, self.harbor):
             self._write_executable(executable, "#!/bin/sh\nexit 0\n")
         self.environment = {
@@ -39,6 +39,9 @@ class RunnerValidationTest(unittest.TestCase):
             "HARBOR_CLI_BIN": str(self.harbor),
             "HARBOR_RUNNER_PYTHON_VERSION": "3.12.13",
             "HARBOR_RUNNER_REQUIREMENTS": str(self.requirements),
+            "HARBOR_RUNNER_SOURCE_COMMIT": (
+                "4407eb5227a2ff4f0d3f16b2eb48849382fdf276"
+            ),
             "RUNTIME_DIR": str(self.runtime),
             "HARBOR_RUNNER_PREPARE_STATUS_FILE": str(self.runtime / "status"),
             "HARBOR_RUNNER_PREPARE_LOG_FILE": str(self.runtime / "runner.log"),
@@ -62,6 +65,8 @@ class RunnerValidationTest(unittest.TestCase):
             self.python,
             "#!/bin/sh\n"
             f"[ \"$#\" = 2 ] && echo {python_version} && exit 0\n"
+            "[ \"$4\" = commit ] && echo "
+            "4407eb5227a2ff4f0d3f16b2eb48849382fdf276 && exit 0\n"
             f"[ \"$3\" = harbor ] && echo {harbor_version} && exit 0\n"
             "[ \"$3\" = e2b ] && echo 2.32.1 && exit 0\n"
             "[ \"$3\" = dockerfile-parse ] && echo 2.0.1 && exit 0\n"
@@ -77,7 +82,7 @@ class RunnerValidationTest(unittest.TestCase):
         self.assertEqual(
             MODULE.load_requirements(self.requirements),
             [
-                ("harbor", "0.18.0"),
+                ("harbor", "0.22.0"),
                 ("e2b", "2.32.1"),
                 ("dockerfile-parse", "2.0.1"),
                 ("opik", "2.1.32"),
@@ -88,7 +93,7 @@ class RunnerValidationTest(unittest.TestCase):
             ],
         )
         invalid = self.root / "invalid.txt"
-        invalid.write_text("harbor>=0.18.0\n", encoding="utf-8")
+        invalid.write_text("harbor>=0.22.0\n", encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "invalid exact requirement"):
             MODULE.load_requirements(invalid)
 
@@ -100,9 +105,9 @@ class RunnerValidationTest(unittest.TestCase):
         log = io.StringIO()
         with mock.patch.dict(os.environ, self.environment):
             self.assertFalse(MODULE.validate_runner(log))
-        self.assertIn("expected 0.18.0, got 0.20.0", log.getvalue())
+        self.assertIn("expected 0.22.0, got 0.20.0", log.getvalue())
 
-        self._write_python("0.18.0", "3.11.9")
+        self._write_python("0.22.0", "3.11.9")
         log = io.StringIO()
         with mock.patch.dict(os.environ, self.environment):
             self.assertFalse(MODULE.validate_runner(log))

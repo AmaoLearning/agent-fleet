@@ -18,6 +18,11 @@ PYTHON_VERSION_PROBE = (
     "import sys; "
     "print('.'.join(str(part) for part in sys.version_info[:3]))"
 )
+VCS_COMMIT_PROBE = (
+    "import importlib.metadata as m, json, sys; "
+    "data=json.loads(m.distribution(sys.argv[1]).read_text('direct_url.json')); "
+    "print(data.get('vcs_info', {}).get('commit_id', ''))"
+)
 
 
 def load_requirements(path: Path) -> list[tuple[str, str]]:
@@ -68,6 +73,22 @@ def validate_runner(log: TextIO) -> bool:
             f"got {actual_python or 'unknown'}\n"
         )
         return False
+
+    expected_commit = os.environ.get("HARBOR_RUNNER_SOURCE_COMMIT", "")
+    if expected_commit:
+        result = subprocess.run(
+            [str(python), "-c", VCS_COMMIT_PROBE, "harbor", "commit"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        actual_commit = result.stdout.strip() if result.returncode == 0 else None
+        if actual_commit != expected_commit:
+            log.write(
+                "Harbor source commit mismatch: "
+                f"expected {expected_commit}, got {actual_commit or 'unknown'}\n"
+            )
+            return False
 
     for package, expected in requirements:
         try:

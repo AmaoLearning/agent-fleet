@@ -167,7 +167,12 @@ class AgentFleetDsh(BaseInstalledAgent):
         value = self._get_env("DSH_BASE_URL")
         if not value:
             raise ValueError("DSH_BASE_URL is required")
-        return value.rstrip("/")
+        normalized = value.rstrip("/")
+        for endpoint in ("/chat/completions", "/responses"):
+            if normalized.endswith(endpoint):
+                normalized = normalized[: -len(endpoint)]
+                break
+        return normalized
 
     def build_eval_patch(self) -> str:
         """Render the highest-priority user Cordis layer for this trial."""

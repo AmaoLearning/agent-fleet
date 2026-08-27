@@ -72,6 +72,20 @@ class AgentFleetDshTests(unittest.TestCase):
         ):
             self.make_agent(Path(temporary_name), top_p="0.95")
 
+    def test_base_url_normalizes_completion_endpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            agent = AgentFleetDsh(
+                logs_dir=Path(temporary_name),
+                model_name="deepseek/model",
+                extra_env={
+                    "DSH_API_KEY": "fake-key",
+                    "DSH_BASE_URL": "https://gateway.example.test/v1/chat/completions",
+                },
+            )
+            self.assertEqual(
+                agent._base_url(), "https://gateway.example.test/v1"
+            )
+
     def test_rejects_non_native_model_route(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_name:
             agent = AgentFleetDsh(
