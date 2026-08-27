@@ -23,6 +23,8 @@ class AgentFleetDshMinimal(BaseInstalledAgent):
     _SITE_PACKAGES = f"{_RUNTIME_ROOT}/site-packages"
     _REMOTE_RUNNER = "/installed-agent/dsh_minimal_runner.py"
     _REMOTE_CONFIG = "/installed-agent/dsh_minimal.cordis.yml"
+    _REMOTE_RELAY = "/installed-agent/dsh_sampling_relay.py"
+    _RELAY_PORT = 18100
     _SESSION_ROOT = "/logs/agent/dsh-sessions"
     _OUTPUT_FILENAME = "dsh-minimal.txt"
 
@@ -106,12 +108,15 @@ class AgentFleetDshMinimal(BaseInstalledAgent):
             raise ValueError("DSH_API_KEY is required")
         return {
             "DEEPSEEK_API_KEY": api_key or "config-dump-placeholder",
-            "DEEPSEEK_BASE_URL": self._base_url(),
+            "DEEPSEEK_BASE_URL": f"http://127.0.0.1:{self._RELAY_PORT}/v1",
             "DSH_CONTEXT_WINDOW": str(self._context_window),
             "DSH_MODEL": self._model_id(),
             "DSH_PROVIDER_RETRY_MAX": str(self._provider_retry_max),
             "DSH_SESSION_ROOT": self._SESSION_ROOT,
             "DSH_TELEMETRY_DISABLED": "1",
+            "DSH_SAMPLING_RELAY_PORT": str(self._RELAY_PORT),
+            "DSH_SAMPLING_RECEIPT_PATH": "/logs/agent/sampling-relay.jsonl",
+            "DSH_SAMPLING_UPSTREAM_BASE_URL": self._base_url(),
             "PYTHONPATH": self._SITE_PACKAGES,
         }
 
@@ -181,6 +186,7 @@ class AgentFleetDshMinimal(BaseInstalledAgent):
         for filename, remote in (
             ("dsh_minimal_runner.py", self._REMOTE_RUNNER),
             ("dsh_minimal.cordis.yml", self._REMOTE_CONFIG),
+            ("dsh_sampling_relay.py", self._REMOTE_RELAY),
         ):
             await self._upload_text(
                 environment,
@@ -207,6 +213,26 @@ class AgentFleetDshMinimal(BaseInstalledAgent):
         output = f"/logs/agent/{self._OUTPUT_FILENAME}"
         script = f"""\
 set -o pipefail
+relay_log=/logs/agent/sampling-relay.log
+{self._PYTHON} {self._REMOTE_RELAY} >>"$relay_log" 2>&1 &
+relay_pid=$!
+cleanup_relay() {{
+  kill "$relay_pid" 2>/dev/null || true
+  wait "$relay_pid" 2>/dev/null || true
+}}
+trap cleanup_relay EXIT INT TERM
+relay_ready=0
+for attempt in {{1..50}}; do
+  if {self._PYTHON} -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:{self._RELAY_PORT}/healthz", timeout=1).read()'; then
+    relay_ready=1
+    break
+  fi
+  sleep 0.1
+done
+if (( relay_ready == 0 )); then
+  echo "sampling relay failed to become ready" >&2
+  exit 70
+fi
 run_dsh() {{
   {runner}
 }}

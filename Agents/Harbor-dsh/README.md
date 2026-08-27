@@ -49,8 +49,12 @@ export DSH_PROCESS_RETRY_MAX=2
 The minimal SDK route intentionally supports only DSH's native
 `deepseek-official` provider with an optional custom `DEEPSEEK_BASE_URL`.
 `DSH_PROVIDER=harbor` remains available only to the headless `dsh` control
-agent. The minimal composition does not add thinking, reasoning-effort,
-temperature, or `top_p` overrides beyond the published Cordis composition.
+agent. The minimal composition pins the native DeepSeek provider to
+`thinking: enabled` and `reasoningEffort: max`. A loopback-only relay between
+the SDK and MaaS overwrites every completion request with
+`reasoning_effort=max`, `temperature=1.0`, and `top_p=0.95`. It writes a
+redacted per-request receipt to `/logs/agent/sampling-relay.jsonl`; prompts,
+API keys, reasoning, and tool arguments are never recorded there.
 `DSH_PROVIDER_RETRY_MAX` opts into DSH's bounded `normal` request retry policy
 for empty responses, rate limits, server errors, timeouts, transport failures,
 and YiCloud's observed intermittent `HTTP_405`. Retries stay inside the failed

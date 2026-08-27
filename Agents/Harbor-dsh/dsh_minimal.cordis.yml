@@ -9,6 +9,8 @@
   config:
     apiKeyEnv: DEEPSEEK_API_KEY
     baseURL: !!js process.env.DEEPSEEK_BASE_URL
+    thinking: enabled
+    reasoningEffort: max
     streamIdleTimeoutMs: 172800000
     retryPolicy:
       mode: normal
