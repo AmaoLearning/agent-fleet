@@ -30,6 +30,7 @@ class Config:
     wheel_dir: Path
     source_ref: str
     source_sha: str
+    source_dir: Path | None
     runtime_tarball: Path
     version_file: Path
     python_runtime_tarball: Path
@@ -50,6 +51,7 @@ class Config:
         source_sha = _value(
             values, "DSH_SDK_MINIMAL_SOURCE_SHA", DEFAULT_SOURCE_SHA
         )
+        source_dir_value = values.get("DSH_SDK_MINIMAL_SOURCE_DIR", "").strip()
         runtime_basename = _value(
             values,
             "DSH_SDK_MINIMAL_RUNTIME_BASENAME",
@@ -59,6 +61,7 @@ class Config:
             wheel_dir=wheel_dir,
             source_ref=source_ref,
             source_sha=source_sha,
+            source_dir=Path(source_dir_value) if source_dir_value else None,
             runtime_tarball=Path(
                 _value(
                     values,
@@ -128,10 +131,28 @@ def prepare(config: Config) -> None:
             ],
             check=True,
         )
-        source_url = (
-            "https://github.com/deepseek-ai/deepseek-harness/archive/"
-            f"{config.source_sha}.tar.gz#subdirectory=python/sdk"
-        )
+        if config.source_dir is None:
+            source_requirement = (
+                "deepseek-harness-sdk @ "
+                "https://github.com/deepseek-ai/deepseek-harness/archive/"
+                f"{config.source_sha}.tar.gz#subdirectory=python/sdk"
+            )
+        else:
+            completed = subprocess.run(
+                ["git", "-C", str(config.source_dir), "rev-parse", "HEAD"],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            if completed.stdout.strip() != config.source_sha:
+                raise RuntimeError(
+                    "DSH SDK source checkout mismatch: "
+                    f"expected {config.source_sha}, got {completed.stdout.strip()}"
+                )
+            sdk_dir = config.source_dir / "python" / "sdk"
+            if not (sdk_dir / "pyproject.toml").is_file():
+                raise RuntimeError(f"DSH SDK source is missing: {sdk_dir}")
+            source_requirement = str(sdk_dir)
         subprocess.run(
             [
                 sys.executable,
@@ -142,7 +163,7 @@ def prepare(config: Config) -> None:
                 "--no-deps",
                 "--target",
                 str(site_packages),
-                f"deepseek-harness-sdk @ {source_url}",
+                source_requirement,
             ],
             check=True,
         )

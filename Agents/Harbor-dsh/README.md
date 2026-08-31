@@ -109,6 +109,8 @@ export DSH_PROVIDER=deepseek
 export DSH_SDK_MINIMAL_DSH_VERSION=0.1.2-alpha.2
 export DSH_SDK_MINIMAL_SOURCE_REF=dsh-v0.1.2-alpha.2
 export DSH_SDK_MINIMAL_SOURCE_SHA=0a53fb55bea101816fa226bb964ae2bed71c343b
+# Optional: use an existing checkout whose HEAD exactly matches SOURCE_SHA.
+export DSH_SDK_MINIMAL_SOURCE_DIR=
 export DSH_SDK_MINIMAL_MAX_TOKENS=
 export DSH_PROCESS_RETRY_MAX=0
 ```
