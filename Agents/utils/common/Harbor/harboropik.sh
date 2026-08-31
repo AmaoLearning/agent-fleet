@@ -1095,6 +1095,24 @@ run_harbor() {
       --ae "PI_SETTINGS_CONFIG=$PI_SETTINGS_CONFIG"
       --ae "PI_EXTENSION_DIR=$PI_EXTENSION_DIR"
     )
+  elif harbor_agent_is_dsh_sdk_minimal; then
+    cmd+=(
+      --ak "version=$DSH_SDK_MINIMAL_DSH_VERSION"
+      --ak "permission_mode=$DSH_PERMISSION_MODE"
+      --ak "provider_route=$DSH_PROVIDER"
+      --ak "context_window=$DSH_CONTEXT_WINDOW"
+      --ak "process_retry_max=$DSH_PROCESS_RETRY_MAX"
+      --ae 'DSH_API_KEY=${DSH_API_KEY}'
+      --ae "DSH_BASE_URL=$DSH_BASE_URL"
+      --ae "DSH_PYTHON_RUNTIME_PATH=$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH/$DSH_MINIMAL_PYTHON_RUNTIME_BASENAME"
+      --ae "DSH_SDK_MINIMAL_RUNTIME_TAR_PATH=$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH/$DSH_SDK_MINIMAL_RUNTIME_BASENAME"
+      --ae "DSH_NODE_RUNTIME_PATH=$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH/node-runtime.tar.gz"
+      --ae "DSH_RUNTIME_TAR_PATH=$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH/$DSH_SDK_MINIMAL_DSH_RUNTIME_BASENAME"
+      --ae "DSH_TELEMETRY_DISABLED=1"
+    )
+    if [[ -n "$DSH_SDK_MINIMAL_MAX_TOKENS" ]]; then
+      cmd+=( --ak "max_tokens=$DSH_SDK_MINIMAL_MAX_TOKENS" )
+    fi
   elif harbor_agent_is_dsh_minimal; then
     cmd+=(
       --ak "version=$DSH_MINIMAL_SDK_VERSION"
@@ -1278,7 +1296,26 @@ run_harbor() {
     if [[ -n "$agent_package_source" ]]; then
       mount_args+=( --mount "$agent_package_source" "$HARBOR_CC_CLAUDE_TGZ_MOUNT_PATH" exists )
     fi
-    if harbor_agent_is_dsh_minimal && [[ -n "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" ]]; then
+    if harbor_agent_is_dsh_sdk_minimal && [[ -n "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" ]]; then
+      mount_args+=(
+        --mount
+        "$HARBOR_CC_PY_WHEEL_DIR_SOURCE/$DSH_MINIMAL_PYTHON_RUNTIME_BASENAME"
+        "$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH/$DSH_MINIMAL_PYTHON_RUNTIME_BASENAME"
+        exists
+        --mount
+        "$HARBOR_CC_PY_WHEEL_DIR_SOURCE/$DSH_SDK_MINIMAL_RUNTIME_BASENAME"
+        "$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH/$DSH_SDK_MINIMAL_RUNTIME_BASENAME"
+        exists
+        --mount
+        "$HARBOR_CC_PY_WHEEL_DIR_SOURCE/node-runtime.tar.gz"
+        "$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH/node-runtime.tar.gz"
+        exists
+        --mount
+        "$HARBOR_CC_PY_WHEEL_DIR_SOURCE/$DSH_SDK_MINIMAL_DSH_RUNTIME_BASENAME"
+        "$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH/$DSH_SDK_MINIMAL_DSH_RUNTIME_BASENAME"
+        exists
+      )
+    elif harbor_agent_is_dsh_minimal && [[ -n "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" ]]; then
       mount_args+=(
         --mount
         "$HARBOR_CC_PY_WHEEL_DIR_SOURCE/$DSH_MINIMAL_PYTHON_RUNTIME_BASENAME"
@@ -1424,6 +1461,8 @@ run_harbor() {
   echo "[INFO] environment: $HARBOR_ENVIRONMENT_TYPE"
   if harbor_agent_is_pi; then
     echo "[INFO] pi version: $PI_VERSION | thinking: $PI_THINKING_LEVEL"
+  elif harbor_agent_is_dsh_sdk_minimal; then
+    echo "[INFO] dsh sdk-minimal: $DSH_SDK_MINIMAL_SOURCE_REF@$DSH_SDK_MINIMAL_SOURCE_SHA | CLI $DSH_SDK_MINIMAL_DSH_VERSION"
   elif harbor_agent_is_dsh_minimal; then
     echo "[INFO] dsh minimal SDK version: $DSH_MINIMAL_SDK_VERSION | official two-tool composition"
   elif harbor_agent_is_dsh; then

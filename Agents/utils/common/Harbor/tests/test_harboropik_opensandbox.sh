@@ -41,6 +41,8 @@ printf 'fake node runtime\n' > "$tmp/deps/wheels/node-runtime.tar.gz"
 printf 'fake dsh runtime\n' > "$tmp/deps/wheels/dsh-runtime-0.1.1-rc.2.tar.gz"
 printf 'fake python runtime\n' > "$tmp/deps/wheels/dsh-minimal-python3.12-runtime.tar.gz"
 printf 'fake dsh minimal runtime\n' > "$tmp/deps/wheels/dsh-minimal-runtime-0.1.0-rc.6.tar.gz"
+printf 'fake sdk minimal runtime\n' > "$tmp/deps/wheels/dsh-sdk-minimal-runtime-dsh-v0.1.2-alpha.2.tar.gz"
+printf 'fake sdk minimal dsh runtime\n' > "$tmp/deps/wheels/dsh-runtime-0.1.2-alpha.2.tar.gz"
 
 run_dry() {
   local image_ref="$1"
@@ -401,6 +403,31 @@ dsh_minimal_with_max_tokens="$(
 )"
 grep -F -- 'FAKE_HARBOR_ARG=max_tokens=49152' \
   <<< "$dsh_minimal_with_max_tokens" >/dev/null
+
+dsh_sdk_minimal_opensandbox="$(run_dry \
+  'test-project/manual:immutable' "$tmp/does-not-exist.py" '{}' auto \
+  opensandbox 0 dsh-sdk-minimal 0)"
+grep -F -- 'FAKE_HARBOR_ARG=dsh_sdk_minimal_harbor:AgentFleetDshSdkMinimal' \
+  <<< "$dsh_sdk_minimal_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=version=0.1.2-alpha.2' \
+  <<< "$dsh_sdk_minimal_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=DSH_SDK_MINIMAL_RUNTIME_TAR_PATH=/opt/tb-opik/python-wheels/dsh-sdk-minimal-runtime-dsh-v0.1.2-alpha.2.tar.gz' \
+  <<< "$dsh_sdk_minimal_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=DSH_RUNTIME_TAR_PATH=/opt/tb-opik/python-wheels/dsh-runtime-0.1.2-alpha.2.tar.gz' \
+  <<< "$dsh_sdk_minimal_opensandbox" >/dev/null
+for dependency in \
+  dsh-minimal-python3.12-runtime.tar.gz \
+  dsh-sdk-minimal-runtime-dsh-v0.1.2-alpha.2.tar.gz \
+  node-runtime.tar.gz \
+  dsh-runtime-0.1.2-alpha.2.tar.gz; do
+  grep -F -- "\"source\": \"$tmp/deps/wheels/$dependency\"" \
+    <<< "$dsh_sdk_minimal_opensandbox" >/dev/null
+done
+if grep -F -- 'FAKE_HARBOR_ARG=provider_retry_max=' \
+  <<< "$dsh_sdk_minimal_opensandbox" >/dev/null; then
+  echo 'DSH sdk-minimal unexpectedly added a custom provider retry policy' >&2
+  exit 1
+fi
 
 dsh_generic_opensandbox="$(
   DSH_PROVIDER_OVERRIDE=harbor run_dry \

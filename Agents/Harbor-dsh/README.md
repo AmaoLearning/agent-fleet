@@ -86,6 +86,37 @@ agent-loop setting. The baseline session uses a unique `harbor-<uuid>` ID;
 restarted processes use explicit `-retry-N` session IDs so each process writes
 a separate, auditable DSH session JSONL.
 
+## Version-matched SDK minimal profile
+
+Set `AGENT=dsh-sdk-minimal` to run the official `sdk-minimal` profile through
+the newer Python JSON-RPC SDK. This is a parallel control; it does not replace
+the frozen `dsh-minimal` implementation above. The default pins both the DSH
+CLI package and Python SDK source to `dsh-v0.1.2-alpha.2` at commit
+`0a53fb55bea101816fa226bb964ae2bed71c343b`. The source commit is explicit
+because an equivalent alpha Python SDK wheel is not published.
+
+Unlike the older adapter, this route supplies `dsh_home`, `dsh_bin`,
+`profile=sdk-minimal`, and `reasoning_effort=max` to the SDK and lets the
+version-matched profile own its complete Cordis composition. It does not
+upload a custom Cordis patch. Agent setup validates the profile with
+`dsh --profile sdk-minimal --dump-config`; the resolved config, DSH/SDK source
+fingerprints, sessions, stdout/stderr, and sampling-relay receipts remain in
+`/logs/agent`.
+
+```bash
+export AGENT=dsh-sdk-minimal
+export DSH_PROVIDER=deepseek
+export DSH_SDK_MINIMAL_DSH_VERSION=0.1.2-alpha.2
+export DSH_SDK_MINIMAL_SOURCE_REF=dsh-v0.1.2-alpha.2
+export DSH_SDK_MINIMAL_SOURCE_SHA=0a53fb55bea101816fa226bb964ae2bed71c343b
+export DSH_SDK_MINIMAL_MAX_TOKENS=
+export DSH_PROCESS_RETRY_MAX=0
+```
+
+The same loopback sampling relay fixes `reasoning_effort=max`,
+`temperature=1.0`, and `top_p=0.95` at the MaaS request boundary. This route
+does not add the older adapter's optional provider-retry Cordis patch.
+
 ## Quick start
 
 Keep credentials and deployment-specific values in ignored `config.local.env`.

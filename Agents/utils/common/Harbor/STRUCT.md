@@ -140,7 +140,7 @@ Typical dataset paths:
 
 | Variable | Purpose |
 | --- | --- |
-| `AGENT` | `claude-code`, `opencode`, `pi`, `dsh`, or `dsh-minimal` |
+| `AGENT` | `claude-code`, `opencode`, `pi`, `dsh`, `dsh-minimal`, or `dsh-sdk-minimal` |
 | `MODEL` | Model name passed to Harbor |
 | `BASE_URL` | Model gateway base URL |
 | `API_KEY` | Model gateway API key |
