@@ -53,10 +53,60 @@ YICLOUD_HARBOR_PASSWORD=your-harbor-password
 # is verified with 0.
 YICLOUD_HARBOR_TLS_VERIFY=0
 
-YICLOUD_SANDBOX_UPLOAD_BACKEND=s3
-YICLOUD_SANDBOX_S3_CONFIG=/absolute/path/to/s3cfg
-YICLOUD_SANDBOX_S3_BUCKET=your-bucket
+YICLOUD_SANDBOX_S3_PROFILE=provider-name
 ```
+
+Each provider is an ignored, project-local profile:
+
+```text
+.s3-profiles/provider-name/
+├── profile.env
+└── s3cfg          # optional; development-host write credentials
+```
+
+`profile.env` identifies one bucket, credential-free Sandbox read origin, and
+immutable object prefix:
+
+```bash
+YICLOUD_SANDBOX_S3_BUCKET=your-bucket
+YICLOUD_SANDBOX_S3_READ_ORIGIN=http://s3.internal.example/your-bucket
+YICLOUD_SANDBOX_S3_PREFIX=agent-fleet-upload/v1
+```
+
+Create a separate directory for every S3 provider. Maintainers who publish new
+objects may add a sibling `s3cfg` containing least-privilege write credentials;
+read-only users should omit that file. The read origin must already address the
+bucket and must not contain credentials, query parameters, or fragments. The
+bucket policy must allow anonymous `GetObject` from Sandbox networks without
+granting anonymous writes.
+
+Agent Fleet computes the immutable object key locally and checks its ordinary
+anonymous URL first. An existing object therefore requires no S3 key. Some S3
+providers return `403` rather than `404` for a missing object when anonymous
+`ListBucket` is intentionally disabled. In that case, a configured writer uses
+an authenticated exact-key listing to distinguish a miss from an existing
+object whose anonymous-read policy is broken. Writer credentials must therefore
+include `ListBucket` restricted to the configured prefix as well as permission
+to publish objects there. The `s3cfg` must be a regular file that is not group-
+or world-readable. In `auto` mode, a missing object without a safe write
+configuration uses the existing HTTP transport instead. In strict `s3` mode,
+the same condition is an error.
+Switch providers only by changing
+`YICLOUD_SANDBOX_S3_PROFILE` in `config.local.env`. Agent Fleet rejects path
+traversal, symlinked profile files, unknown or duplicate metadata keys, and
+standalone S3 values that conflict with the selected profile. Selecting a
+profile defaults `YICLOUD_SANDBOX_UPLOAD_BACKEND` to `auto`: S3 is preferred,
+while an S3 staging or Sandbox materialization failure falls back to the
+existing authenticated HTTP upload path. Set the value explicitly to `s3`
+when failure must be strict. Without a profile, the bucket and read origin may
+be configured directly; `YICLOUD_SANDBOX_S3_CONFIG` remains an optional legacy
+write configuration.
+
+Every YiCloud OpenSandbox create request uses the provider-required
+`["sleep", "infinity"]` entrypoint. After the Sandbox reaches `Running` and
+service aliases are installed, Agent Fleet launches the Bundle's resolved
+start command through execd. This changes only OpenSandbox startup; task images
+and other environment backends retain their original behavior.
 
 Use the immutable environment ID in automation. The runner rejects requests
 without an explicit environment ID or exact environment name.
@@ -104,9 +154,10 @@ Prebuild performs a bounded BuildKit cache prune before starting and every 30
 minutes while it runs. Defaults are `max-used-space=500GB`,
 `min-free-space=300GB`, and `reserved-space=100GB`; all four values are
 configurable through `HARBOR_OPENSANDBOX_PREBUILD_GC_*`. Set
-`HARBOR_OPENSANDBOX_PREBUILD_GC_INTERVAL_SEC=0` to disable GC. It prunes only
-unused BuildKit cache and does not delete images, containers, volumes, or
-artifacts already published to the OCI Registry.
+`HARBOR_OPENSANDBOX_PREBUILD_GC_INTERVAL_SEC=0` to disable only periodic GC;
+the initial prune still runs for every non-dry-run batch. It prunes only unused
+BuildKit cache and does not delete images, containers, volumes, or artifacts
+already published to the OCI Registry.
 
 Already published content-addressed images are reused in the task-specific
 repository. Unsupported environment definitions are listed as skipped in the
@@ -118,8 +169,10 @@ prebuild report; unsupported runtime capabilities fail before creation.
   the log includes the Sandbox ID and latest status.
 - An image preparation failure occurs before Sandbox creation. Verify Buildx,
   registry login, and the task Dockerfile.
-- An upload failure should be diagnosed separately from agent execution. Check
-  S3 credentials, bucket access, DNS, and the signed download URL.
+- An artifact transport failure should be diagnosed separately from agent
+  execution. Existing objects require only the anonymous read URL and bucket
+  policy; publishing a missing object additionally requires a safe local
+  `s3cfg`. Also verify DNS from the relevant host and Sandbox networks.
 - A model request failure means the instance started, but its configured model
   gateway is unreachable or rejected the request.
 

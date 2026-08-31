@@ -103,6 +103,7 @@ DOCKER_CONFIG = "application/vnd.docker.container.image.v1+json"
 DOCKER_LAYER_GZIP = "application/vnd.docker.image.rootfs.diff.tar.gzip"
 OCI_CONFIG = "application/vnd.oci.image.config.v1+json"
 OCI_LAYER_GZIP = "application/vnd.oci.image.layer.v1.tar+gzip"
+DEFAULT_PLATFORM = "linux/amd64"
 DEFAULT_APT_MIRROR = "http://mirrors.tuna.tsinghua.edu.cn"
 DEFAULT_PIP_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
 DEFAULT_NPM_REGISTRY = "https://registry.npmmirror.com"
@@ -376,7 +377,7 @@ def package_source_build_args(
             gosumdb_parts[1], "Go checksum database", build_network
         )
 
-    return {
+    build_args = {
         "CARGO_HTTP_TIMEOUT": str(timeout_seconds),
         "CARGO_REGISTRIES_CRATES_IO_INDEX": cargo_index,
         "CARGO_REGISTRIES_CRATES_IO_PROTOCOL": (
@@ -391,6 +392,10 @@ def package_source_build_args(
         "RUSTUP_DIST_SERVER": rustup_dist,
         "RUSTUP_UPDATE_ROOT": rustup_update,
     }
+    parsed_pip_index = urlparse(pip_index)
+    if parsed_pip_index.scheme == "http":
+        build_args["PIP_TRUSTED_HOST"] = parsed_pip_index.hostname or ""
+    return build_args
 
 
 def optional_package_source_urls(
@@ -770,6 +775,20 @@ def registry_credentials(config_path: Path, registry: str) -> tuple[str, str]:
     return docker_credentials(config_path, registry)
 
 
+def validate_registry_host(registry: str) -> str:
+    host = registry.strip()
+    if not host:
+        raise ValueError("--registry or YICLOUD_HARBOR_HOST is required")
+    if "://" in host or "/" in host or "@" in host or any(
+        character.isspace() for character in host
+    ):
+        raise ValueError(
+            "registry must be a bare OCI registry host, "
+            f"got: {registry!r}"
+        )
+    return host
+
+
 @dataclass(frozen=True)
 class RegistryTarget:
     """The immutable address scope for one task's Harbor repository."""
@@ -1112,9 +1131,16 @@ def normalize_oci_image_config(raw: object) -> dict[str, object]:
     normalized_healthcheck = dict(healthcheck) if healthcheck is not None else None
     if normalized_healthcheck is not None and "Test" in normalized_healthcheck:
         normalized_healthcheck["test"] = normalized_healthcheck.pop("Test")
+    working_dir = config.get("WorkingDir")
+    if working_dir is not None and not isinstance(working_dir, str):
+        raise RuntimeError("OCI image config WorkingDir must be a string or null")
+    working_dir = working_dir or None
+    if working_dir is not None and not working_dir.startswith("/"):
+        raise RuntimeError("OCI image config WorkingDir must be an absolute path")
     return {
         "entrypoint": _string_argv(config.get("Entrypoint"), label="Entrypoint"),
         "cmd": _string_argv(config.get("Cmd"), label="Cmd"),
+        "working_dir": working_dir,
         "exposed_ports": _oci_port_entries(config.get("ExposedPorts")),
         "healthcheck": normalized_healthcheck,
     }
@@ -1171,10 +1197,13 @@ def _compose_runtime(
     """Materialize OCI defaults and Compose overrides for one provider run."""
     image_entrypoint = image_config.get("entrypoint")
     image_command = image_config.get("cmd")
+    image_working_dir = image_config.get("working_dir")
     if image_entrypoint is not None and not isinstance(image_entrypoint, list):
         raise RuntimeError("normalized OCI image entrypoint is invalid")
     if image_command is not None and not isinstance(image_command, list):
         raise RuntimeError("normalized OCI image command is invalid")
+    if image_working_dir is not None and not isinstance(image_working_dir, str):
+        raise RuntimeError("normalized OCI image working directory is invalid")
 
     entrypoint_overridden = service.entrypoint_present and service.entrypoint is not None
     if entrypoint_overridden:
@@ -1203,6 +1232,13 @@ def _compose_runtime(
     if not start_argv and legacy_dockerfile_keepalive:
         start_argv = list(LEGACY_DOCKERFILE_KEEPALIVE)
         start_source = "adapter.legacy-keepalive"
+
+    if service.working_dir is not None:
+        workdir = service.working_dir
+        workdir_source = "compose.working_dir"
+    else:
+        workdir = image_working_dir
+        workdir_source = "image-config.working-dir" if workdir else None
 
     ports: list[dict[str, object]] = []
     seen_ports: set[tuple[int, str]] = set()
@@ -1263,6 +1299,8 @@ def _compose_runtime(
     return {
         "start_argv": start_argv,
         "start_argv_source": start_source,
+        "workdir": workdir,
+        "workdir_source": workdir_source,
         "internal_ports": ports,
         "readiness": readiness,
     }
@@ -1605,6 +1643,7 @@ def _service_manifest(
         "entrypoint_present": service.entrypoint_present,
         "command": service.command,
         "command_present": service.command_present,
+        "working_dir": service.working_dir,
         "environment": service.environment,
         "ports": service.ports,
         "expose": service.expose,
@@ -1646,6 +1685,7 @@ def _bundle_identity(
                 key: services[name].get(key)
                 for key in (
                     "entrypoint", "entrypoint_present", "command", "command_present",
+                    "working_dir",
                     "environment", "ports", "expose", "aliases",
                     "depends_on", "healthcheck", "volumes", "networks", "cap_add",
                     "privileged", "resources", "unsupported_fields", "runtime",
@@ -1660,6 +1700,17 @@ def _bundle_identity(
 
 
 def prepare_bundle(args: argparse.Namespace) -> PreparedBundle:
+    # Platform deliberately stays out of the content hash. If a real task ever
+    # requires another architecture, isolate its images and local artifacts in
+    # an architecture-specific Harbor Project/namespace before relaxing this
+    # guard; never reuse or overwrite the default amd64 cache with --force.
+    args.platform = getattr(args, "platform", DEFAULT_PLATFORM)
+    if args.platform != DEFAULT_PLATFORM:
+        raise NotImplementedError(
+            f"OpenSandbox task-image platform {args.platform!r} is not implemented; "
+            f"only {DEFAULT_PLATFORM!r} is currently supported"
+        )
+    args.registry = validate_registry_host(args.registry)
     task_dir = resolve_task_dir(args.task_dir, args.dataset_root, args.include)
     bundle = resolve_bundle_spec(task_dir)
     build_network = getattr(args, "build_network", "default")
@@ -1794,10 +1845,8 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--include", default=os.environ.get("INCLUDE_TASKS", ""))
     parser.add_argument(
         "--registry",
-        default=os.environ.get(
-            "YICLOUD_HARBOR_HOST",
-            os.environ.get("HARBOR_OPENSANDBOX_REGISTRY", "registry.gate.yicloud.com.cn"),
-        ),
+        default=os.environ.get("YICLOUD_HARBOR_HOST", ""),
+        help="target OCI registry host; defaults to YICLOUD_HARBOR_HOST",
     )
     parser.add_argument(
         "--project",
@@ -1836,7 +1885,8 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--platform",
-        default=os.environ.get("HARBOR_OPENSANDBOX_IMAGE_PLATFORM", "linux/amd64"),
+        default=os.environ.get("HARBOR_OPENSANDBOX_IMAGE_PLATFORM", DEFAULT_PLATFORM),
+        help=f"target image platform; currently only {DEFAULT_PLATFORM} is implemented",
     )
     parser.add_argument(
         "--tag-prefix",
