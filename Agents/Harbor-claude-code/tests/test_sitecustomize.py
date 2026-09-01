@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 import os
 import shlex
 import subprocess
@@ -35,6 +36,64 @@ def load_module():
 
 
 class ClaudeCommandPatchTest(unittest.TestCase):
+    def test_opik_hook_receives_harbor_trial_identity(self) -> None:
+        module = load_module()
+        captured_env: list[dict[str, str] | None] = []
+
+        class FakeClaudeCode:
+            async def install(self, environment):
+                return None
+
+            async def run(self, instruction, environment, context):
+                command = (
+                    "claude --verbose --output-format=stream-json "
+                    "--permission-mode=bypassPermissions --print -- 'task'"
+                )
+                return await self.exec_as_agent(environment, command)
+
+            async def exec_as_agent(
+                self, environment, command, env=None, cwd=None, timeout_sec=None
+            ):
+                captured_env.append(env)
+                return command
+
+        claude_code = types.ModuleType("harbor.agents.installed.claude_code")
+        claude_code.ClaudeCode = FakeClaudeCode
+        fake_modules = {
+            name: types.ModuleType(name)
+            for name in ("harbor", "harbor.agents", "harbor.agents.installed")
+        }
+        fake_modules["harbor.agents.installed.claude_code"] = claude_code
+
+        with mock.patch.dict(sys.modules, fake_modules):
+            module._patch_claude_code_realtime_hooks()
+            agent = FakeClaudeCode()
+            agent._extra_env = {
+                "CC_OPIK_ENABLE_HOOK": "true",
+                "OPIK_URL": "https://opik.example.invalid/api",
+            }
+            agent.session_id = "hello_sandbox__AbCdEfG__agent"
+            asyncio.run(agent.run("task", object(), object()))
+
+        self.assertEqual(
+            captured_env,
+            [{"HARBOR_TRIAL_ID": "hello_sandbox__AbCdEfG"}],
+        )
+
+    def test_opik_hooks_do_not_use_login_shells(self) -> None:
+        module = load_module()
+        settings = json.loads(
+            module._build_hook_settings_json(
+                "/opt/tb-opik/claude_realtime_trace.py"
+            )
+        )
+
+        for event, entries in settings["hooks"].items():
+            with self.subTest(event=event):
+                command = entries[0]["hooks"][0]["command"]
+                self.assertIn("sh -c ", command)
+                self.assertNotIn("sh -lc ", command)
+
     def test_opik_hook_requires_shared_trace_gate(self) -> None:
         module = load_module()
         endpoint = "https://opik.example.invalid/api"
