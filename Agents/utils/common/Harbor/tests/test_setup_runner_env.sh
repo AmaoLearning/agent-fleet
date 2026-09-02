@@ -9,6 +9,7 @@ make_runner() {
   local runner_dir="$1"
   local harbor_version="$2"
   local opik_version="$3"
+  local python_version="${4:-3.12.13}"
   mkdir -p "$runner_dir/bin"
   cat > "$runner_dir/bin/python" <<SH
 #!/usr/bin/env bash
@@ -31,7 +32,7 @@ elif [[ "\${3:-}" == "e2b" ]]; then
 elif [[ "\${3:-}" == "dockerfile-parse" ]]; then
   printf '%s\n' '2.0.1'
 elif [[ "\$#" == 2 ]]; then
-  printf '%s\n' '3.12.13'
+  printf '%s\n' '$python_version'
 else
   exit 1
 fi
@@ -111,6 +112,75 @@ HARBOR_RUNNER_UV_BIN="$FAKE_UV" \
 [[ "$(grep -c "venv --clear --python 3.12.13 $HOST_RUNNER" "$UV_LOG")" -eq 2 ]]
 grep -q 'Python mirror failed; falling back to the upstream release' "$MIRROR_FALLBACK_LOG"
 grep -q "pip install --only-binary :all: --python $HOST_RUNNER/bin/python --requirement $HARBOR_DIR/runner-requirements.txt" "$UV_LOG"
+
+CUSTOM_RUNNER="$TMP_DIR/custom-runner"
+CUSTOM_HOST_RUNNER="$TMP_DIR/custom-host-runner"
+CUSTOM_IMAGE_RUNNER="$TMP_DIR/no-custom-image-runner"
+make_runner "$CUSTOM_RUNNER" 0.18.0 2.1.32 3.12.3
+
+if HARBOR_RUNNER_PYTHON_VERSION=3.12.13 \
+  HARBOR_RUNNER_PYTHON=3.12.3 \
+  HARBOR_RUNNER_IMAGE_DIR="$CUSTOM_IMAGE_RUNNER" \
+  HARBOR_RUNNER_HOST_DIR="$CUSTOM_HOST_RUNNER" \
+  HARBOR_RUNNER_UV_BIN="$FAKE_UV" \
+  "$HARBOR_DIR/setup_runner_env.sh" > "$TMP_DIR/setup-version-conflict.log" 2>&1; then
+  echo "setup accepted conflicting runner Python variables" >&2
+  exit 1
+fi
+grep -q 'HARBOR_RUNNER_PYTHON_VERSION and legacy HARBOR_RUNNER_PYTHON disagree' \
+  "$TMP_DIR/setup-version-conflict.log"
+
+: > "$UV_LOG"
+UV_LOG="$UV_LOG" \
+FAKE_RUNNER="$CUSTOM_RUNNER" \
+HARBOR_RUNNER_PYTHON_VERSION=3.12.3 \
+HARBOR_RUNNER_IMAGE_DIR="$CUSTOM_IMAGE_RUNNER" \
+HARBOR_RUNNER_HOST_DIR="$CUSTOM_HOST_RUNNER" \
+HARBOR_RUNNER_UV_BIN="$FAKE_UV" \
+  "$HARBOR_DIR/setup_runner_env.sh"
+grep -q "venv --clear --python 3.12.3 $CUSTOM_HOST_RUNNER" "$UV_LOG"
+[[ "$(cat "$CUSTOM_HOST_RUNNER/.agent-fleet-python-version")" == "3.12.3" ]]
+
+rm -rf "$CUSTOM_HOST_RUNNER"
+: > "$UV_LOG"
+UV_LOG="$UV_LOG" \
+FAKE_RUNNER="$CUSTOM_RUNNER" \
+HARBOR_RUNNER_PYTHON=3.12.3 \
+HARBOR_RUNNER_IMAGE_DIR="$CUSTOM_IMAGE_RUNNER" \
+HARBOR_RUNNER_HOST_DIR="$CUSTOM_HOST_RUNNER" \
+HARBOR_RUNNER_UV_BIN="$FAKE_UV" \
+  "$HARBOR_DIR/setup_runner_env.sh"
+grep -q "venv --clear --python 3.12.3 $CUSTOM_HOST_RUNNER" "$UV_LOG"
+
+runtime_python_version="$(
+  env -i \
+    HOME="$TMP_DIR/home" \
+    PATH="$PATH" \
+    OUTPUT_ROOT="$TMP_DIR/output" \
+    RUN_ID=runner-version-test \
+    HARBOR_RUNNER_IMAGE_DIR="$CUSTOM_IMAGE_RUNNER" \
+    HARBOR_RUNNER_HOST_DIR="$CUSTOM_HOST_RUNNER" \
+    bash -c '. "$1/env.sh"; python3 "$1/harbor_prepare_runner_cli.py" --validate; printf "%s" "$HARBOR_RUNNER_PYTHON_VERSION"' \
+      bash "$HARBOR_DIR"
+)"
+[[ "$runtime_python_version" == "3.12.3" ]]
+
+if env -i \
+  HOME="$TMP_DIR/home" \
+  PATH="$PATH" \
+  OUTPUT_ROOT="$TMP_DIR/output" \
+  RUN_ID=runner-version-conflict \
+  HARBOR_RUNNER_PYTHON_VERSION=3.12.13 \
+  HARBOR_RUNNER_PYTHON=3.12.3 \
+  HARBOR_RUNNER_IMAGE_DIR="$CUSTOM_IMAGE_RUNNER" \
+  HARBOR_RUNNER_HOST_DIR="$CUSTOM_HOST_RUNNER" \
+  bash -c '. "$1/env.sh"' bash "$HARBOR_DIR" \
+  > "$TMP_DIR/runtime-version-conflict.log" 2>&1; then
+  echo "runtime accepted conflicting runner Python variables" >&2
+  exit 1
+fi
+grep -q 'HARBOR_RUNNER_PYTHON_VERSION and legacy HARBOR_RUNNER_PYTHON disagree' \
+  "$TMP_DIR/runtime-version-conflict.log"
 
 selected_host="$(
   env -i \

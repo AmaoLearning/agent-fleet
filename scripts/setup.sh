@@ -57,6 +57,7 @@ load_existing_setup_config() {
       OPIK_URL|OPIK_API_KEY|OPIK_WORKSPACE|OPIK_PROJECT_NAME|\
       CLAUDE_TGZ_SOURCE|CLAUDE_WHEEL_DIR_SOURCE|\
       HARBOR_CC_CLAUDE_TGZ_SOURCE|HARBOR_CC_PY_WHEEL_DIR_SOURCE|\
+      HARBOR_RUNNER_PYTHON_VERSION|\
       RL_ENVIRONMENT_TYPE|HARBOR_ENVIRONMENT_TYPE|AGENT_FLEET_REQUIRE_DOCKER)
         ;;
       *)
@@ -407,7 +408,9 @@ fi
 case "${HARBOR_RUNNER_SETUP:-1}" in
   1|true|yes)
     info "Preparing pinned Harbor runner environment..."
-    "$SOURCE_REPO_ROOT/Agents/utils/common/Harbor/setup_runner_env.sh"
+    HARBOR_RUNNER_PYTHON_VERSION="${HARBOR_RUNNER_PYTHON_VERSION:-}" \
+    HARBOR_RUNNER_PYTHON="${HARBOR_RUNNER_PYTHON:-}" \
+      "$SOURCE_REPO_ROOT/Agents/utils/common/Harbor/setup_runner_env.sh"
     ;;
   0|false|no)
     warn "Skipping Harbor runner setup because HARBOR_RUNNER_SETUP=${HARBOR_RUNNER_SETUP}"

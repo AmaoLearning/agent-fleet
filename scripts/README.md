@@ -99,6 +99,10 @@ dependency and is prepared separately by the runner.
   values, and setup prompts only for missing required values.
 - Host Harbor runner: exact direct dependencies come from
   `runner-requirements.txt`; a valid environment is reused.
+- Host runner Python defaults to `3.12.13`. Override it with
+  `HARBOR_RUNNER_PYTHON_VERSION`; the legacy `HARBOR_RUNNER_PYTHON` name is
+  still accepted. A one-shot custom setup records the selected version in the
+  host runner directory so later runs validate against the same version.
 - A mode-`0600` backup is taken before modifying `config.local.env`; its
   `*.local.env.bak.agent-fleet` name is git-ignored.
 

@@ -4,20 +4,31 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+info() { printf '[INFO] %s\n' "$*"; }
+ok() { printf '[ OK ] %s\n' "$*"; }
+fail() { printf '[FAIL] %s\n' "$*" >&2; }
+
 HARBOR_RUNNER_UV_VERSION="${HARBOR_RUNNER_UV_VERSION:-0.11.28}"
-HARBOR_RUNNER_PYTHON="${HARBOR_RUNNER_PYTHON:-3.12.13}"
+if [[ -n "${HARBOR_RUNNER_PYTHON_VERSION:-}" &&
+      -n "${HARBOR_RUNNER_PYTHON:-}" &&
+      "$HARBOR_RUNNER_PYTHON_VERSION" != "$HARBOR_RUNNER_PYTHON" ]]; then
+  fail "HARBOR_RUNNER_PYTHON_VERSION and legacy HARBOR_RUNNER_PYTHON disagree"
+  exit 1
+fi
+HARBOR_RUNNER_PYTHON_VERSION_EXPLICIT=0
+if [[ -n "${HARBOR_RUNNER_PYTHON_VERSION:-}" || -n "${HARBOR_RUNNER_PYTHON:-}" ]]; then
+  HARBOR_RUNNER_PYTHON_VERSION_EXPLICIT=1
+fi
+HARBOR_RUNNER_PYTHON_VERSION="${HARBOR_RUNNER_PYTHON_VERSION:-${HARBOR_RUNNER_PYTHON:-3.12.13}}"
 HARBOR_RUNNER_IMAGE_DIR="${HARBOR_RUNNER_IMAGE_DIR:-/opt/harbor-runner}"
 HARBOR_RUNNER_HOST_DIR="${HARBOR_RUNNER_HOST_DIR:-$HOME/.local/share/agent-fleet/harbor-runner}"
+HARBOR_RUNNER_PYTHON_VERSION_FILE="$HARBOR_RUNNER_HOST_DIR/.agent-fleet-python-version"
 HARBOR_RUNNER_REQUIREMENTS="${HARBOR_RUNNER_REQUIREMENTS:-$SCRIPT_DIR/runner-requirements.txt}"
 HARBOR_RUNNER_VALIDATOR="${HARBOR_RUNNER_VALIDATOR:-$SCRIPT_DIR/harbor_prepare_runner_cli.py}"
 HARBOR_RUNNER_UV_INSTALL_DIR="${HARBOR_RUNNER_UV_INSTALL_DIR:-$HOME/.local/share/agent-fleet/uv/$HARBOR_RUNNER_UV_VERSION}"
 HARBOR_RUNNER_UV_BIN="${HARBOR_RUNNER_UV_BIN:-}"
 HARBOR_RUNNER_UV_INSTALLER_URL="${HARBOR_RUNNER_UV_INSTALLER_URL:-https://releases.astral.sh/github/uv/releases/download/$HARBOR_RUNNER_UV_VERSION/uv-installer.sh}"
 HARBOR_RUNNER_PYTHON_MIRROR="${HARBOR_RUNNER_PYTHON_MIRROR:-https://ghproxy.net/https://github.com/astral-sh/python-build-standalone/releases/download}"
-
-info() { printf '[INFO] %s\n' "$*"; }
-ok() { printf '[ OK ] %s\n' "$*"; }
-fail() { printf '[FAIL] %s\n' "$*" >&2; }
 
 for required_file in "$HARBOR_RUNNER_REQUIREMENTS" "$HARBOR_RUNNER_VALIDATOR"; do
   if [[ ! -f "$required_file" ]]; then
@@ -35,9 +46,17 @@ validate_runner() {
   HARBOR_OPIK_BIN="$runner_dir/bin/opik" \
   HARBOR_CLI_BIN="$runner_dir/bin/harbor" \
   HARBOR_OPIK_PYTHON="$runner_dir/bin/python" \
-  HARBOR_RUNNER_PYTHON_VERSION="$HARBOR_RUNNER_PYTHON" \
+  HARBOR_RUNNER_PYTHON_VERSION="$HARBOR_RUNNER_PYTHON_VERSION" \
   HARBOR_RUNNER_REQUIREMENTS="$HARBOR_RUNNER_REQUIREMENTS" \
     python3 "$HARBOR_RUNNER_VALIDATOR" --validate
+}
+
+record_host_runner_python_version() {
+  if [[ "$HARBOR_RUNNER_PYTHON_VERSION_EXPLICIT" == "1" ]]; then
+    printf '%s\n' "$HARBOR_RUNNER_PYTHON_VERSION" > "$HARBOR_RUNNER_PYTHON_VERSION_FILE"
+  else
+    rm -f -- "$HARBOR_RUNNER_PYTHON_VERSION_FILE"
+  fi
 }
 
 if [[ -d "$HARBOR_RUNNER_IMAGE_DIR" ]]; then
@@ -51,6 +70,7 @@ if [[ -d "$HARBOR_RUNNER_IMAGE_DIR" ]]; then
 fi
 
 if validate_runner "$HARBOR_RUNNER_HOST_DIR" >/dev/null 2>&1; then
+  record_host_runner_python_version
   ok "Pinned host Harbor runner is already ready: $HARBOR_RUNNER_HOST_DIR"
   exit 0
 fi
@@ -77,12 +97,12 @@ info "Creating pinned host Harbor runner: $HARBOR_RUNNER_HOST_DIR"
 if ! UV_PYTHON_INSTALL_MIRROR="$HARBOR_RUNNER_PYTHON_MIRROR" \
   "$HARBOR_RUNNER_UV_BIN" venv \
     --clear \
-    --python "$HARBOR_RUNNER_PYTHON" \
+    --python "$HARBOR_RUNNER_PYTHON_VERSION" \
     "$HARBOR_RUNNER_HOST_DIR"; then
   info "Python mirror failed; falling back to the upstream release"
   "$HARBOR_RUNNER_UV_BIN" venv \
     --clear \
-    --python "$HARBOR_RUNNER_PYTHON" \
+    --python "$HARBOR_RUNNER_PYTHON_VERSION" \
     "$HARBOR_RUNNER_HOST_DIR"
 fi
 UV_LINK_MODE=copy "$HARBOR_RUNNER_UV_BIN" pip install \
@@ -96,4 +116,5 @@ if ! validate_runner "$HARBOR_RUNNER_HOST_DIR"; then
   fail "Pinned host Harbor runner validation failed"
   exit 1
 fi
+record_host_runner_python_version
 ok "Pinned host Harbor runner is ready: $HARBOR_RUNNER_HOST_DIR"
