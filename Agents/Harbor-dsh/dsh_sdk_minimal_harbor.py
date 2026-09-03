@@ -28,6 +28,7 @@ class AgentFleetDshSdkMinimal(BaseInstalledAgent):
     _REMOTE_RELAY = "/installed-agent/dsh_sampling_relay.py"
     _RELAY_PORT = 18100
     _OUTPUT_FILENAME = "dsh-sdk-minimal.txt"
+    _TRACE_FILENAME = "dsh-sdk-minimal-trace.jsonl"
 
     @staticmethod
     @override
@@ -106,6 +107,7 @@ class AgentFleetDshSdkMinimal(BaseInstalledAgent):
         if not api_key and not placeholder_key:
             raise ValueError("DSH_API_KEY is required")
         return {
+            "CI": "1",
             "DEEPSEEK_API_KEY": api_key or "config-dump-placeholder",
             "DEEPSEEK_BASE_URL": f"http://127.0.0.1:{self._RELAY_PORT}/v1",
             "DSH_CONTEXT_WINDOW": str(self._context_window),
@@ -115,6 +117,11 @@ class AgentFleetDshSdkMinimal(BaseInstalledAgent):
             "DSH_SAMPLING_RECEIPT_PATH": "/logs/agent/sampling-relay.jsonl",
             "DSH_SAMPLING_UPSTREAM_BASE_URL": self._base_url(),
             "DSH_TELEMETRY_DISABLED": "1",
+            "EDITOR": "true",
+            "GIT_EDITOR": "true",
+            "GIT_PAGER": "cat",
+            "GIT_TERMINAL_PROMPT": "0",
+            "PAGER": "cat",
             "PYTHONPATH": self._SITE_PACKAGES,
         }
 
@@ -252,6 +259,8 @@ class AgentFleetDshSdkMinimal(BaseInstalledAgent):
             shlex.quote(self._model_id()),
             "--reasoning-effort",
             "max",
+            "--trace-path",
+            f"/logs/agent/{self._TRACE_FILENAME}",
         ]
         if self._max_tokens is not None:
             runner_parts.extend(("--max-tokens", str(self._max_tokens)))

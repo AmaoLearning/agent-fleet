@@ -38,6 +38,9 @@ class AgentFleetDshSdkMinimalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(env["DSH_MODEL"], "private/deepseek-v4-flash-0731")
         self.assertEqual(env["DSH_CONTEXT_WINDOW"], "200000")
         self.assertEqual(env["DEEPSEEK_BASE_URL"], "http://127.0.0.1:18100/v1")
+        self.assertEqual(env["GIT_PAGER"], "cat")
+        self.assertEqual(env["GIT_EDITOR"], "true")
+        self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
         self.assertEqual(
             env["DSH_SAMPLING_UPSTREAM_BASE_URL"],
             "https://gateway.example.test/v1",
@@ -84,6 +87,7 @@ class AgentFleetDshSdkMinimalTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('--dsh-bin "$HOME/.local/bin/dsh"', command)
         self.assertIn("--reasoning-effort max", command)
         self.assertIn("--max-tokens 49152", command)
+        self.assertIn("--trace-path /logs/agent/dsh-sdk-minimal-trace.jsonl", command)
         self.assertIn("dsh_sampling_relay.py", command)
         self.assertIn("command -v stdbuf", command)
         self.assertIn('else\n    tee "$@"', command)
