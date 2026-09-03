@@ -31,7 +31,7 @@ jobs:
     name: Harbor terminalbench21 e2e
     runs-on: [self-hosted, Linux, X64, bare-metal]
     environment: self-hosted-env
-    timeout-minutes: 720
+    timeout-minutes: 480
 
     steps:
       - name: Check out repository
@@ -163,8 +163,11 @@ jobs:
           OUTPUT_PATH: ${{ steps.params.outputs.output_path }}
           ZELLIJ_SESSION_NAME: ${{ steps.params.outputs.run_id }}
           HARBOR_TIMEOUT_MULTIPLIER: "1.0"
+          HARBOR_AGENT_SETUP_TIMEOUT_MULTIPLIER: "2.0"
+          HARBOR_RETRY_EXCLUDE_EXCEPTIONS: RewardFileNotFoundError,RewardFileEmptyError,VerifierOutputParseError,AgentSetupTimeoutError
           HARBOR_ONLINE_ANALYSIS: "1"
           HARBOR_ZELLIJ_KEEP_ON_FAILURE: "0"
+          BENCHMARK_TIMEOUT: 450m
         run: |
           set -euo pipefail
           if [[ -z "$API_KEY" ]]; then
@@ -197,8 +200,30 @@ jobs:
             command+=(--task "$TASKS")
           fi
 
+          timeout_marker="${RUNNER_TEMP}/harbor-benchmark-timeout"
+          rm -f "$timeout_marker"
           status=0
-          script -e -q -c "$(printf '%q ' "${command[@]}")" /dev/null || status=$?
+          timeout --signal=TERM --kill-after=5m "$BENCHMARK_TIMEOUT" \
+            bash -c '
+              marker="$1"
+              shift
+              child=""
+              trap '\''touch "$marker"; [[ -z "$child" ]] || kill -TERM "$child" 2>/dev/null || true'\'' TERM
+              "$@" &
+              child=$!
+              child_status=0
+              while kill -0 "$child" 2>/dev/null; do
+                wait "$child" || child_status=$?
+              done
+              exit "$child_status"
+            ' bash "$timeout_marker" \
+            script -e -q -c "$(printf '%q ' "${command[@]}")" /dev/null || status=$?
+          if [[ -f "$timeout_marker" ]]; then
+            echo "::error::Harbor exceeded its $BENCHMARK_TIMEOUT benchmark budget"
+            # Stop detached workers before health evaluation and artifact staging.
+            zellij kill-session "$ZELLIJ_SESSION_NAME" >/dev/null 2>&1 || true
+          fi
+          rm -f "$timeout_marker"
           printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
           printf 'Harbor exit status: %s\n' "$status"
 
