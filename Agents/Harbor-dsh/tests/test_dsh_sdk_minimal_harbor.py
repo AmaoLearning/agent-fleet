@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 MODULE_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(MODULE_DIR))
 
-from dsh_sdk_minimal_harbor import AgentFleetDshSdkMinimal  # noqa: E402
+from dsh_sdk_minimal_harbor import AgentFleetDshSdkMinimal
 
 
 class AgentFleetDshSdkMinimalTests(unittest.IsolatedAsyncioTestCase):
@@ -44,6 +44,10 @@ class AgentFleetDshSdkMinimalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             env["DSH_SAMPLING_UPSTREAM_BASE_URL"],
             "https://gateway.example.test/v1",
+        )
+        self.assertEqual(
+            env["DSH_SAMPLING_CA_BUNDLE"],
+            "/opt/dsh-sdk-minimal-runtime/site-packages/certifi/cacert.pem",
         )
 
     async def test_install_uses_four_offline_archives_and_checks_profile(self) -> None:

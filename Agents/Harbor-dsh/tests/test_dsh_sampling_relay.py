@@ -11,6 +11,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import ClassVar
+from unittest import mock
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -126,6 +127,23 @@ class SamplingRelayTests(unittest.TestCase):
                 },
             )
         )
+
+    def test_ssl_context_uses_explicit_ca_bundle(self) -> None:
+        bundle = Path(self.temporary.name) / "cacert.pem"
+        bundle.write_text("test certificate bundle\n", encoding="utf-8")
+        sentinel = mock.Mock()
+        with (
+            mock.patch.dict(
+                os.environ, {"DSH_SAMPLING_CA_BUNDLE": str(bundle)}, clear=False
+            ),
+            mock.patch.object(
+                self.module.ssl,
+                "create_default_context",
+                return_value=sentinel,
+            ) as create_context,
+        ):
+            self.assertIs(self.module._ssl_context(), sentinel)
+        create_context.assert_called_once_with(cafile=str(bundle))
 
     def test_fixes_parameters_and_writes_redacted_receipt(self) -> None:
         with self.request() as response:

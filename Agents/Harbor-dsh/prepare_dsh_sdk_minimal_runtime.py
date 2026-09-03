@@ -23,6 +23,8 @@ SDK_RUNTIME_REQUIREMENTS = (
     "typing-extensions==4.16.0",
     "typing-inspection==0.4.2",
 )
+RELAY_RUNTIME_REQUIREMENTS = ("certifi==2026.7.22",)
+RUNTIME_REQUIREMENTS = SDK_RUNTIME_REQUIREMENTS + RELAY_RUNTIME_REQUIREMENTS
 
 
 def _value(environ: Mapping[str, str], name: str, default: str) -> str:
@@ -45,7 +47,7 @@ class Config:
 
     @property
     def runtime_version(self) -> str:
-        dependencies = ",".join(SDK_RUNTIME_REQUIREMENTS)
+        dependencies = ",".join(RUNTIME_REQUIREMENTS)
         return f"{self.source_version};dependencies={dependencies}"
 
     @classmethod
@@ -219,7 +221,7 @@ def prepare(config: Config) -> None:
                 "--only-binary=:all:",
                 "--target",
                 str(site_packages),
-                *SDK_RUNTIME_REQUIREMENTS,
+                *RUNTIME_REQUIREMENTS,
             ],
             check=True,
         )

@@ -6,6 +6,7 @@ import hashlib
 import http.server
 import json
 import os
+import ssl
 import threading
 import time
 import urllib.error
@@ -115,6 +116,17 @@ def _upstream_url(path: str) -> str:
     return urlunsplit((base.scheme, base.netloc, merged, incoming.query, ""))
 
 
+def _ssl_context() -> ssl.SSLContext:
+    """Build an HTTPS context from the runtime-owned CA bundle when configured."""
+    configured = os.environ.get("DSH_SAMPLING_CA_BUNDLE", "").strip()
+    if not configured:
+        return ssl.create_default_context()
+    bundle = Path(configured)
+    if not bundle.is_file():
+        raise FileNotFoundError(f"sampling relay CA bundle not found: {bundle}")
+    return ssl.create_default_context(cafile=str(bundle))
+
+
 def _append_receipt(record: dict[str, object]) -> None:
     serialized = json.dumps(record, sort_keys=True, separators=(",", ":"))
     with _RECEIPT_LOCK:
@@ -182,7 +194,12 @@ class Relay(http.server.BaseHTTPRequestHandler):
         response_bytes = 0
         request_id = None
         try:
-            response = urllib.request.urlopen(request, timeout=3600)
+            if urlsplit(request.full_url).scheme == "https":
+                response = urllib.request.urlopen(
+                    request, timeout=3600, context=_ssl_context()
+                )
+            else:
+                response = urllib.request.urlopen(request, timeout=3600)
         except urllib.error.HTTPError as error:
             response = error
         except (OSError, urllib.error.URLError) as error:

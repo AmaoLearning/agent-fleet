@@ -14,8 +14,8 @@ from unittest import mock
 MODULE_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(MODULE_DIR))
 
-import prepare_dsh_sdk_minimal_cli_runtime as cli_runtime  # noqa: E402
-import prepare_dsh_sdk_minimal_runtime as sdk_runtime  # noqa: E402
+import prepare_dsh_sdk_minimal_cli_runtime as cli_runtime
+import prepare_dsh_sdk_minimal_runtime as sdk_runtime
 
 
 class PrepareDshCliRuntimeTests(unittest.TestCase):
@@ -97,6 +97,7 @@ class PrepareDshSdkRuntimeTests(unittest.TestCase):
                 config.source_sha, "0a53fb55bea101816fa226bb964ae2bed71c343b"
             )
             self.assertIn("pydantic==2.13.4", config.runtime_version)
+            self.assertIn("certifi==2026.7.22", config.runtime_version)
 
         output = StringIO()
         with redirect_stdout(output):

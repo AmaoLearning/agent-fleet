@@ -22,6 +22,7 @@ class AgentFleetDshSdkMinimal(BaseInstalledAgent):
     _PYTHON = f"{_PYTHON_ROOT}/bin/python3.12"
     _SDK_ROOT = "/opt/dsh-sdk-minimal-runtime"
     _SITE_PACKAGES = f"{_SDK_ROOT}/site-packages"
+    _CA_BUNDLE = f"{_SITE_PACKAGES}/certifi/cacert.pem"
     _NODE_HOME = "/installed-agent/dsh-node"
     _DSH_HOME = "/logs/agent/dsh-home"
     _REMOTE_RUNNER = "/installed-agent/sdk_minimal.py"
@@ -115,6 +116,8 @@ class AgentFleetDshSdkMinimal(BaseInstalledAgent):
             "DSH_MODEL": self._model_id(),
             "DSH_SAMPLING_RELAY_PORT": str(self._RELAY_PORT),
             "DSH_SAMPLING_RECEIPT_PATH": "/logs/agent/sampling-relay.jsonl",
+            "DSH_SAMPLING_CA_BUNDLE": self._get_env("DSH_SAMPLING_CA_BUNDLE")
+            or self._CA_BUNDLE,
             "DSH_SAMPLING_UPSTREAM_BASE_URL": self._base_url(),
             "DSH_TELEMETRY_DISABLED": "1",
             "EDITOR": "true",
