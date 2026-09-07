@@ -68,6 +68,11 @@ class HarborPackageEnvironmentTest(unittest.TestCase):
             "UV_INDEX_URL": "https://uv.example/simple",
             "UV_DEFAULT_INDEX": "https://uv-default.example/simple",
             "NPM_CONFIG_REGISTRY": "https://npm.example",
+            "HARBOR_APT_UBUNTU_MIRROR": "http://apt.example/ubuntu/",
+            "HARBOR_APT_DEBIAN_MIRROR": "http://apt.example/debian/",
+            "HARBOR_APT_DEBIAN_SECURITY_MIRROR": (
+                "http://apt.example/debian-security/"
+            ),
             "HARBOR_CC_NODE_DIST_URL": "https://node.example",
             "GO111MODULE": "on",
             "GOPROXY": "https://go.example",

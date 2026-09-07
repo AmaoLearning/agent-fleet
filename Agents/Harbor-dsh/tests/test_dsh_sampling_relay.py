@@ -197,8 +197,22 @@ class SamplingRelayTests(unittest.TestCase):
         self.assertEqual(sorted(record["index"] for record in records), list(range(32)))
 
     def test_stream_preserves_sse_body(self) -> None:
+        receipt_path = Path(self.temporary.name) / "receipt.jsonl"
+        before = len(receipt_path.read_text().splitlines())
         with self.request(stream=True) as response:
             self.assertEqual(response.read(), b'data: {"ok":true}\n\ndata: [DONE]\n\n')
+        for _ in range(100):
+            receipts = receipt_path.read_text().splitlines()
+            if len(receipts) > before:
+                break
+            time.sleep(0.01)
+        receipt = json.loads(receipts[-1])
+        self.assertTrue(receipt["stream_complete"])
+
+    def test_done_line_detection_is_strict_to_sse_data(self) -> None:
+        self.assertTrue(self.module._is_done_line(b"data: [DONE]\r\n"))
+        self.assertFalse(self.module._is_done_line(b": [DONE]\n"))
+        self.assertFalse(self.module._is_done_line(b'data: {"text":"[DONE]"}\n'))
 
     def test_stream_restores_empty_tool_call_metadata(self) -> None:
         with self.request("/v1/tool-stream", stream=True) as response:

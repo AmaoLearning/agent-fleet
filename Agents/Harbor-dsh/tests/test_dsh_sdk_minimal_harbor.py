@@ -26,6 +26,11 @@ class AgentFleetDshSdkMinimalTests(unittest.IsolatedAsyncioTestCase):
                 "DSH_SDK_MINIMAL_RUNTIME_TAR_PATH": "/cache/sdk.tar.gz",
                 "DSH_NODE_RUNTIME_PATH": "/cache/node.tar.gz",
                 "DSH_CLI_RUNTIME_PATH": "/cache/dsh.tar.gz",
+                "HARBOR_APT_UBUNTU_MIRROR": "http://apt.example/ubuntu/",
+                "HARBOR_APT_DEBIAN_MIRROR": "http://apt.example/debian/",
+                "HARBOR_APT_DEBIAN_SECURITY_MIRROR": (
+                    "http://apt.example/debian-security/"
+                ),
             },
             **kwargs,
         )
@@ -68,10 +73,18 @@ class AgentFleetDshSdkMinimalTests(unittest.IsolatedAsyncioTestCase):
             "DSH_CLI_RUNTIME_PATH",
         ):
             self.assertIn(variable, root_command)
+        self.assertIn("/ubuntu/?", root_command)
+        self.assertIn("/debian-security/?", root_command)
+        root_environment = agent.exec_as_root.await_args.kwargs["env"]
+        self.assertEqual(
+            root_environment["HARBOR_APT_DEBIAN_MIRROR"],
+            "http://apt.example/debian/",
+        )
         commands = "\n".join(
             call.kwargs["command"] for call in agent.exec_as_agent.await_args_list
         )
-        self.assertIn("dsh --profile sdk-minimal --dump-config", commands)
+        self.assertIn("dsh --profile sdk-minimal --patch", commands)
+        self.assertIn("dsh_sdk_minimal_retry.cordis.yml", commands)
         self.assertNotIn("pip install", commands)
         self.assertNotIn("curl", commands)
 
@@ -83,19 +96,30 @@ class AgentFleetDshSdkMinimalTests(unittest.IsolatedAsyncioTestCase):
 
             await agent.run("fix the tests", environment, AsyncMock())
 
-        call = agent.exec_as_agent.await_args
+        self.assertEqual(agent.exec_as_agent.await_count, 3)
+        watcher = agent.exec_as_agent.await_args_list[0].kwargs["command"]
+        self.assertIn("dsh_service_handoff.py --watch", watcher)
+        self.assertIn("setsid", watcher)
+        call = agent.exec_as_agent.await_args_list[1]
         command = call.kwargs["command"]
         self.assertIn("/installed-agent/sdk_minimal.py", command)
         self.assertIn("--profile sdk-minimal", command)
+        self.assertIn(
+            "--patch /installed-agent/dsh_sdk_minimal_retry.cordis.yml", command
+        )
         self.assertIn("--dsh-home /logs/agent/dsh-home", command)
         self.assertIn('--dsh-bin "$HOME/.local/bin/dsh"', command)
         self.assertIn("--reasoning-effort max", command)
         self.assertIn("--max-tokens 49152", command)
         self.assertIn("--trace-path /logs/agent/dsh-sdk-minimal-trace.jsonl", command)
+        self.assertNotIn("--service-handoff", command)
         self.assertIn("dsh_sampling_relay.py", command)
         self.assertIn("command -v stdbuf", command)
         self.assertIn('else\n    tee "$@"', command)
         self.assertEqual(call.kwargs["env"]["DSH_HOME"], "/logs/agent/dsh-home")
+        restore = agent.exec_as_agent.await_args_list[2].kwargs["command"]
+        self.assertIn("dsh_service_handoff.py", restore)
+        self.assertIn("--receipt /logs/agent/dsh-service-handoff.json", restore)
 
 
 if __name__ == "__main__":

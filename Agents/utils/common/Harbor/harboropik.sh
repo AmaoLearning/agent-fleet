@@ -217,7 +217,10 @@ append_package_environment_args() {
     PIP_TRUSTED_HOST \
     UV_INDEX_URL \
     UV_DEFAULT_INDEX \
-    NPM_CONFIG_REGISTRY
+    NPM_CONFIG_REGISTRY \
+    HARBOR_APT_UBUNTU_MIRROR \
+    HARBOR_APT_DEBIAN_MIRROR \
+    HARBOR_APT_DEBIAN_SECURITY_MIRROR
   do
     if [[ -n "${!env_name:-}" ]]; then
       cmd+=( --ae "$env_name=${!env_name}" --ve "$env_name=${!env_name}" )

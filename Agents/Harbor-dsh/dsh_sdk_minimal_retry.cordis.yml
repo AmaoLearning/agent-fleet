@@ -1,0 +1,18 @@
+# Preserve the shipped sdk-minimal DeepSeek adapter configuration while making
+# an incomplete SSE stream retryable at the agent step boundary.
+- id: llm-deepseek
+  name: '@deepseek-ai/dsh-llm-deepseek'
+  config:
+    apiKeyEnv: DEEPSEEK_API_KEY
+    defaultContextWindow: !!js Number(process.env.DSH_CONTEXT_WINDOW ?? 1000000)
+    streamIdleTimeoutMs: 172800000
+    retryPolicy:
+      mode: normal
+      maxRetries: 5
+      retryableCodes:
+        - EMPTY_RESPONSE
+        - RATE_LIMIT
+        - SERVER
+        - TIMEOUT
+        - TRANSPORT
+        - STREAM_CLOSED

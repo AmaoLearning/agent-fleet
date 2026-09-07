@@ -25,6 +25,7 @@ def main() -> None:
     )
     parser.add_argument("--dsh-bin", type=Path, required=True)
     parser.add_argument("--profile", default="sdk-minimal")
+    parser.add_argument("--patch", action="append", default=[])
     parser.add_argument("--session-id")
     parser.add_argument("--provider", default="deepseek-official")
     parser.add_argument(
@@ -65,6 +66,7 @@ def main() -> None:
             dsh_home=str(args.dsh_home.resolve()),
             dsh_bin=str(args.dsh_bin.resolve()),
             profile=args.profile,
+            patches=tuple(args.patch),
         ) as harness:
             result = harness.run(
                 args.prompt,

@@ -116,6 +116,13 @@ def _upstream_url(path: str) -> str:
     return urlunsplit((base.scheme, base.netloc, merged, incoming.query, ""))
 
 
+def _is_done_line(line: bytes) -> bool:
+    """Return whether one raw SSE line carries the terminal sentinel."""
+    if not line.startswith(b"data:"):
+        return False
+    return line.partition(b":")[2].strip() == b"[DONE]"
+
+
 def _ssl_context() -> ssl.SSLContext:
     """Build an HTTPS context from the runtime-owned CA bundle when configured."""
     configured = os.environ.get("DSH_SAMPLING_CA_BUNDLE", "").strip()
@@ -193,6 +200,7 @@ class Relay(http.server.BaseHTTPRequestHandler):
         status = 502
         response_bytes = 0
         request_id = None
+        stream_complete = None
         try:
             if urlsplit(request.full_url).scheme == "https":
                 response = urllib.request.urlopen(
@@ -218,6 +226,7 @@ class Relay(http.server.BaseHTTPRequestHandler):
                 "x-yicloud-request-id"
             )
             streaming = bool(payload.get("stream"))
+            stream_complete = False if streaming else None
             self.send_response(status)
             for key, value in response.headers.items():
                 if key.lower() not in HOP_BY_HOP:
@@ -227,6 +236,8 @@ class Relay(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 normalizer = ToolCallMetadataNormalizer()
                 while chunk := response.readline():
+                    if _is_done_line(chunk):
+                        stream_complete = True
                     chunk = normalizer.normalize(chunk)
                     response_bytes += len(chunk)
                     self.wfile.write(f"{len(chunk):X}\r\n".encode())
@@ -258,6 +269,7 @@ class Relay(http.server.BaseHTTPRequestHandler):
                 "response_bytes": response_bytes,
                 "status": status,
                 "stream": bool(payload.get("stream")),
+                "stream_complete": stream_complete,
                 "tool_count": len(payload.get("tools") or []),
                 "upstream_request_id": request_id,
             }

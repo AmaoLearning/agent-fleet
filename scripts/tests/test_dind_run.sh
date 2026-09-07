@@ -54,7 +54,9 @@ unset ANTHROPIC_BASE_URL AUTH_TOKEN ANTHROPIC_AUTH_TOKEN HARBOR_MODEL
 unset HARBOR_TEMPERATURE HARBOR_TOP_P HARBOR_MAX_TOKENS
 unset TRACE_TO_OPIK OPIK_URL OPIK_API_KEY OPIK_WORKSPACE OPIK_PROJECT_NAME
 unset HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy
-unset PIP_INDEX_URL PIP_EXTRA_INDEX_URL PIP_TRUSTED_HOST NPM_CONFIG_REGISTRY
+unset PIP_INDEX_URL PIP_EXTRA_INDEX_URL PIP_TRUSTED_HOST UV_INDEX_URL UV_DEFAULT_INDEX
+unset NPM_CONFIG_REGISTRY HARBOR_APT_UBUNTU_MIRROR HARBOR_APT_DEBIAN_MIRROR
+unset HARBOR_APT_DEBIAN_SECURITY_MIRROR
 unset DIND_REGISTRY_MIRRORS DIND_REGISTRY_MIRROR DIND_DEFAULT_ADDRESS_POOLS
 
 cat > "$PROJECT_DIR/config.env" <<'EOF'
@@ -72,7 +74,12 @@ MODEL=local-model
 OPIK_URL=https://saved-opik.example.com/api
 OPIK_API_KEY=opik-local
 PIP_INDEX_URL=https://packages.example.com/simple
+UV_INDEX_URL=https://uv.example.com/simple
+UV_DEFAULT_INDEX=https://uv-default.example.com/simple
 NPM_CONFIG_REGISTRY=https://npm.example.com
+HARBOR_APT_UBUNTU_MIRROR=http://apt.example.com/ubuntu/
+HARBOR_APT_DEBIAN_MIRROR=http://apt.example.com/debian/
+HARBOR_APT_DEBIAN_SECURITY_MIRROR=http://apt.example.com/debian-security/
 DIND_REGISTRY_MIRRORS="https://docker.m.daocloud.io, https://mirror.ccs.tencentyun.com"
 DIND_DEFAULT_ADDRESS_POOLS="base=10.200.0.0/13,size=21;base=172.16.0.0/12,size=20"
 EOF
@@ -294,7 +301,12 @@ for expected_env in \
   "HARBOR_MAX_TOKENS=8192" \
   "OPIK_API_KEY=opik-local" \
   "PIP_INDEX_URL=https://packages.example.com/simple" \
-  "NPM_CONFIG_REGISTRY=https://npm.example.com"; do
+  "UV_INDEX_URL=https://uv.example.com/simple" \
+  "UV_DEFAULT_INDEX=https://uv-default.example.com/simple" \
+  "NPM_CONFIG_REGISTRY=https://npm.example.com" \
+  "HARBOR_APT_UBUNTU_MIRROR=http://apt.example.com/ubuntu/" \
+  "HARBOR_APT_DEBIAN_MIRROR=http://apt.example.com/debian/" \
+  "HARBOR_APT_DEBIAN_SECURITY_MIRROR=http://apt.example.com/debian-security/"; do
   if [[ "$(grep -Fxc -- "ENV $expected_env" "$DOCKER_ENV_CAPTURE_LOG" || true)" != "2" ]]; then
     echo "setup and benchmark did not both receive: ${expected_env%%=*}" >&2
     exit 1

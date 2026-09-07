@@ -27,6 +27,8 @@ class AgentFleetDshSdkMinimal(BaseInstalledAgent):
     _DSH_HOME = "/logs/agent/dsh-home"
     _REMOTE_RUNNER = "/installed-agent/sdk_minimal.py"
     _REMOTE_RELAY = "/installed-agent/dsh_sampling_relay.py"
+    _REMOTE_SERVICE_HANDOFF = "/installed-agent/dsh_service_handoff.py"
+    _REMOTE_RETRY_PATCH = "/installed-agent/dsh_sdk_minimal_retry.cordis.yml"
     _RELAY_PORT = 18100
     _OUTPUT_FILENAME = "dsh-sdk-minimal.txt"
     _TRACE_FILENAME = "dsh-sdk-minimal-trace.jsonl"
@@ -165,6 +167,34 @@ class AgentFleetDshSdkMinimal(BaseInstalledAgent):
         await self.exec_as_root(
             environment,
             command=(
+                "set -eu; "
+                "for source_file in /etc/apt/sources.list "
+                "/etc/apt/sources.list.d/*.list "
+                "/etc/apt/sources.list.d/*.sources; do "
+                "[ -f \"$source_file\" ] || continue; "
+                "if [ -n \"${HARBOR_APT_UBUNTU_MIRROR:-}\" ]; then "
+                "sed -E -i "
+                "-e \"s#https?://[^[:space:]]+/ubuntu/?\\$#"
+                "${HARBOR_APT_UBUNTU_MIRROR%/}/#\" "
+                "-e \"s#https?://[^[:space:]]+/ubuntu/?[[:space:]]#"
+                "${HARBOR_APT_UBUNTU_MIRROR%/}/ #g\" \"$source_file\"; "
+                "fi; "
+                "if [ -n \"${HARBOR_APT_DEBIAN_SECURITY_MIRROR:-}\" ]; then "
+                "sed -E -i "
+                "-e \"s#https?://[^[:space:]]+/debian-security/?\\$#"
+                "${HARBOR_APT_DEBIAN_SECURITY_MIRROR%/}/#\" "
+                "-e \"s#https?://[^[:space:]]+/debian-security/?[[:space:]]#"
+                "${HARBOR_APT_DEBIAN_SECURITY_MIRROR%/}/ #g\" "
+                "\"$source_file\"; "
+                "fi; "
+                "if [ -n \"${HARBOR_APT_DEBIAN_MIRROR:-}\" ]; then "
+                "sed -E -i "
+                "-e \"s#https?://[^[:space:]]+/debian/?\\$#"
+                "${HARBOR_APT_DEBIAN_MIRROR%/}/#\" "
+                "-e \"s#https?://[^[:space:]]+/debian/?[[:space:]]#"
+                "${HARBOR_APT_DEBIAN_MIRROR%/}/ #g\" \"$source_file\"; "
+                "fi; "
+                "done; "
                 "command -v bash >/dev/null && command -v tar >/dev/null && "
                 "command -v base64 >/dev/null && "
                 f"mkdir -p /installed-agent {self._NODE_HOME} {self._DSH_HOME} /opt && "
@@ -197,6 +227,18 @@ class AgentFleetDshSdkMinimal(BaseInstalledAgent):
                 or "/opt/agent-fleet/dsh-runtime/node-runtime.tar.gz",
                 "DSH_CLI_RUNTIME_PATH": self._get_env("DSH_CLI_RUNTIME_PATH")
                 or f"/opt/agent-fleet/dsh-runtime/dsh-sdk-minimal-cli-runtime-{version}.tar.gz",
+                "HARBOR_APT_UBUNTU_MIRROR": self._get_env(
+                    "HARBOR_APT_UBUNTU_MIRROR"
+                )
+                or "",
+                "HARBOR_APT_DEBIAN_MIRROR": self._get_env(
+                    "HARBOR_APT_DEBIAN_MIRROR"
+                )
+                or "",
+                "HARBOR_APT_DEBIAN_SECURITY_MIRROR": self._get_env(
+                    "HARBOR_APT_DEBIAN_SECURITY_MIRROR"
+                )
+                or "",
             },
         )
         await self.exec_as_agent(
@@ -219,6 +261,8 @@ class AgentFleetDshSdkMinimal(BaseInstalledAgent):
         for filename, remote in (
             ("dsh_sdk_minimal_runner.py", self._REMOTE_RUNNER),
             ("dsh_sampling_relay.py", self._REMOTE_RELAY),
+            ("dsh_service_handoff.py", self._REMOTE_SERVICE_HANDOFF),
+            ("dsh_sdk_minimal_retry.cordis.yml", self._REMOTE_RETRY_PATCH),
         ):
             await self._upload_text(
                 environment,
@@ -229,7 +273,8 @@ class AgentFleetDshSdkMinimal(BaseInstalledAgent):
             environment,
             command=(
                 'export PATH="$HOME/.local/bin:$PATH"; '
-                "dsh --profile sdk-minimal --dump-config "
+                f"dsh --profile sdk-minimal --patch {self._REMOTE_RETRY_PATCH} "
+                "--dump-config "
                 "> /logs/agent/dsh-sdk-minimal-config-dump.yml 2>&1; "
                 f"{self.get_version_command()} > "
                 "/logs/agent/dsh-sdk-minimal-version.txt"
@@ -246,6 +291,8 @@ class AgentFleetDshSdkMinimal(BaseInstalledAgent):
         context: AgentContext,
     ) -> None:
         session_id = f"harbor-{uuid.uuid4().hex}"
+        service_manifest = f"/tmp/{session_id}-services.json"
+        service_control = f"/tmp/{session_id}-services.active"
         runner_parts = [
             shlex.quote(self._PYTHON),
             shlex.quote(self._REMOTE_RUNNER),
@@ -256,6 +303,8 @@ class AgentFleetDshSdkMinimal(BaseInstalledAgent):
             '"$HOME/.local/bin/dsh"',
             "--profile",
             "sdk-minimal",
+            "--patch",
+            shlex.quote(self._REMOTE_RETRY_PATCH),
             "--provider",
             "deepseek-official",
             "--model",
@@ -330,9 +379,37 @@ done
 """
         await self.exec_as_agent(
             environment,
-            command=f"bash -lc {shlex.quote(script)}",
+            command=(
+                f"rm -f {shlex.quote(service_manifest)}; "
+                f": > {shlex.quote(service_control)}; "
+                f"setsid {self._PYTHON} {self._REMOTE_SERVICE_HANDOFF} --watch "
+                f"--control {shlex.quote(service_control)} "
+                f"--manifest {shlex.quote(service_manifest)} "
+                ">> /logs/agent/dsh-service-handoff-watch.log 2>&1 "
+                "< /dev/null &"
+            ),
             env=self._runtime_env(),
         )
+        try:
+            await self.exec_as_agent(
+                environment,
+                command=f"bash -lc {shlex.quote(script)}",
+                env=self._runtime_env(),
+            )
+        finally:
+            await self.exec_as_agent(
+                environment,
+                command=(
+                    f"rm -f {shlex.quote(service_control)}; "
+                    "for attempt in $(seq 1 100); do "
+                    f"[ -f {shlex.quote(service_manifest)} ] && break; "
+                    "sleep 0.1; done; "
+                    f"{self._PYTHON} {self._REMOTE_SERVICE_HANDOFF} "
+                    f"--restore {shlex.quote(service_manifest)} "
+                    "--receipt /logs/agent/dsh-service-handoff.json"
+                ),
+                env=self._runtime_env(),
+            )
 
     @override
     def populate_context_post_run(self, context: AgentContext) -> None:
