@@ -1,0 +1,22 @@
+# Keep the shipped sdk-minimal provider while enabling benchmark sampling and
+# retrying incomplete SSE responses at the normal agent-step boundary.
+- id: llm-deepseek
+  name: '@deepseek-ai/dsh-llm-deepseek'
+  config:
+    apiKeyEnv: DEEPSEEK_API_KEY
+    defaultContextWindow: !!js Number(process.env.DSH_CONTEXT_WINDOW ?? 1000000)
+    streamIdleTimeoutMs: 172800000
+    retryPolicy:
+      mode: normal
+      maxRetries: 5
+      retryableCodes:
+        - EMPTY_RESPONSE
+        - RATE_LIMIT
+        - SERVER
+        - TIMEOUT
+        - TRANSPORT
+        - STREAM_CLOSED
+
+- insert:
+    - id: harbor-dsh-sampling
+      name: './dsh_sampling_plugin.mjs'

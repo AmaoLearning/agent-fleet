@@ -406,9 +406,9 @@ when a taskset is missing or ambiguous—including when only task names are
 provided—or the prompt contains requirements that FleetSpec v1 cannot
 represent.
 
-Prompt mode supports `claude-code`, `opencode`, and `pi` for Harbor tasksets and
-`openclaw` for `pinchbench` or `clawbio`. It reports other requested agents as
-unsupported instead of producing a spec that would fail after Harbor starts. A
+Prompt mode supports `claude-code`, `opencode`, `pi`, and `dsh-sdk-minimal` for
+Harbor tasksets and `openclaw` for `pinchbench` or `clawbio`. It reports other
+requested agents as unsupported instead of producing a spec that would fail. A
 Prompt batch may contain at most one OpenClaw run because those runners share
 one fleet; additional OpenClaw runs are rejected before display or output.
 
@@ -507,9 +507,9 @@ interfaces:
 - Each requested run in a Prompt must identify one unambiguous taskset;
   distinct runs may use distinct tasksets. A Prompt may request at most 16
   runs.
-- Prompt mode supports `claude-code`, `opencode`, and `pi` for Harbor tasksets and
-  `openclaw` for `pinchbench` or `clawbio`. Other agents, including
-  Terminus-2, are rejected.
+- Prompt mode supports `claude-code`, `opencode`, `pi`, and `dsh-sdk-minimal`
+  for Harbor tasksets and `openclaw` for `pinchbench` or `clawbio`. Other
+  agents, including Terminus-2, are rejected.
 - `pinchbench` and `clawbio` always use OpenClaw. Prompt mode rejects a
   different agent; Direct mode warns and ignores it.
 - `--prompt` must be the first argument. `--spec` cannot be combined with

@@ -144,6 +144,8 @@ harbor_local_cache_ready() {
           && harbor_tar_file_ready "$LOCAL_WHEEL_DIR/${PI_NODE_RUNTIME_BASENAME}" \
           && harbor_tar_file_ready "$LOCAL_WHEEL_DIR/${PI_RUNTIME_BASENAME}" \
           && grep -qx "pi_runtime_version=${PI_VERSION}" "$LOCAL_WHEEL_DIR/manifest.txt"
+      elif harbor_agent_is_dsh; then
+        harbor_dsh_cache_ready
       else
         harbor_npm_tarball_version_ready \
           "$LOCAL_WHEEL_DIR/${CLAUDE_CODE_TGZ_BASENAME}" \
@@ -156,9 +158,9 @@ harbor_local_cache_ready() {
 }
 
 harbor_pick_remote_wheel_url() {
-  # Pi unpacks its pinned runtime from the read-only dependency mount. A
-  # remote URL cannot materialize that mount, so Pi always prepares locally.
-  if harbor_agent_is_pi; then
+  # Pi and DSH unpack pinned runtimes from the read-only dependency mount. A
+  # remote URL cannot materialize that mount, so both prepare locally.
+  if harbor_agent_is_pi || harbor_agent_is_dsh; then
     return 1
   fi
   # Claude's npm package has platform-specific optional dependencies. The
@@ -331,8 +333,12 @@ harbor_prepare_or_select_wheels() {
       touch "$WORKERS_FAILED_FILE"
       return 1
     }
-    harbor_ensure_local_wheels_server
-    harbor_write_effective_wheel_source "$HARBOR_LOCAL_WHEEL_SERVER_URL"
+    if harbor_agent_is_dsh; then
+      harbor_dsh_disable_wheel_transport
+    else
+      harbor_ensure_local_wheels_server
+      harbor_write_effective_wheel_source "$HARBOR_LOCAL_WHEEL_SERVER_URL"
+    fi
     harbor_prewarm_s3_upload_cache || {
       echo "failed" > "$status_file"
       touch "$WORKERS_FAILED_FILE"
@@ -374,14 +380,28 @@ harbor_prepare_or_select_wheels() {
   elif harbor_agent_is_pi; then
     prepare_pi_cache=1
   fi
-  if (cd "$SCRIPT_DIR" && WHEEL_DIR="$LOCAL_WHEEL_DIR" CACHE_SCHEMA=3 CLAUDE_CODE_VERSION="$CLAUDE_CODE_VERSION" CLAUDE_CODE_TGZ_BASENAME="$CLAUDE_CODE_TGZ_BASENAME" PREPARE_OPENCODE_CACHE="$prepare_opencode_cache" OPENCODE_VERSION="$OPENCODE_VERSION" OPENCODE_TGZ_BASENAME="$OPENCODE_TGZ_BASENAME" OPENCODE_LINUX_X64_TGZ_BASENAME="$OPENCODE_LINUX_X64_TGZ_BASENAME" PREPARE_PI_CACHE="$prepare_pi_cache" PI_VERSION="$PI_VERSION" PI_TGZ_BASENAME="$PI_TGZ_BASENAME" PI_NODE_RUNTIME_BASENAME="$PI_NODE_RUNTIME_BASENAME" PI_RUNTIME_BASENAME="$PI_RUNTIME_BASENAME" ./prepare_local_deps.sh 2>&1 | tee -a "$LOCAL_DEPS_LOG_FILE"); then
+  local prepare_python_bin="${PYTHON_BIN:-python3}"
+  if harbor_agent_is_dsh; then
+    prepare_python_bin="$HARBOR_OPIK_PYTHON"
+  fi
+  if (cd "$SCRIPT_DIR" && PYTHON_BIN="$prepare_python_bin" WHEEL_DIR="$LOCAL_WHEEL_DIR" CACHE_SCHEMA=3 CLAUDE_CODE_VERSION="$CLAUDE_CODE_VERSION" CLAUDE_CODE_TGZ_BASENAME="$CLAUDE_CODE_TGZ_BASENAME" PREPARE_OPENCODE_CACHE="$prepare_opencode_cache" OPENCODE_VERSION="$OPENCODE_VERSION" OPENCODE_TGZ_BASENAME="$OPENCODE_TGZ_BASENAME" OPENCODE_LINUX_X64_TGZ_BASENAME="$OPENCODE_LINUX_X64_TGZ_BASENAME" PREPARE_PI_CACHE="$prepare_pi_cache" PI_VERSION="$PI_VERSION" PI_TGZ_BASENAME="$PI_TGZ_BASENAME" PI_NODE_RUNTIME_BASENAME="$PI_NODE_RUNTIME_BASENAME" PI_RUNTIME_BASENAME="$PI_RUNTIME_BASENAME" ./prepare_local_deps.sh 2>&1 | tee -a "$LOCAL_DEPS_LOG_FILE"); then
     harbor_build_verifier_runtime_bundle || {
       echo "failed" > "$status_file"
       touch "$WORKERS_FAILED_FILE"
       return 1
     }
-    harbor_ensure_local_wheels_server
-    harbor_write_effective_wheel_source "$HARBOR_LOCAL_WHEEL_SERVER_URL"
+    if harbor_agent_is_dsh && ! harbor_dsh_prepare_runtime; then
+      echo "failed to prepare DSH sdk-minimal runtime" >&2
+      echo "failed" > "$status_file"
+      touch "$WORKERS_FAILED_FILE"
+      return 1
+    fi
+    if harbor_agent_is_dsh; then
+      harbor_dsh_disable_wheel_transport
+    else
+      harbor_ensure_local_wheels_server
+      harbor_write_effective_wheel_source "$HARBOR_LOCAL_WHEEL_SERVER_URL"
+    fi
     harbor_prewarm_s3_upload_cache || {
       echo "failed" > "$status_file"
       touch "$WORKERS_FAILED_FILE"

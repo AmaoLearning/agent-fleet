@@ -51,10 +51,15 @@ chmod +x "$PROJECT_DIR/scripts/setup.sh" "$PROJECT_DIR/scripts/run_fleet.sh"
 export DIND_TEST_ASSUME_HOST=1
 unset BASE_URL API_KEY MODEL
 unset ANTHROPIC_BASE_URL AUTH_TOKEN ANTHROPIC_AUTH_TOKEN HARBOR_MODEL
+unset DSH_PROVIDER DSH_PERMISSION_MODE
+unset DSH_CONTEXT_WINDOW DSH_TEMPERATURE DSH_TOP_P
+unset DSH_SDK_MINIMAL_MAX_TOKENS
 unset HARBOR_TEMPERATURE HARBOR_TOP_P HARBOR_MAX_TOKENS
 unset TRACE_TO_OPIK OPIK_URL OPIK_API_KEY OPIK_WORKSPACE OPIK_PROJECT_NAME
 unset HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy
-unset PIP_INDEX_URL PIP_EXTRA_INDEX_URL PIP_TRUSTED_HOST NPM_CONFIG_REGISTRY
+unset PIP_INDEX_URL PIP_EXTRA_INDEX_URL PIP_TRUSTED_HOST UV_INDEX_URL UV_DEFAULT_INDEX
+unset NPM_CONFIG_REGISTRY HARBOR_APT_UBUNTU_MIRROR HARBOR_APT_DEBIAN_MIRROR
+unset HARBOR_APT_DEBIAN_SECURITY_MIRROR
 unset DIND_REGISTRY_MIRRORS DIND_REGISTRY_MIRROR DIND_DEFAULT_ADDRESS_POOLS
 
 cat > "$PROJECT_DIR/config.env" <<'EOF'
@@ -72,7 +77,12 @@ MODEL=local-model
 OPIK_URL=https://saved-opik.example.com/api
 OPIK_API_KEY=opik-local
 PIP_INDEX_URL=https://packages.example.com/simple
+UV_INDEX_URL=https://uv.example.com/simple
+UV_DEFAULT_INDEX=https://uv-default.example.com/simple
 NPM_CONFIG_REGISTRY=https://npm.example.com
+HARBOR_APT_UBUNTU_MIRROR=http://apt.example.com/ubuntu/
+HARBOR_APT_DEBIAN_MIRROR=http://apt.example.com/debian/
+HARBOR_APT_DEBIAN_SECURITY_MIRROR=http://apt.example.com/debian-security/
 DIND_REGISTRY_MIRRORS="https://docker.m.daocloud.io, https://mirror.ccs.tencentyun.com"
 DIND_DEFAULT_ADDRESS_POOLS="base=10.200.0.0/13,size=21;base=172.16.0.0/12,size=20"
 EOF
@@ -294,7 +304,12 @@ for expected_env in \
   "HARBOR_MAX_TOKENS=8192" \
   "OPIK_API_KEY=opik-local" \
   "PIP_INDEX_URL=https://packages.example.com/simple" \
-  "NPM_CONFIG_REGISTRY=https://npm.example.com"; do
+  "UV_INDEX_URL=https://uv.example.com/simple" \
+  "UV_DEFAULT_INDEX=https://uv-default.example.com/simple" \
+  "NPM_CONFIG_REGISTRY=https://npm.example.com" \
+  "HARBOR_APT_UBUNTU_MIRROR=http://apt.example.com/ubuntu/" \
+  "HARBOR_APT_DEBIAN_MIRROR=http://apt.example.com/debian/" \
+  "HARBOR_APT_DEBIAN_SECURITY_MIRROR=http://apt.example.com/debian-security/"; do
   if [[ "$(grep -Fxc -- "ENV $expected_env" "$DOCKER_ENV_CAPTURE_LOG" || true)" != "2" ]]; then
     echo "setup and benchmark did not both receive: ${expected_env%%=*}" >&2
     exit 1
@@ -367,6 +382,41 @@ if grep -Fq -- 'fake-runtime-auth-only' "$AUTH_ONLY_LOG" ||
   exit 1
 fi
 assert_env_files_removed "AUTH_TOKEN fallback DinD run"
+
+: > "$DOCKER_ENV_CAPTURE_LOG"
+DSH_LOG="$TMP_DIR/dsh.log"
+DSH_SPEC="$PROJECT_DIR/dsh-spec.json"
+cat > "$DSH_SPEC" <<'EOF'
+{"schema_version":1,"taskset":"terminalbench21","agent":"dsh-sdk-minimal","workers":1}
+EOF
+PATH="$TMP_DIR/bin:$PATH" \
+BASE_URL=https://dsh.example.invalid/v1 \
+API_KEY=fake-dsh-key \
+DSH_CONTEXT_WINDOW=200000 \
+DSH_SDK_MINIMAL_MAX_TOKENS=65536 \
+PIP_INDEX_URL= \
+OPIK_URL= \
+DIND_BOOTSTRAP=always \
+"$PROJECT_DIR/scripts/dind-run.sh" \
+  --spec "$DSH_SPEC" --dry-run > "$DSH_LOG"
+
+for expected_env in \
+  "API_KEY=fake-dsh-key" \
+  "BASE_URL=https://dsh.example.invalid/v1" \
+  "DSH_CONTEXT_WINDOW=200000" \
+  "DSH_SDK_MINIMAL_MAX_TOKENS=65536" \
+  "PIP_INDEX_URL="; do
+  if [[ "$(grep -Fxc -- "ENV $expected_env" "$DOCKER_ENV_CAPTURE_LOG" || true)" != "2" ]]; then
+    echo "DSH run did not forward: ${expected_env%%=*}" >&2
+    exit 1
+  fi
+done
+if grep -Fq -- 'fake-dsh-key' "$DSH_LOG" ||
+   grep -Fq -- 'fake-dsh-key' "$DOCKER_ACTION_LOG"; then
+  echo "dind-run.sh exposed the DSH credential in Docker argv" >&2
+  exit 1
+fi
+assert_env_files_removed "DSH DinD run"
 
 : > "$DOCKER_ENV_CAPTURE_LOG"
 FAILURE_LOG="$TMP_DIR/failure.log"

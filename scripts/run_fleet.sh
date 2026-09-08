@@ -35,7 +35,7 @@ Short flags: -t --taskset, -a --agent, -n --workers, -s --spec, -p --prompt,
 Tasksets: seta, smith, terminalbench21, sweverify,
           agent-fleet-swe-rebench-v2, a registry id, a local path (./dir),
           or the OpenClaw tasksets: pinchbench, clawbio
-Agents:   claude-code, opencode, pi; openclaw for OpenClaw tasksets
+Agents:   claude-code, opencode, pi, dsh-sdk-minimal; openclaw for OpenClaw tasksets
 Use --task=<name> when a task ID begins with a dash.
 
 Examples:
