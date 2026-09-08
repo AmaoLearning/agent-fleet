@@ -64,6 +64,9 @@ ln -s python3.12 "$tmp/verifier-bundle/agent-fleet-swe-rebench-v2-verifier-bundl
 tar -czf "$tmp/cache/verifier-runtimes/agent-fleet-swe-rebench-v2-verifier-bundle.tar.gz" \
   -C "$tmp/verifier-bundle" agent-fleet-swe-rebench-v2-verifier-bundle
 printf '# fake Exa MCP\n' > "$tmp/deps/exa_web_mcp.py"
+printf 'fake python runtime\n' > "$tmp/deps/wheels/dsh-sdk-minimal-python3.12-runtime.tar.gz"
+printf 'fake sdk minimal runtime\n' > "$tmp/deps/wheels/dsh-sdk-minimal-runtime-dsh-v0.1.3-alpha.1.tar.gz"
+printf 'fake sdk minimal dsh runtime\n' > "$tmp/deps/wheels/dsh-sdk-minimal-cli-runtime-0.1.3-alpha.1.tar.gz"
 
 run_dry() {
   local image_ref="$1"
@@ -104,12 +107,18 @@ run_dry() {
     HARBOR_FORCE_BUILD="$force_build" \
     HARBOR_N_CONCURRENT=1 \
     HARBOR_MAX_RETRIES=0 \
-    API_KEY=fake-api-key \
-    BASE_URL=https://model.example \
+    HARBOR_TEMPERATURE= \
+    HARBOR_TOP_P= \
+    HARBOR_MAX_TOKENS="${RUN_DRY_HARBOR_MAX_TOKENS:-}" \
+    OPIK_URL= \
+    TRACE_TO_OPIK= \
+    API_KEY="${RUN_DRY_API_KEY-fake-api-key}" \
+    BASE_URL="${RUN_DRY_BASE_URL-https://model.example}" \
     MODEL=test-model \
     OPIK_URL="${RUN_DRY_OPIK_URL:-}" \
     HARBOR_CC_OPIK_ENABLE_HOOK="${RUN_DRY_CC_OPIK_ENABLE_HOOK:-}" \
     HARBOR_CC_HOOK_SOURCE="${RUN_DRY_CC_HOOK_SOURCE:-$tmp/deps/claude_realtime_trace.py}" \
+    DSH_PROVIDER="${DSH_PROVIDER_OVERRIDE:-deepseek}" \
     HARBOR_ANTHROPIC_AUTH_TOKEN=fake-api-key \
     HARBOR_LLM_KWARGS='{"temperature":1.0}' \
     HARBOR_CC_CLAUDE_TGZ_SOURCE="$tmp/deps/claude.tgz" \
@@ -543,3 +552,45 @@ grep -F -- "\"source\": \"$tmp/pi-extensions\"" \
   <<< "$pi_opensandbox" >/dev/null
 grep -F -- '"target": "/opt/tb-pi/extensions"' <<< "$pi_opensandbox" >/dev/null
 grep -F -- '"read_only": true' <<< "$pi_opensandbox" >/dev/null
+
+dsh_sdk_minimal_opensandbox="$(RUN_DRY_HARBOR_MAX_TOKENS=65536 run_dry \
+  'test-project/manual:immutable' "$tmp/does-not-exist.py" '{}' auto \
+  opensandbox 0 dsh-sdk-minimal 0)"
+grep -F -- 'FAKE_HARBOR_ARG=dsh_sdk_minimal_harbor:AgentFleetDshSdkMinimal' \
+  <<< "$dsh_sdk_minimal_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=version=0.1.3-alpha.1' \
+  <<< "$dsh_sdk_minimal_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=max_tokens=65536' \
+  <<< "$dsh_sdk_minimal_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=temperature=1.0' \
+  <<< "$dsh_sdk_minimal_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=top_p=0.95' \
+  <<< "$dsh_sdk_minimal_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=API_KEY=${API_KEY}' \
+  <<< "$dsh_sdk_minimal_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=BASE_URL=https://model.example' \
+  <<< "$dsh_sdk_minimal_opensandbox" >/dev/null
+if missing_dsh_key="$(RUN_DRY_API_KEY= run_dry \
+  'test-project/manual:immutable' "$tmp/does-not-exist.py" '{}' auto \
+  opensandbox 0 dsh-sdk-minimal 0 2>&1)"; then
+  echo 'DSH sdk-minimal unexpectedly accepted an empty shared API key' >&2
+  exit 1
+fi
+grep -F -- 'requires API_KEY and BASE_URL' \
+  <<< "$missing_dsh_key" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=DSH_SDK_MINIMAL_RUNTIME_TAR_PATH=/opt/agent-fleet/dsh-runtime/dsh-sdk-minimal-runtime-dsh-v0.1.3-alpha.1.tar.gz' \
+  <<< "$dsh_sdk_minimal_opensandbox" >/dev/null
+grep -F -- 'FAKE_HARBOR_ARG=DSH_CLI_RUNTIME_PATH=/opt/agent-fleet/dsh-runtime/dsh-sdk-minimal-cli-runtime-0.1.3-alpha.1.tar.gz' \
+  <<< "$dsh_sdk_minimal_opensandbox" >/dev/null
+for dependency in \
+  dsh-sdk-minimal-python3.12-runtime.tar.gz \
+  dsh-sdk-minimal-runtime-dsh-v0.1.3-alpha.1.tar.gz \
+  dsh-sdk-minimal-cli-runtime-0.1.3-alpha.1.tar.gz; do
+  grep -F -- "\"source\": \"$tmp/deps/wheels/$dependency\"" \
+    <<< "$dsh_sdk_minimal_opensandbox" >/dev/null
+done
+if grep -F -- 'FAKE_HARBOR_ARG=provider_retry_max=' \
+  <<< "$dsh_sdk_minimal_opensandbox" >/dev/null; then
+  echo 'DSH sdk-minimal unexpectedly added a custom provider retry policy' >&2
+  exit 1
+fi

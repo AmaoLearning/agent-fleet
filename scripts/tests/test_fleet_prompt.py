@@ -218,24 +218,26 @@ exit "${STUB_EXIT:-0}"
             },
         )
 
-    def test_prompt_routes_pi_to_harbor(self):
-        result = self.run_goal(
-            "--prompt",
-            "Run terminalbench21 with pi and 3 workers",
-            response=self.response(
-                spec={
-                    "schema_version": 1,
-                    "taskset": "terminalbench21",
-                    "agent": "pi",
-                    "workers": 3,
-                }
-            ),
-        )
+    def test_prompt_routes_supported_harbor_agents(self):
+        for agent in ("pi", "dsh-sdk-minimal"):
+            with self.subTest(agent=agent):
+                result = self.run_goal(
+                    "--prompt",
+                    f"Run terminalbench21 with {agent} and 3 workers",
+                    response=self.response(
+                        spec={
+                            "schema_version": 1,
+                            "taskset": "terminalbench21",
+                            "agent": agent,
+                            "workers": 3,
+                        }
+                    ),
+                )
 
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("runner=harbor", result.stdout)
-        self.assertIn("AGENT=pi", result.stdout)
-        self.assertIn("TOTAL_WORKERS=3", result.stdout)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("runner=harbor", result.stdout)
+                self.assertIn(f"AGENT={agent}", result.stdout)
+                self.assertIn("TOTAL_WORKERS=3", result.stdout)
 
     def test_prompt_routes_official_swe_rebench_exact_task(self):
         result = self.run_goal(
@@ -389,6 +391,7 @@ exec {shlex.quote(str(self.bin_dir / "pi"))} "$@"
         self.assertIn("another registry id", captured)
         self.assertIn("Map unqualified or official SWE-rebench-V2", captured)
         self.assertIn("third-party TaskTrove dataset", captured)
+        self.assertIn("dsh-sdk-minimal", captured)
         self.assertIn('"specs"', captured)
         self.assertIn('"maxItems": 16', captured)
 

@@ -12,6 +12,9 @@ HARBOR_MODEL="${HARBOR_MODEL:-$_HARBOR_EFFECTIVE_MODEL}"
 if [[ "$AGENT" == "pi" && -z "$HARBOR_AGENT_IMPORT_PATH" ]]; then
   HARBOR_AGENT_IMPORT_PATH="pi_harbor:AgentFleetPi"
 fi
+if [[ "$AGENT" == "dsh-sdk-minimal" && -z "$HARBOR_AGENT_IMPORT_PATH" ]]; then
+  HARBOR_AGENT_IMPORT_PATH="dsh_sdk_minimal_harbor:AgentFleetDshSdkMinimal"
+fi
 if [[ "$AGENT" == "pi" && -z "$PI_PROVIDER" && -n "$HARBOR_ANTHROPIC_BASE_URL" ]]; then
   # Keep the Pi provider name tied to the gateway host. env.py uses the same
   # derivation while rendering models.json, so the CLI model and config agree.
@@ -49,6 +52,11 @@ if [[ "$ROLLOUT" == "1" ]]; then
   HARBOR_TEMPERATURE=""
   HARBOR_TOP_P=""
   HARBOR_MAX_TOKENS=""
+fi
+if [[ "$AGENT" == "dsh-sdk-minimal" ]]; then
+  # Keep DSH-owned settings and cache helpers with the adapter.
+  # shellcheck source=../../../../Harbor-dsh/env.sh
+  source "$HARBOR_DSH_DIR/env.sh"
 fi
 PI_MODELS_CONFIG="${PI_MODELS_CONFIG:-}"
 PI_SETTINGS_CONFIG="${PI_SETTINGS_CONFIG:-}"
@@ -217,6 +225,10 @@ harbor_agent_is_pi() {
   [[ "$AGENT" == "pi" ]]
 }
 
+harbor_agent_is_dsh() {
+  [[ "$AGENT" == "dsh-sdk-minimal" ]]
+}
+
 harbor_agent_tgz_basename() {
   if harbor_agent_is_opencode; then
     printf '%s\n' "$OPENCODE_TGZ_BASENAME"
@@ -251,9 +263,9 @@ harbor_agent_is_oracle() {
 
 harbor_validate_agent() {
   case "$AGENT" in
-    claude-code|opencode|pi|oracle) ;;
+    claude-code|opencode|pi|dsh-sdk-minimal|oracle) ;;
     *)
-      echo "[ERROR] AGENT must be claude-code, opencode, pi, or oracle, got: $AGENT" >&2
+      echo "[ERROR] AGENT must be claude-code, opencode, pi, dsh-sdk-minimal, or oracle, got: $AGENT" >&2
       exit 1
       ;;
   esac
@@ -272,5 +284,25 @@ harbor_validate_agent() {
         exit 1
         ;;
     esac
+  fi
+  if harbor_agent_is_dsh; then
+    harbor_dsh_validate_release || exit 1
+    if [[ -z "$API_KEY" || -z "$BASE_URL" ]]; then
+      echo "[ERROR] dsh-sdk-minimal requires API_KEY and BASE_URL." >&2
+      exit 1
+    fi
+    if [[ "$DSH_PROVIDER" != "deepseek" ]]; then
+      echo "[ERROR] dsh-sdk-minimal supports only DSH_PROVIDER=deepseek." >&2
+      exit 1
+    fi
+    if [[ -n "$DSH_SDK_MINIMAL_MAX_TOKENS" \
+      && ! "$DSH_SDK_MINIMAL_MAX_TOKENS" =~ ^[1-9][0-9]*$ ]]; then
+      echo "[ERROR] DSH_SDK_MINIMAL_MAX_TOKENS must be a positive integer." >&2
+      exit 1
+    fi
+    if [[ "$DSH_PERMISSION_MODE" != "danger-full-access" ]]; then
+      echo "[ERROR] dsh-sdk-minimal requires DSH_PERMISSION_MODE=danger-full-access." >&2
+      exit 1
+    fi
   fi
 }

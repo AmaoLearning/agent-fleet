@@ -93,7 +93,7 @@ requested for either taskset, return ready=false.
 
 Harbor tasksets include seta, smith, terminalbench21, sweverify,
 agent-fleet-swe-rebench-v2, registry ids, and explicit local paths. Supported
-Harbor agents are claude-code, opencode, and pi.
+Harbor agents are claude-code, opencode, pi, and dsh-sdk-minimal.
 If another Harbor agent, including Terminus-2, is requested, return ready=false.
 Map unqualified or official SWE-rebench-V2 requests to
 agent-fleet-swe-rebench-v2. This canonical taskset uses the local official
@@ -142,7 +142,7 @@ read -r -d '' OUTPUT_SCHEMA <<'JSON' || true
           "schema_version": {"const": 1},
           "taskset": {"type": "string"},
           "task": {"type": "string"},
-          "agent": {"enum": ["claude-code", "opencode", "pi", "openclaw"]},
+          "agent": {"enum": ["claude-code", "opencode", "pi", "dsh-sdk-minimal", "openclaw"]},
           "workers": {"type": "integer", "minimum": 1, "maximum": 4096}
         }
       }
@@ -197,7 +197,7 @@ if ! specs="$(jq -ce -L "$SCRIPT_DIR" '
   def prompt_agent_supported:
     if .taskset == "pinchbench" or .taskset == "clawbio"
     then ((has("agent") | not) or .agent == "openclaw")
-    else ((has("agent") | not) or .agent == "claude-code" or .agent == "opencode" or .agent == "pi")
+    else ((has("agent") | not) or .agent == "claude-code" or .agent == "opencode" or .agent == "pi" or .agent == "dsh-sdk-minimal")
     end;
   .specs | map(
     fleet_spec_v1 |

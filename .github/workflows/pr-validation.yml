@@ -57,6 +57,7 @@ jobs:
           python -m unittest discover -s Agents/Harbor-claude-code/tests -v
           python -m unittest discover -s Agents/Harbor-opencode/tests -v
           python -m unittest discover -s Agents/Harbor-pi/tests -v
+          python -m unittest discover -s Agents/Harbor-dsh/tests -v
           python -m unittest discover -s Agents/Openclaw/tests -v
           python -m unittest discover -s Agents/utils/common/Harbor/tests -v
           python -m unittest discover -s Agents/utils/rl/tests -v

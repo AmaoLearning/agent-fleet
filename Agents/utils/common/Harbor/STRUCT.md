@@ -197,12 +197,12 @@ Typical dataset paths:
 
 | Variable | Purpose |
 | --- | --- |
-| `AGENT` | `claude-code`, `opencode`, or `pi` |
+| `AGENT` | `claude-code`, `opencode`, `pi`, or `dsh-sdk-minimal` |
 | `MODEL` | Model name passed to Harbor |
 | `BASE_URL` | Model gateway base URL |
 | `API_KEY` | Model gateway API key |
-| `HARBOR_TEMPERATURE` | OpenCode sampling temperature for fixed benchmark runs; unset by default |
-| `HARBOR_TOP_P` | OpenCode nucleus-sampling value for fixed benchmark runs; unset by default |
+| `HARBOR_TEMPERATURE` | OpenCode or DSH sampling temperature for fixed benchmark runs; unset globally and defaults to `1.0` for DSH |
+| `HARBOR_TOP_P` | OpenCode or DSH nucleus-sampling value for fixed benchmark runs; unset globally and defaults to `0.95` for DSH |
 | `HARBOR_MAX_TOKENS` | Maximum output tokens for OpenCode, Claude Code, or Pi fixed benchmark runs; defaults to existing agent limits when unset |
 | `DATASET_NAME` | Built-in selector, canonical local alias, or Harbor registry dataset id |
 | `DATASET_PATH` | Local dataset directory |

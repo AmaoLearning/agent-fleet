@@ -377,6 +377,21 @@ exit "${STUB_EXIT:-0}"
         self.assertNotIn("missing required configuration", result.stderr)
         self.assertIn("runner=harbor", result.stdout)
 
+    def test_dsh_uses_shared_gateway_credentials(self):
+        result = self.run_fleet(
+            "--taskset",
+            "terminalbench21",
+            "--agent",
+            "dsh-sdk-minimal",
+            extra_env={
+                "BASE_URL": "https://dsh.example.invalid/v1",
+                "API_KEY": "fake-dsh-key",
+            },
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("AGENT=dsh-sdk-minimal", result.stdout)
+
     def test_tool_aliases_do_not_override_saved_global_config(self):
         result = self.run_fleet(
             "--taskset",
