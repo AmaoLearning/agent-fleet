@@ -10,6 +10,7 @@ keeps the shared entry point and Harbor runner wrappers.
 Agents/utils/common/Harbor/
 ├── start.sh                    # Main zellij launcher
 ├── env.sh                      # Path resolution and runtime defaults
+├── env/                        # Ordered configuration and shared shell helpers
 ├── env.py                      # JSON and data/cache helpers invoked by env.sh
 ├── gen_harbor_zellij_layout.sh # zellij layout generator
 ├── monitor_harbor.sh           # Monitor pane orchestration
@@ -85,6 +86,41 @@ in the environment as `HARBOR_ANALYZER_*` variables.
 JSON-event validation, final JSON extraction, and provenance shared by Harbor
 Pi callers. Analyzer-specific tool access, path gating, prompts, artifact
 locations, and error compatibility remain in `harbor_analyzer/pi.py`.
+
+## Environment Modules
+
+`env.sh` is the user-facing source entry point for launchers, workers, and
+rollout. It exposes only quick-start settings and delegates initialization to
+`env/bootstrap.sh`. The bootstrap resolves paths and loads saved configuration
+first; after the user defaults are applied, `env/runtime.sh` loads the modules,
+initializes queue paths, exports runtime settings, and loads helpers. Both are
+sourced at top level so custom rollout configuration retains shell scope.
+`SCRIPT_DIR` always refers to the Harbor directory, not `env/`.
+
+The quick-start block owns `AGENT`, `MODEL`, `BASE_URL`, `API_KEY`,
+`DATASET_NAME`, `DATASET_PATH`, and `TOTAL_WORKERS`, plus the optional
+`MIN_TEST` and `OPIK_URL` switches. Derived settings and advanced defaults stay
+in the modules below. Runtime and saved configuration keep their existing
+precedence; credentials belong in `config.local.env` or the shell environment.
+
+| Module under `env/` | Responsibility |
+| --- | --- |
+| `bootstrap.sh` | Paths, saved configuration, and prerequisite setup |
+| `runtime.sh` | Ordered module loading, queue paths, and runtime exports |
+| `defaults.sh` | Run paths, gateway/diagnostic/tracing defaults, and runner/cache locations |
+| `agent_config.sh` | Model routing, generation settings, OpenCode configuration, and agent validation |
+| `sandbox_config.sh` | Provider connections, upload settings, and preflight defaults |
+| `rollout_config.sh` | Load `RL_ENV_FILE` and derive shared rollout defaults |
+| `environment_config.sh` | Resolve the effective backend, verifier bundle, and image settings |
+| `lifecycle.sh` | Run directories, process identity, shutdown, and reset |
+| `datasets.sh` | Dataset resolution, task filtering, and queue claims |
+| `dependencies.sh` | Cache preparation/delivery, verifier bundles, and worker readiness |
+
+Configuration module order is intentional: model/gateway defaults precede
+generated agent configuration, and rollout configuration precedes effective
+backend selection. Helper modules only define functions. Keep their public
+function names and the explicit export list in `env/runtime.sh` stable; structured
+parsing and data workflows continue to live in the existing Python helpers.
 
 ## Shell and Python Boundaries
 

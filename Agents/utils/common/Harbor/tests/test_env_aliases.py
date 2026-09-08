@@ -48,6 +48,17 @@ class HarborEnvAliasTests(unittest.TestCase):
         for old in ("N_ATTEMPTS", "HARBOR_RUNS", "MAX_RETRIES", "INCLUDE_TASKS"):
             self.assertNotIn(old, env)
 
+    def test_custom_rollout_declarations_survive_sourcing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            rollout_env = Path(tmp) / "rollout.env"
+            rollout_env.write_text(
+                "declare -x RL_PORT=19999\ndeclare -x RL_ENVIRONMENT_TYPE=qz\n"
+            )
+            env = self.load_env(ROLLOUT="1", RL_ENV_FILE=str(rollout_env))
+        self.assertEqual(env["RL_PORT"], "19999")
+        self.assertEqual(env["RL_ENVIRONMENT_TYPE"], "qz")
+        self.assertEqual(env["HARBOR_ENVIRONMENT_TYPE"], "qz")
+
     def test_legacy_inputs_resolve_to_canonical_settings(self) -> None:
         for old, new, value in (
             ("N_ATTEMPTS", "HARBOR_N_ATTEMPTS", "3"),
