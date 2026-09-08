@@ -365,6 +365,14 @@ class PiClientTest(unittest.TestCase):
         self.assertIn("offline=1", captured)
         self.assertIn(f"cwd={self.repository_root.resolve()}", captured)
 
+    def test_tool_free_review_disables_context_loading_and_uses_empty_directory(self) -> None:
+        _stub_pi_script(self.bin_dir, stdout=_make_findings_response([]))
+        self._make_client().review("verify", "frozen evidence", no_tools=True)
+        captured = self.capture.read_text()
+        for flag in ("--no-tools", "--no-extensions", "--no-skills", "--no-context-files"):
+            self.assertIn(f"arg=<{flag}>", captured)
+        self.assertNotIn(f"cwd={self.repository_root.resolve()}", captured)
+
     def test_fetches_source_objects_without_checkout_or_persisted_credentials(self) -> None:
         client = self._make_client()
         github = pi_review._review.GitHubClient("example/repo", "fake-github-token")
@@ -405,6 +413,22 @@ class PiClientTest(unittest.TestCase):
             subprocess.CompletedProcess([], 1),
         ]), mock.patch.object(pi_review, "_bounded_git_fetch", return_value=128), self.assertRaisesRegex(pi_review.PiReviewError, "could not fetch PR head"):
             client.prepare_source(github, "a" * 40, source_directory)
+
+    def test_anonymous_fetch_does_not_configure_authentication(self) -> None:
+        source_directory = self.root / "source.git"
+        (source_directory / "objects/info").mkdir(parents=True)
+        with mock.patch("subprocess.run", side_effect=[
+            subprocess.CompletedProcess([], 0, stdout=f"/trusted/objects\n{self.root / 'absent-shallow'}\n" + "b" * 40 + "\n"),
+            subprocess.CompletedProcess([], 0),
+            subprocess.CompletedProcess([], 1),
+            subprocess.CompletedProcess([], 0),
+        ]), mock.patch.object(pi_review, "_bounded_git_fetch", return_value=0) as fetch:
+            self._make_client().prepare_source(
+                pi_review._review.GitHubClient("example/repo", ""), "a" * 40, source_directory
+            )
+        _, environment = fetch.call_args.args
+        self.assertEqual(environment["GIT_CONFIG_COUNT"], "0")
+        self.assertNotIn("GIT_CONFIG_VALUE_0", environment)
 
     def test_rejects_non_sha_source_ref_before_git(self) -> None:
         client = self._make_client()
