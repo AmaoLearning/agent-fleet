@@ -108,6 +108,10 @@ if ! harbor_prepare_agent_runtime; then
   exit 1
 fi
 
+if [[ "${HARBOR_CC_WEB_MCP_ENABLED:-0}" == "1" ]]; then
+  harbor_prepare_web_search_dataset "$RL_DATASET_NAME" "$RL_DATASET_ROOT"
+fi
+
 if [[ "$DETACH_MODE" == "true" ]]; then
   # The listener is intentionally not inside zellij. It owns port 19001; job
   # zellij sessions are created lazily per Ray submission.

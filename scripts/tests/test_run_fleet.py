@@ -9,6 +9,17 @@ SCRIPT = Path(__file__).resolve().parents[1] / "run_fleet.sh"
 
 
 class FleetRouterTest(unittest.TestCase):
+    def test_web_search_aliases_support_task_selection_and_saved_specs(self):
+        for name in ("browsecomp", "deepsearchqa"):
+            output = self.root / f"{name}.json"
+            result = self.run_fleet(
+                "--taskset", name, "--task", f"{name}-000000", "--output", str(output)
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"DATASET_NAME={name}", result.stdout)
+            self.assertIn(f"FLEET_TASKS={name}-000000", result.stdout)
+            self.assertEqual(json.loads(output.read_text())["taskset"], name)
+
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = Path(self.temp_dir.name)

@@ -34,7 +34,7 @@ from harbor.environments.capabilities import (
 )
 from opensandbox_s3_upload import S3UploadArtifact, S3UploadStore
 
-EXPECTED_YICLOUD_SDK_VERSION = "0.3.1"
+EXPECTED_YICLOUD_SDK_VERSION = "0.4.1"
 EXIT_MARKER = "__HARBOR_YICLOUD_OPENSANDBOX_EXIT_CODE__="
 TERMINAL_FAILURE_STATES = {
     "failed",

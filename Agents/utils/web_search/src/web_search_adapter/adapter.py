@@ -81,7 +81,7 @@ def load_deepsearchqa(path: Path) -> list[Example]:
     return examples
 
 
-class WebResearchAdapter:
+class WebSearchAdapter:
     def __init__(
         self,
         benchmark: str,

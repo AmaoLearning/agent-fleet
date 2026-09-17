@@ -68,6 +68,25 @@ harbor_environment_supports_claude_hook_delivery() {
     || "$HARBOR_ENVIRONMENT_TYPE" == "opensandbox" ]]
 }
 
+# Both command builders use the same cached MCP artifact and task environment.
+append_web_mcp_args() {
+  [[ -n "$HARBOR_CC_WEB_MCP_SOURCE" ]] || return 0
+  if [[ ! -f "$HARBOR_CC_WEB_MCP_SOURCE" ]]; then
+    echo "[ERROR] Web MCP source not found: $HARBOR_CC_WEB_MCP_SOURCE" >&2
+    return 1
+  fi
+  if [[ -z "${EXA_API_KEY:-}" ]]; then
+    echo "[ERROR] EXA_API_KEY is required when HARBOR_CC_WEB_MCP_SOURCE is set" >&2
+    return 1
+  fi
+  cmd+=( --ae "CC_WEB_MCP_PATH=$HARBOR_CC_WEB_MCP_MOUNT_PATH" )
+  # OpenCode receives credentials through OPENCODE_RUNTIME_SECRETS_JSON.
+  if [[ "$AGENT" != "opencode" ]]; then
+    cmd+=( --ae "EXA_API_KEY=$EXA_API_KEY" )
+  fi
+  mount_args+=( --mount "$HARBOR_CC_WEB_MCP_SOURCE" "$HARBOR_CC_WEB_MCP_MOUNT_PATH" always )
+}
+
 write_harbor_registry_summary() {
   local exit_code="$1"
   local job_dir=""
@@ -1264,20 +1283,6 @@ run_harbor() {
       --ae "CC_OPIK_NPM_CACHE_DIR=$HARBOR_CC_NPM_CACHE_MOUNT_PATH"
       --ae "HARBOR_LOCAL_CLAUDE_TGZ_URL=${HARBOR_LOCAL_CLAUDE_TGZ_URL:-}"
     )
-    if [[ -n "$HARBOR_CC_WEB_MCP_SOURCE" ]]; then
-      if [[ ! -f "$HARBOR_CC_WEB_MCP_SOURCE" ]]; then
-        echo "[ERROR] Claude web MCP source not found: $HARBOR_CC_WEB_MCP_SOURCE" >&2
-        return 1
-      fi
-      if [[ -z "${EXA_API_KEY:-}" ]]; then
-        echo "[ERROR] EXA_API_KEY is required when HARBOR_CC_WEB_MCP_SOURCE is set" >&2
-        return 1
-      fi
-      cmd+=(
-        --ae "CC_WEB_MCP_PATH=$HARBOR_CC_WEB_MCP_MOUNT_PATH"
-        --ae "EXA_API_KEY=$EXA_API_KEY"
-      )
-    fi
   fi
   # Task code can read its own environment. With tracing disabled nothing in
   # the container consumes the Opik connection fields, so do not expose the
@@ -1412,9 +1417,7 @@ run_harbor() {
         "$VERIFIER_RUNTIME_BUNDLE_ARCHIVE_MOUNT_PATH" always
       )
     fi
-    if harbor_agent_is_claude_code && [[ -n "$HARBOR_CC_WEB_MCP_SOURCE" ]]; then
-      mount_args+=( --mount "$HARBOR_CC_WEB_MCP_SOURCE" "$HARBOR_CC_WEB_MCP_MOUNT_PATH" always )
-    fi
+    append_web_mcp_args || return 1
     if [[ -n "$VERIFIER_UV_BIN_DIR_SOURCE" ]]; then
       mount_args+=( --mount "$VERIFIER_UV_BIN_DIR_SOURCE" "$HARBOR_VERIFIER_UV_BIN_DIR_MOUNT_PATH" uv-bin )
     fi
@@ -1713,6 +1716,7 @@ run_opencode_task() {
     local mounts_json="[]"
     if [[ "$HARBOR_ENVIRONMENT_TYPE" == "docker" || "$HARBOR_ENVIRONMENT_TYPE" == "opensandbox" ]]; then
       local -a mount_args=()
+      append_web_mcp_args || return 1
       if [[ -n "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" ]]; then
         mount_args+=( --mount "$HARBOR_CC_PY_WHEEL_DIR_SOURCE" "$HARBOR_CC_PY_WHEEL_DIR_MOUNT_PATH" exists )
       fi

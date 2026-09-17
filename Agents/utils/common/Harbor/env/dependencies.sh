@@ -269,12 +269,12 @@ harbor_prewarm_s3_upload_cache() {
   fi
 
   local -a sources=("$LOCAL_WHEEL_DIR")
+  [[ -f "$HARBOR_CC_WEB_MCP_SOURCE" ]] && sources+=("$HARBOR_CC_WEB_MCP_SOURCE")
   case "$AGENT" in
     claude-code)
       [[ -f "$HARBOR_CC_CLAUDE_TGZ_SOURCE" ]] \
         && sources+=("$HARBOR_CC_CLAUDE_TGZ_SOURCE")
       [[ -f "$HARBOR_CC_HOOK_SOURCE" ]] && sources+=("$HARBOR_CC_HOOK_SOURCE")
-      [[ -f "$HARBOR_CC_WEB_MCP_SOURCE" ]] && sources+=("$HARBOR_CC_WEB_MCP_SOURCE")
       ;;
     opencode)
       [[ -f "$TRACE_PLUGIN_OPENCODE_PLUGIN_SOURCE" ]] \

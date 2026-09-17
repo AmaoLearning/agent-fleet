@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import contextvars
 import importlib.util
+import json
 import os
 import shlex
 import shutil
@@ -39,6 +40,7 @@ class FakeOpenCode:
     ) -> None:
         self.model_name = model_name
         self._extra_env = extra_env or {}
+        self._opencode_config = kwargs.get("opencode_config") or {}
         self.fake_opencode_present = fake_opencode_present
         self.root_commands: list[dict[str, object]] = []
         self.agent_commands: list[dict[str, object]] = []
@@ -145,6 +147,35 @@ class OpenCodeTraceDisabledTests(unittest.TestCase):
             },
             fake_opencode_present=opencode_present,
         )
+
+    def test_web_mcp_uses_task_instruction_and_preserves_user_config(self):
+        agent = self.make_agent("false")
+        agent._extra_env["CC_WEB_MCP_PATH"] = "/opt/exa.pyz"
+        agent._opencode_config = {"mcp": {"other": {"type": "remote"}},
+                                  "permission": {"edit": "allow"}}
+        for question in ("Question one", "Question two 'quotes'\nnewline"):
+            asyncio.run(agent.run(question, FakeEnvironment(), object()))
+            config = agent._opencode_config
+            self.assertEqual(config["mcp"]["web"]["command"], ["python3", "/opt/exa.pyz"])
+            self.assertEqual(config["mcp"]["web"]["environment"],
+                             {"WEB_MCP_INSTRUCTION": question})
+            self.assertEqual(config["mcp"]["other"], {"type": "remote"})
+            self.assertEqual(config["permission"], {"edit": "allow", "websearch": "deny", "webfetch": "deny"})
+            self.assertNotIn("EXA_API_KEY", json.dumps(config))
+
+    def test_web_mcp_disabled_keeps_config_unchanged(self):
+        agent = self.make_agent("false")
+        agent._opencode_config = {"permission": {"webfetch": "allow"}}
+        asyncio.run(agent.run("Question", FakeEnvironment(), object()))
+        self.assertEqual(agent._opencode_config, {"permission": {"webfetch": "allow"}})
+
+    def test_web_mcp_preserves_global_permission_setting(self):
+        agent = self.make_agent("false")
+        agent._extra_env["CC_WEB_MCP_PATH"] = "/opt/exa.pyz"
+        agent._opencode_config = {"permission": "ask"}
+        asyncio.run(agent.run("Question", FakeEnvironment(), object()))
+        self.assertEqual(agent._opencode_config["permission"],
+                         {"*": "ask", "websearch": "deny", "webfetch": "deny"})
 
     def _local_install_command(self) -> str:
         agent = self.make_agent("false", opencode_present=False)
@@ -545,6 +576,7 @@ class OpenCodeTraceDisabledTests(unittest.TestCase):
 
     def test_runtime_secrets_use_trial_scope_not_per_command_env(self) -> None:
         runtime_secrets = {
+            "EXA_API_KEY": "fake-exa-secret",
             "ANTHROPIC_API_KEY": "fake-runtime-secret",
             "AGENT_FLEET_OPENCODE_SECRET_0123456789ABCDEF": (
                 "fake-runtime-secret"
@@ -556,6 +588,7 @@ class OpenCodeTraceDisabledTests(unittest.TestCase):
             runtime_secrets,
         ):
             agent = self.make_agent("false")
+        agent._extra_env["CC_WEB_MCP_PATH"] = "/opt/exa.pyz"
 
         self.assertEqual(
             {key: agent._extra_env[key] for key in runtime_secrets},
@@ -564,6 +597,8 @@ class OpenCodeTraceDisabledTests(unittest.TestCase):
 
         asyncio.run(agent.run("solve the task", FakeEnvironment(), object()))
 
+        self.assertNotIn("fake-exa-secret", json.dumps(agent._opencode_config))
+        self.assertNotIn("fake-exa-secret", json.dumps(agent.agent_commands))
         for command in agent.agent_commands:
             command_env = command.get("env", {})
             self.assertTrue(runtime_secrets.keys().isdisjoint(command_env))
@@ -602,6 +637,7 @@ class OpenCodeTraceDisabledTests(unittest.TestCase):
                 return contextlib.nullcontext()
 
         runtime_secrets = {
+            "EXA_API_KEY": "fake-exa-secret",
             "ANTHROPIC_API_KEY": "fake-runtime-secret",
             "AGENT_FLEET_OPENCODE_SECRET_0123456789ABCDEF": (
                 "fake-runtime-secret"

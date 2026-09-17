@@ -348,6 +348,27 @@ PY
             config["opencode_runtime_secrets"].values(),
         )
 
+    def test_opencode_web_mcp_key_uses_runtime_secrets(self) -> None:
+        for key in ("fake-exa-secret", ""):
+            with self.subTest(key=key):
+                config = self._load_config(
+                    "opencode",
+                    load_count=2,
+                    HARBOR_CC_WEB_MCP_ENABLED="1",
+                    EXA_API_KEY=key,
+                )
+                self.assertEqual(
+                    config["opencode_runtime_secrets"]["EXA_API_KEY"],
+                    key or "anonymous",
+                )
+                self.assertNotIn("EXA_API_KEY", json.dumps(config["opencode_config"]))
+
+    def test_opencode_web_mcp_disabled_does_not_add_exa_secret(self) -> None:
+        config = self._load_config(
+            "opencode", HARBOR_CC_WEB_MCP_ENABLED="0", EXA_API_KEY="fake-exa-secret"
+        )
+        self.assertNotIn("EXA_API_KEY", config["opencode_runtime_secrets"])
+
     def test_claude_code_rejects_unsupported_sampling_settings(self) -> None:
         result = self._run_validation(
             "claude-code",

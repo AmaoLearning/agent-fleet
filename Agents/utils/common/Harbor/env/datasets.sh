@@ -17,6 +17,9 @@ harbor_validate_dataset_path_configuration() {
 harbor_generate_task_file() {
   local destination="${1:-$TASK_FILE}" source_file=""
   harbor_validate_dataset_path_configuration || return 1
+  if [[ "${HARBOR_CC_WEB_MCP_ENABLED:-0}" == "1" ]]; then
+    harbor_prepare_web_search_dataset || return 1
+  fi
   # Explicit local paths must be validated against the checkout the user
   # selected, not a similarly named repository manifest.
   if [[ -n "$TASK_SOURCE_FILE" || -z "$FLEET_TASKS" || "$DATASET_NAME" != "auto" ]]; then
@@ -238,6 +241,9 @@ harbor_task_count() {
 harbor_ensure_dataset() {
   local dataset_kind
   harbor_validate_dataset_path_configuration || return 1
+  if [[ "${HARBOR_CC_WEB_MCP_ENABLED:-0}" == "1" ]]; then
+    harbor_prepare_web_search_dataset || return 1
+  fi
   dataset_kind="$(harbor_dataset_kind)"
 
   if harbor_uses_registry_dataset; then

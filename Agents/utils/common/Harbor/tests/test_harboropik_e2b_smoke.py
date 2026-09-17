@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,27 @@ ENV_SCRIPT = Path(__file__).parents[1] / "env.sh"
 
 
 class HarborOpikE2BSmokeTest(unittest.TestCase):
+    def test_web_mcp_delivery_is_shared_by_all_supported_harnesses(self):
+        with tempfile.TemporaryDirectory() as cache:
+            builder = SCRIPT.parent.parent / "mcp/build.py"
+            built = subprocess.run([sys.executable, str(builder), cache],
+                                   check=True, capture_output=True, text=True)
+            artifact = built.stdout.strip()
+            for agent in ("claude-code", "opencode", "pi"):
+                with self.subTest(agent=agent):
+                    result = self.run_dry_run("docker", agent, dry_run=agent == "opencode", extra_env={
+                        "HARBOR_CC_WEB_MCP_ENABLED": "1", "EXA_API_KEY": "fake-exa-secret",
+                        "LOCAL_WHEEL_DIR": cache,
+                    })
+                    self.assertEqual(result.returncode, 0, result.stdout)
+                    self.assertIn("CC_WEB_MCP_PATH=/opt/agent-fleet/exa_web_mcp.py", result.stdout)
+                    if agent == "opencode":
+                        self.assertNotIn("fake-exa-secret", result.stdout)
+                        self.assertNotIn("EXA_API_KEY=", result.stdout)
+                    else:
+                        self.assertIn("EXA_API_KEY=fake-exa-secret", result.stdout)
+                    self.assertIn(artifact, result.stdout)
+
     def run_dry_run(
         self,
         environment_type: str,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .adapter import WebResearchAdapter
+from .adapter import WebSearchAdapter
 
 
 def _run(benchmark: str) -> None:
@@ -15,7 +15,7 @@ def _run(benchmark: str) -> None:
     parser.add_argument("--image", default="python:3.12-slim")
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
-    adapter = WebResearchAdapter(
+    adapter = WebSearchAdapter(
         benchmark,
         args.input,
         args.output_dir,

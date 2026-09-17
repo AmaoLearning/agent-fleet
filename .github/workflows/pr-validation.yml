@@ -67,6 +67,7 @@ jobs:
           set -euo pipefail
           python -m unittest discover -s Tasks/Pinchbench/tests -v
           python -m unittest discover -s Tasks/clawBio/tests -v
+          python -m unittest discover -s Agents/utils/web_search/tests -v
 
       - name: Run portable shell regressions
         run: |

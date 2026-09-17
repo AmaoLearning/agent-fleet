@@ -114,6 +114,15 @@ class FakeSandbox:
 
 
 class YiCloudOpenSandboxTest(unittest.TestCase):
+    def test_sdk_version_requires_region_aware_client(self):
+        with patch.object(yicloud_opensandbox, "version", return_value="0.4.1"):
+            yicloud_opensandbox._require_yicloud_sdk()
+        with (
+            patch.object(yicloud_opensandbox, "version", return_value="0.3.1"),
+            self.assertRaisesRegex(RuntimeError, "expected yicloud-sdk-python==0.4.1"),
+        ):
+            yicloud_opensandbox._require_yicloud_sdk()
+
     def test_exec_runtime_keeps_missing_environment_as_none(self) -> None:
         command, env = yicloud_opensandbox._prepare_exec_runtime("true", None)
 

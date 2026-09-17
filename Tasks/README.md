@@ -13,7 +13,8 @@ Benchmarks, task lists, and automated task workflows.
 | [`TMax/`](./TMax/) | TMax Harbor registry dataset entrypoint. |
 | [`Terminal-bench-2/`](./Terminal-bench-2/) | Terminal-Bench task lists for Harbor. |
 | [`SETA/`](./SETA/) | SETA task lists. |
-| [`WebResearchAdapter/`](./WebResearchAdapter/) | BrowseComp and DeepSearchQA Harbor task generator. |
+| [`BrowseComp/`](./BrowseComp/) | BrowseComp native Harbor tasks; automatic startup or manual CSV preparation. |
+| [`DeepSearchQA/`](./DeepSearchQA/) | DeepSearchQA native Harbor tasks; automatic startup or manual CSV preparation. |
 
 ## Other Harbor supported datasets
 

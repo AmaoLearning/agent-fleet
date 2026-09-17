@@ -655,6 +655,20 @@ class OpikOpenCodeHarbor(OpenCode):
         if skills_command:
             await self.exec_as_agent(environment, command=skills_command, env=env)
 
+        web_mcp_path = env.get("CC_WEB_MCP_PATH", "").strip()
+        if web_mcp_path:
+            self._opencode_config.setdefault("mcp", {})["web"] = {
+                "type": "local",
+                "command": ["python3", web_mcp_path],
+                "environment": {"WEB_MCP_INSTRUCTION": instruction},
+                "timeout": 60000,
+            }
+            permissions = self._opencode_config.get("permission", {})
+            if isinstance(permissions, str):
+                permissions = {"*": permissions}
+            self._opencode_config["permission"] = {
+                **permissions, "websearch": "deny", "webfetch": "deny"
+            }
         config_command = self._build_register_config_command()
         if config_command:
             await self.exec_as_agent(environment, command=config_command, env=env)

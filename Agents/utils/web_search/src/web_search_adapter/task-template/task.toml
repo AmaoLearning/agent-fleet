@@ -16,7 +16,8 @@ timeout_sec = 300.0
 [verifier.env]
 JUDGE_API_URL = "${HARBOR_API_BASE}"
 JUDGE_API_KEY = "${API_KEY:-}"
-JUDGE_MODEL = "${HARBOR_MODEL}"
+# MODEL is the gateway ID; HARBOR_MODEL may add a harness-only provider prefix.
+JUDGE_MODEL = "${MODEL}"
 JUDGE_LLM_KWARGS = "${HARBOR_LLM_KWARGS:-{}}"
 
 [environment]

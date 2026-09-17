@@ -131,6 +131,15 @@ Agent integration internals: [Harbor-claude-code/STRUCT.md](Harbor-claude-code/S
 [Harbor-opencode/STRUCT.md](Harbor-opencode/STRUCT.md),
 [Harbor-pi/STRUCT.md](Harbor-pi/STRUCT.md).
 
+## Web Search Preparation (`utils/web_search/`)
+
+Shared conversion, templates, and grading for BrowseComp and DeepSearchQA live
+in `utils/web_search/`. Dataset entrypoints stay under `Tasks/`; conversion is
+a startup preparation step when `HARBOR_CC_WEB_MCP_ENABLED=1` and the selected
+dataset directory is missing, never a per-trial hook. Defaults live in
+`utils/web_search/env.sh`; explicit adapters remain available. See the
+[web search guide](utils/web_search/README.md).
+
 ## Remote Rollout (`utils/rl/`)
 
 ```bash
@@ -206,6 +215,7 @@ CI. Set `PYTHONPATH=.` for repository imports:
 export PYTHONPATH=.
 python3 -m unittest discover -s Agents/utils/common/Harbor/tests
 python3 -m unittest discover -s Agents/utils/rl/tests
+python3 -m unittest discover -s Agents/utils/web_search/tests
 python3 -m unittest discover -s Agents/Harbor-claude-code/tests
 python3 -m unittest discover -s Agents/Harbor-opencode/tests
 python3 -m unittest discover -s Agents/Harbor-pi/tests

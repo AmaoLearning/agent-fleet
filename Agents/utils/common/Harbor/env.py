@@ -236,6 +236,8 @@ def build_opencode_runtime_secrets() -> dict[str, str]:
     _, discovered_secrets = sanitize_opencode_config_payload(payload)
     runtime_secrets = dict(existing)
     runtime_secrets.update(discovered_secrets)
+    if os.environ.get("HARBOR_CC_WEB_MCP_ENABLED") == "1":
+        runtime_secrets["EXA_API_KEY"] = os.environ.get("EXA_API_KEY") or "anonymous"
 
     provider, separator, _ = os.environ.get("HARBOR_MODEL", "").partition("/")
     if not separator:
