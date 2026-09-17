@@ -1203,8 +1203,12 @@ run_harbor() {
     harbor_validate_runner_cli
   fi
 
-  local cmd=(
-    "$HARBOR_OPIK_BIN" harbor run
+  local cmd=("$HARBOR_CLI_BIN")
+  if harbor_trace_to_opik_enabled || [[ "$HARBOR_OPIK_BIN" != "$HARBOR_RUNNER_DIR/bin/opik" ]]; then
+    cmd=("$HARBOR_OPIK_BIN" harbor)
+  fi
+  cmd+=(
+    run
     -y
     --n-concurrent "$HARBOR_N_CONCURRENT"
     --max-retries "$HARBOR_MAX_RETRIES"
@@ -1562,7 +1566,7 @@ run_harbor() {
   if [[ "$normalized_llm_kwargs" == *'"api_key":"="'* || "$normalized_llm_kwargs" == *'"api_key": "="'* ]]; then
     echo "[WARN] llm_kwargs is using placeholder api_key='='; this often yields all-zero scores"
   fi
-  echo "[INFO] harbor cmd: $HARBOR_OPIK_BIN harbor run ..."
+  echo "[INFO] harbor cmd: ${cmd[0]} ..."
 
   if [[ "$HARBOR_DRY_RUN" == "1" ]]; then
     echo "[INFO] HARBOR_DRY_RUN=1, skip execution"

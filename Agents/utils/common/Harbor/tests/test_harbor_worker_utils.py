@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -20,6 +21,42 @@ SPEC.loader.exec_module(MODULE)
 
 
 class HarborWorkerUtilsTest(unittest.TestCase):
+    def test_claude_stream_works_without_site_startup(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            (path / "sitecustomize.py").write_text('raise SystemExit("unexpected startup hook")\n')
+            (path / "agent").mkdir()
+            events = [
+                {"type": "assistant", "message": {"content": [
+                    {"type": "text", "text": "answer"},
+                    {"type": "tool_use", "name": "Bash", "input": {"command": "echo ok"}},
+                ]}},
+                {"type": "user", "message": {"content": [
+                    {"type": "tool_result", "content": "ok"},
+                ]}},
+                {"type": "result", "result": "done"},
+            ]
+            (path / "agent/claude-code.txt").write_text(
+                "".join(json.dumps(event) + "\n" for event in events)
+            )
+            output = path / "output.txt"
+            with output.open("w") as log:
+                process = subprocess.Popen(
+                    [sys.executable, "-S", str(SCRIPT), "stream-claude-log", root],
+                    env=dict(os.environ, PYTHONPATH=root), stdout=log, stderr=log,
+                )
+                try:
+                    deadline = time.monotonic() + 5
+                    while "[result] done" not in output.read_text() and process.poll() is None:
+                        if time.monotonic() >= deadline:
+                            self.fail("log streamer did not emit the result")
+                        time.sleep(0.05)
+                    self.assertEqual(output.read_text(),
+                                     "[llm] answer\n[tool] Bash: echo ok\n[tool_result] ok\n[result] done\n")
+                finally:
+                    process.terminate()
+                    process.wait(timeout=5)
+
     def test_finds_matching_task_blocking_online_event(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             events_path = Path(root) / "environment-events.jsonl"

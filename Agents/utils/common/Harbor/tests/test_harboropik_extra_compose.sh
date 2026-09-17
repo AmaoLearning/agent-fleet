@@ -343,6 +343,7 @@ run_harboropik() {
     HARBOR_MAX_RETRIES="0" \
     HARBOR_CAPTURE_FILE="$capture_file" \
     HARBOR_CAPTURE_RESULT="1" \
+    HARBOR_RUNNER_DIR="${TEST_RUNNER_DIR:-${capture_bin%/bin/*}}" \
     HARBOR_OPIK_BIN="$capture_bin" \
     HARBOR_CLI_BIN="$capture_bin" \
     HARBOR_OPIK_PYTHON="$capture_bin" \
@@ -405,7 +406,7 @@ main() {
 
   fake_bin="$tmp/bin"
   make_fake_bin "$fake_bin"
-  capture_bin="$fake_bin/capture"
+  capture_bin="$fake_bin/opik"
   make_capture_bin "$capture_bin"
 
   default_overlay="$HARBOR_DIR/overlays/unprivileged-task.yaml"
@@ -415,6 +416,7 @@ main() {
     "claude-code" "$capture_bin" "$claude_capture" "$tmp/claude-default" \
     "codepde@1.0"
   assert_extra_compose_arg "$claude_capture" "$default_overlay"
+  assert_arg_pair "$claude_capture" "harbor" "run"
   assert_arg_pair "$claude_capture" "--dataset" "codepde@1.0"
   assert_arg_pair "$claude_capture" "--ae" "HARBOR_DATASET=codepde@1.0"
   assert_file_content \
@@ -538,6 +540,11 @@ main() {
     "claude-code" "$capture_bin" "$traceoff_capture" "$tmp/claude-traceoff" \
     "codepde@1.0" "" "false"
   assert_arg_pair "$traceoff_capture" "--dataset" "codepde@1.0"
+  assert_exact_arg_absent "$traceoff_capture" "harbor"
+  assert_arg_pair "$traceoff_capture" "run" "-y"
+  TEST_RUNNER_DIR="$tmp/custom-runner" run_harboropik \
+    "claude-code" "$capture_bin" "$tmp/wrapper.args" "$tmp/wrapper" "codepde@1.0" "" "false"
+  assert_arg_pair "$tmp/wrapper.args" "harbor" "run"
   assert_arg_pair "$traceoff_capture" "--ae" "CC_OPIK_ENABLE_HOOK=false"
   assert_file_content "${traceoff_capture}.opik-track-disable" "true"
   assert_file_content "${traceoff_capture}.opik-environment" "{}"

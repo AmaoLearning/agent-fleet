@@ -76,11 +76,11 @@ summarize_result() {
 start_agent_log_stream() {
   local target="$1"
   if [[ "$RL_AGENT" == "opencode" ]]; then
-    setsid python3 "$HARBOR_SCRIPT_DIR/harbor_worker_utils.py" stream-opencode-log "$target" &
+    setsid python3 -S "$HARBOR_SCRIPT_DIR/harbor_worker_utils.py" stream-opencode-log "$target" &
   elif [[ "$RL_AGENT" == "pi" ]]; then
-    setsid python3 "$HARBOR_SCRIPT_DIR/harbor_worker_utils.py" stream-pi-log "$target" &
+    setsid python3 -S "$HARBOR_SCRIPT_DIR/harbor_worker_utils.py" stream-pi-log "$target" &
   elif [[ "$RL_AGENT" == "claude-code" ]]; then
-    setsid python3 "$HARBOR_SCRIPT_DIR/harbor_worker_utils.py" stream-claude-log "$target" &
+    setsid python3 -S "$HARBOR_SCRIPT_DIR/harbor_worker_utils.py" stream-claude-log "$target" &
   else
     return 0
   fi

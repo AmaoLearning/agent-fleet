@@ -2558,6 +2558,19 @@ class BoundedDownloadTests(unittest.IsolatedAsyncioTestCase):
         await self.instance.download_file(str(link), self.root / "out")
         self.assertEqual((self.root / "out").read_bytes(), source.read_bytes())
 
+    async def test_download_metadata_survives_execd_line_separator_loss(self):
+        source = self.root / "source"
+        source.write_bytes(b"content")
+
+        async def exec_without_newlines(command, **kwargs):
+            result = await self.local_exec(command, **kwargs)
+            result.stdout = result.stdout.replace("\n", "")
+            return result
+
+        self.instance.exec = exec_without_newlines
+        await self.instance.download_file(str(source), self.root / "out")
+        self.assertEqual((self.root / "out").read_bytes(), source.read_bytes())
+
     async def test_empty_file(self):
         source = self.root / "empty"
         source.touch()

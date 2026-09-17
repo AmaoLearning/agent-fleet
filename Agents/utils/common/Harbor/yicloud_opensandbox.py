@@ -3066,7 +3066,8 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
     async def _download_file_chunks(self, source_path: str, target_path: Path | str) -> None:
         source = shlex.quote(source_path)
         metadata = await self.exec(
-            f"set -euo pipefail; stat -L -c %s -- {source}; sha256sum < {source}",
+            f"set -euo pipefail; size=$(stat -L -c %s -- {source}); "
+            f"printf '%s ' \"$size\"; sha256sum < {source}",
             cwd="/", timeout_sec=180, user="root",
         )
         if metadata.return_code != 0:

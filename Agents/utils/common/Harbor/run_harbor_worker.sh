@@ -44,15 +44,15 @@ summarize_result() {
 }
 
 stream_claude_log() {
-  python3 "$SCRIPT_DIR/harbor_worker_utils.py" stream-claude-log "$1"
+  python3 -S "$SCRIPT_DIR/harbor_worker_utils.py" stream-claude-log "$1"
 }
 
 stream_opencode_log() {
-  python3 "$SCRIPT_DIR/harbor_worker_utils.py" stream-opencode-log "$1"
+  python3 -S "$SCRIPT_DIR/harbor_worker_utils.py" stream-opencode-log "$1"
 }
 
 stream_pi_log() {
-  python3 "$SCRIPT_DIR/harbor_worker_utils.py" stream-pi-log "$1"
+  python3 -S "$SCRIPT_DIR/harbor_worker_utils.py" stream-pi-log "$1"
 }
 
 seta_online_early_stop_enabled() {
