@@ -138,6 +138,34 @@ The command prints the output and summary paths. For debugging, add
 `YICLOUD_SANDBOX_RETAIN_AFTER_TRIAL=1` and delete the retained instance after
 inspection.
 
+Image preparation first lists the task repository anonymously. If Harbor
+returns 401 or 403, it retries once using the existing registry credentials
+(`YICLOUD_HARBOR_USERNAME` / `YICLOUD_HARBOR_PASSWORD`, with the existing
+local registry configuration fallback). Subsequent image inspection uses the
+same credentials. Missing credentials or a failed authenticated query stop
+preparation; they do not trigger a rebuild. Public projects remain usable
+without credentials.
+
+## Task Image Hash Validation
+
+On-demand image preparation selects the task repository's most recently pushed
+tag and validates it against the local content hash by default. The selected
+tag must match `<service>-<first 20 hex characters of the local hash>`.
+A mismatch or a tag without that hash encoding stops preparation; it does not
+silently select an older image or rebuild. This checks the published hash
+prefix, not the full remote hash or image contents.
+
+To skip hashing for faster reuse, explicitly set
+`HARBOR_OPENSANDBOX_VALIDATE_IMAGE_HASH=0` when starting workers, or pass
+`--no-validate-image-hash` to the image manager. Only this opt-out path emits a
+warning that the local dataset task definition may be inconsistent with the
+remote image. `--validate-image-hash` re-enables validation and takes precedence
+over the environment setting.
+
+An empty repository still uses the existing hash-based build/push flow. This
+option does not change prebuild uploaded-Bundle cache verification or
+`--skip-hash-verification`.
+
 ## Optional: Prebuild Task Images
 
 For a batch run, publish task images once before starting workers:
