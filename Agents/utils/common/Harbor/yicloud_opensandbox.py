@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextvars
 import hashlib
 import io
 import json
@@ -22,6 +23,8 @@ import tarfile
 import tempfile
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from functools import cache
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
@@ -37,6 +40,18 @@ from harbor.environments.capabilities import (
 from opensandbox_s3_upload import S3UploadArtifact, S3UploadStore
 
 EXPECTED_YICLOUD_SDK_VERSION = "0.4.1"
+
+
+@cache
+def _native_command_pool() -> ThreadPoolExecutor:
+    # Long agent commands must not exhaust the default pool used by file I/O
+    # and control-plane calls. All trials share this bounded, lazy pool.
+    return ThreadPoolExecutor(
+        max_workers=int(os.environ["HARBOR_N_CONCURRENT"]),
+        thread_name_prefix="sandbox-command",
+    )
+
+
 EXIT_MARKER = "__HARBOR_YICLOUD_OPENSANDBOX_EXIT_CODE__="
 TERMINAL_FAILURE_STATES = {
     "failed",
@@ -2633,14 +2648,14 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
             command,
             self._merge_env(env),
         )
-        result = await asyncio.to_thread(
-            self._run_command_sync,
-            command,
-            effective_cwd,
-            effective_env,
-            timeout_sec,
-            uid,
-        )
+        args = (command, effective_cwd, effective_env, timeout_sec, uid)
+        if os.environ.get("HARBOR_NATIVE_CONCURRENCY") == "1":
+            result = await asyncio.get_running_loop().run_in_executor(
+                _native_command_pool(), contextvars.copy_context().run,
+                self._run_command_sync, *args,
+            )
+        else:
+            result = await asyncio.to_thread(self._run_command_sync, *args)
         callback = self._output_callback()
         if callback is not None:
             if result.stdout:

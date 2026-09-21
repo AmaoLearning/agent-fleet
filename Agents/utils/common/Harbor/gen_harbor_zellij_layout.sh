@@ -5,12 +5,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/env.sh"
 
 OUT="${1:-$LAYOUT_FILE}"
+worker_command="./run_harbor_worker.sh"
+if [[ "$HARBOR_NATIVE_CONCURRENCY" == "1" ]]; then
+  TOTAL_WORKERS=1
+  worker_command="./run_harbor_registry.sh"
+fi
 
 emit_worker_pane() {
   local worker_id="$1"
   cat >> "$OUT" <<EOF
         pane {
-          command "./run_harbor_worker.sh"
+          command "$worker_command"
           args "$worker_id"
           close_on_exit true
         }
@@ -102,4 +107,3 @@ cat >> "$OUT" <<'EOF'
 EOF
 
 echo "Wrote layout to $OUT"
-

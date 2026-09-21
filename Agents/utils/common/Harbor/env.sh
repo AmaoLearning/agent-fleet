@@ -25,6 +25,8 @@ elif [[ "$DATASET_NAME" == "browsecomp" || "$DATASET_NAME" == "deepsearchqa" ]] 
 fi
 DATASET_PATH="${DATASET_PATH:-/workspace/seta-env/Harbor-Dataset}"
 TOTAL_WORKERS="${TOTAL_WORKERS:-10}"
+# One Harbor process owns all benchmark trials; concurrency is HARBOR_N_CONCURRENT.
+export HARBOR_NATIVE_CONCURRENCY="${HARBOR_NATIVE_CONCURRENCY:-0}"
 # Optional: one-task canary and Opik tracing (empty URL disables upload).
 MIN_TEST="${MIN_TEST:-0}"
 OPIK_URL="${OPIK_URL:-}"

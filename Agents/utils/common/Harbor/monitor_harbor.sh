@@ -3,6 +3,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/env.sh"
+if [[ "$HARBOR_NATIVE_CONCURRENCY" == "1" ]]; then
+  exec python3 -S "$SCRIPT_DIR/scripts/monitor_native_harbor.py"
+fi
 harbor_validate_agent
 
 harbor_init_run_dirs

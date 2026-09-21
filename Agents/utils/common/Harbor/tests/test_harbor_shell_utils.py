@@ -7,6 +7,25 @@ from Agents.utils.common.Harbor import harbor_shell_utils
 
 
 class HarborShellUtilsTest(unittest.TestCase):
+    def test_native_task_config_preserves_exact_selection_and_limit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name in ("task[1]", "task two"):
+                (root / name).mkdir()
+                (root / name / "task.toml").touch()
+            selected = root / "tasks.txt"
+            selected.write_text("task[1]\r\ntask two\n")
+            config = harbor_shell_utils.native_task_config(root, selected)
+            self.assertEqual(config["tasks"], [
+                {"path": str(root / "task[1]")}, {"path": str(root / "task two")},
+            ])
+            self.assertEqual(harbor_shell_utils.native_task_config(root, selected, "1"),
+                             {"tasks": config["tasks"][:1]})
+            for invalid in ("", "missing\n", "../outside\n"):
+                selected.write_text(invalid)
+                with self.assertRaises(ValueError):
+                    harbor_shell_utils.native_task_config(root, selected)
+
     def test_online_event_uses_task_environment(self):
         rendered = harbor_shell_utils.online_event(
             "preflight",

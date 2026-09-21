@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import contextvars
 import importlib.util
 import json
 import os
@@ -11,9 +12,11 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import types
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, call, patch
@@ -68,6 +71,42 @@ spec.loader.exec_module(yicloud_opensandbox)
 class Request:
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
+
+
+class NativeCommandPoolTest(unittest.IsolatedAsyncioTestCase):
+    async def test_commands_do_not_starve_control_plane_and_preserve_context(self):
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+        context = contextvars.ContextVar("task")
+        started = threading.Barrier(5)
+        release = threading.Event()
+        instance = object.__new__(yicloud_opensandbox.YiCloudOpenSandboxEnvironment)
+        instance.task_env_config = SimpleNamespace(workdir="/app")
+        instance._merge_env = lambda env: env or {}
+        instance._output_callback = lambda: None
+
+        def command(*args):
+            started.wait(timeout=10)
+            release.wait(timeout=10)
+            return SimpleNamespace(stdout=context.get(), stderr="", exit_code=0)
+
+        instance._run_command_sync = command
+        with patch.dict(os.environ, HARBOR_NATIVE_CONCURRENCY="1", HARBOR_N_CONCURRENT="4"):
+            try:
+                tasks = []
+                for value in range(4):
+                    context.set(str(value))
+                    tasks.append(asyncio.create_task(instance.exec("test")))
+                await asyncio.wait_for(asyncio.to_thread(started.wait, 10), 12)
+                self.assertEqual(await asyncio.wait_for(asyncio.to_thread(lambda: "control"), 1), "control")
+                release.set()
+                results = await asyncio.gather(*tasks)
+                self.assertEqual([result.stdout for result in results], ["0", "1", "2", "3"])
+            finally:
+                release.set()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                yicloud_opensandbox._native_command_pool().shutdown(wait=True)
+                yicloud_opensandbox._native_command_pool.cache_clear()
 
 
 def make_healthcheck_environment(ready_timeout_sec: int):

@@ -43,7 +43,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 harbor_is_native_registry_main() {
   [[ "$ROLLOUT" != "1" ]] \
-    && harbor_uses_registry_dataset \
+    && harbor_uses_native_runner \
     && [[ "${HARBOR_QUEUE_WORKER:-0}" != "1" ]]
 }
 
@@ -61,6 +61,20 @@ harbor_uses_local_opensandbox_dataset() {
   [[ "$HARBOR_ENVIRONMENT_TYPE" == "opensandbox" ]] \
     && [[ -n "${DATASET_PATH:-}" ]] \
     && [[ -d "$DATASET_PATH" ]]
+}
+
+append_native_task_config() {
+  if [[ -n "$HARBOR_INCLUDE_TASKS" ]]; then
+    echo "[ERROR] select native local tasks with --task or TASK_SOURCE_FILE, not HARBOR_INCLUDE_TASKS" >&2
+    return 1
+  fi
+  harbor_prepare_task_file
+  local config="$RUNTIME_DIR/native-tasks.json"
+  python3 "$SCRIPT_DIR/harbor_shell_utils.py" native-task-config \
+    "$DATASET_PATH" "$TASK_FILE" "$HARBOR_LIMIT" > "$config"
+  # The limit was applied to explicit tasks; CLI -l would select a dataset.
+  HARBOR_LIMIT=""
+  cmd+=( --config "$config" )
 }
 
 harbor_environment_supports_claude_hook_delivery() {
@@ -94,7 +108,7 @@ write_harbor_registry_summary() {
 
   [[ "$HARBOR_DRY_RUN" != "1" ]] || return 0
   [[ -f "$HARBOR_JOB_DIR_FILE" ]] && job_dir="$(cat "$HARBOR_JOB_DIR_FILE" 2>/dev/null || true)"
-  dataset="$(harbor_registry_dataset_name)"
+  dataset="$(harbor_metadata_dataset_name)"
   python3 "$SCRIPT_DIR/scripts/write_harbor_registry_summary.py" \
     "$job_dir" "$OUTPUT_PATH/summary.txt" "$exit_code" "$dataset"
 }
@@ -306,7 +320,7 @@ validate_environment_backend() {
       if ! resolve_opensandbox_task_image_ref; then
         exit 1
       fi
-      if [[ -z "$HARBOR_OPENSANDBOX_IMAGE_REF" \
+      if [[ "$HARBOR_NATIVE_CONCURRENCY" != "1" && -z "$HARBOR_OPENSANDBOX_IMAGE_REF" \
         && -z "$HARBOR_OPENSANDBOX_BUNDLE_MANIFEST" ]]; then
         if [[ -z "$YICLOUD_HARBOR_PROJECT" ]]; then
           echo "[ERROR] YICLOUD_HARBOR_PROJECT is required when HARBOR_OPENSANDBOX_IMAGE_REF is unset" >&2
@@ -415,6 +429,7 @@ except QzTemplateMappingError as error:
 
 resolve_opensandbox_task_image_ref() {
   if [[ "$HARBOR_ENVIRONMENT_TYPE" != "opensandbox" \
+    || "$HARBOR_NATIVE_CONCURRENCY" == "1" \
     || -n "$HARBOR_OPENSANDBOX_IMAGE_REF" \
     || -n "$HARBOR_OPENSANDBOX_BUNDLE_MANIFEST" ]]; then
     return 0
@@ -456,6 +471,15 @@ ensure_environment_backend() {
 prepare_opensandbox_image_ref() {
   local automatic_bundle_manifest="$1"
   if [[ "$HARBOR_ENVIRONMENT_TYPE" != "opensandbox" ]]; then
+    return 0
+  fi
+  if [[ "$HARBOR_NATIVE_CONCURRENCY" == "1" ]]; then
+    # Each trial resolves its own prebuilt task image in the provider.
+    if [[ -n "$HARBOR_OPENSANDBOX_IMAGE_REF$HARBOR_OPENSANDBOX_BUNDLE_MANIFEST" \
+      || "$HARBOR_FORCE_BUILD" == "1" || "$HARBOR_FORCE_BUILD" == "true" ]]; then
+      echo "[ERROR] native OpenSandbox runs require per-task prebuilt images, without global image overrides or force-build" >&2
+      return 1
+    fi
     return 0
   fi
   if [[ -n "$HARBOR_OPENSANDBOX_BUNDLE_MANIFEST" ]]; then
@@ -939,7 +963,7 @@ run_oracle_task() {
   local job_name out_dir
   job_name="$(date +%Y-%m-%d__%H-%M-%S)"
   out_dir="$effective_jobs_root/$job_name"
-  if harbor_is_fixer_verification_main; then
+  if harbor_publishes_job_dir; then
     printf '%s\n' "$out_dir" > "$HARBOR_JOB_DIR_FILE"
   fi
   mkdir -p "$out_dir"
@@ -968,7 +992,9 @@ run_oracle_task() {
     --timeout-multiplier "$HARBOR_TIMEOUT_MULTIPLIER"
     --agent-setup-timeout-multiplier "$HARBOR_AGENT_SETUP_TIMEOUT_MULTIPLIER"
   )
-  if harbor_uses_local_opensandbox_dataset; then
+  if [[ "$HARBOR_NATIVE_CONCURRENCY" == "1" ]] && ! harbor_uses_registry_dataset; then
+    append_native_task_config
+  elif harbor_uses_local_opensandbox_dataset; then
     cmd+=( --path "$DATASET_PATH" )
   elif harbor_uses_registry_dataset; then
     cmd+=( --dataset "$(harbor_registry_dataset_name)" )
@@ -1300,7 +1326,9 @@ run_harbor() {
       --ae "OPIK_WORKSPACE=$OPIK_WORKSPACE"
     )
   fi
-  if harbor_uses_local_opensandbox_dataset; then
+  if [[ "$HARBOR_NATIVE_CONCURRENCY" == "1" ]] && ! harbor_uses_registry_dataset; then
+    append_native_task_config
+  elif harbor_uses_local_opensandbox_dataset; then
     cmd+=( --path "$DATASET_PATH" )
   elif harbor_uses_registry_dataset; then
     cmd+=( --dataset "$(harbor_registry_dataset_name)" )
@@ -1695,7 +1723,9 @@ run_opencode_task() {
         --ae "OPIK_WORKSPACE=$OPIK_WORKSPACE"
       )
     fi
-    if harbor_uses_local_opensandbox_dataset; then
+    if [[ "$HARBOR_NATIVE_CONCURRENCY" == "1" ]] && ! harbor_uses_registry_dataset; then
+      append_native_task_config
+    elif harbor_uses_local_opensandbox_dataset; then
       cmd+=( --path "$DATASET_PATH" )
     elif harbor_uses_registry_dataset; then
       cmd+=( --dataset "$(harbor_registry_dataset_name)" )

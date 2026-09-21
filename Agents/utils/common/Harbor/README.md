@@ -37,6 +37,38 @@ Optional console-only online analysis:
 HARBOR_ONLINE_ANALYSIS=1 bash start.sh --detach
 ```
 
+## Native High-Concurrency Benchmark
+
+```bash
+HARBOR_NATIVE_CONCURRENCY=1 HARBOR_N_CONCURRENT=500 \
+  DATASET_NAME=agent-fleet-swe-rebench-v2 DATASET_PATH=/path/to/tasks \
+  bash start.sh --detach
+```
+
+This opt-in mode uses one monitor pane and one worker pane. A single Harbor
+process schedules trials with its native concurrency, retries, agents and
+verifier; `TOTAL_WORKERS` no longer controls the number of panes. The default
+mode is unchanged. `HARBOR_N_CONCURRENT` can exceed 500 when the provider quota,
+model service and host resources permit it.
+
+Local tasks use the existing `TASK_SOURCE_FILE` / `--task` selection, or all
+tasks discovered under `DATASET_PATH`. `HARBOR_LIMIT` limits this selection;
+`HARBOR_N_ATTEMPTS` controls repeats. Use a new `RUN_ID` for a new run. Registry
+datasets retain their existing selection options. Results and trajectories
+remain in the native Harbor job under `$JOBS_ROOT`, with its path recorded in
+`$HARBOR_JOB_DIR_FILE` and a final `$OUTPUT_PATH/summary.txt`. The monitor reads
+Harbor's aggregate progress; the worker shows Harbor's native trial progress,
+not 500 individual agent transcript panes.
+
+For OpenSandbox, every task must already specify its own prebuilt
+`environment.docker_image` in the configured registry. Global image/bundle
+overrides and force-build are rejected to prevent applying one image to all
+tasks. Agent Fleet supplies a shared command thread pool sized to the trial
+concurrency so long-running commands cannot block Harbor's control/file I/O.
+No Harbor source changes are required. This first mode supports fixed
+benchmarks only; `ROLLOUT=1` with the switch is rejected rather than silently
+falling back to per-request worker processes.
+
 ## Minimal Setup
 
 Point the runner at your infrastructure. `config.env` is a committed template;

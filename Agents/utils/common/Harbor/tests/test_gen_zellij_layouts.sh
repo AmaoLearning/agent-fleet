@@ -24,6 +24,7 @@ run_gen() {
     RUN_ID="layout-test" \
     OUTPUT_PATH="$TEST_TMP_DIR/run" \
     TOTAL_WORKERS="$total_workers" \
+    HARBOR_NATIVE_CONCURRENCY="${4:-0}" \
     bash "$HARBOR_DIR/$script" "$out"
 }
 
@@ -238,6 +239,13 @@ main() {
   run_gen gen_harbor_zellij_layout.sh "$layout" 12 >/dev/null
   # 12 worker panes plus the monitor pane.
   assert_command_panes_close_on_exit "$layout" 13
+
+  layout="$TEST_TMP_DIR/native-layout.kdl"
+  run_gen gen_harbor_zellij_layout.sh "$layout" 500 1 >/dev/null
+  assert_command_panes_close_on_exit "$layout" 2
+  grep -q 'command "./monitor_harbor.sh"' "$layout"
+  grep -q 'command "./run_harbor_registry.sh"' "$layout"
+  ! grep -q 'command "./run_harbor_worker.sh"' "$layout"
 
   # Registry layout: a single harboropik.sh pane.
   layout="$TEST_TMP_DIR/registry-layout.kdl"

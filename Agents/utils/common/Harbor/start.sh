@@ -70,7 +70,7 @@ harbor_report_foreground_result() {
     echo "[ERROR] summary unavailable: $OUTPUT_PATH/summary.txt" >&2
   fi
 
-  if harbor_uses_registry_dataset; then
+  if harbor_uses_native_runner; then
     if [[ -s "$HARBOR_BENCHMARK_EXIT_FILE" ]]; then
       benchmark_status="$(cat "$HARBOR_BENCHMARK_EXIT_FILE" 2>/dev/null || true)"
     fi
@@ -170,7 +170,7 @@ harbor_start_monitor_if_enabled() {
     --stall-seconds "$HARBOR_MONITOR_STALL_SECONDS"
     --max-retries "$HARBOR_MONITOR_MAX_RETRIES"
   )
-  if harbor_uses_registry_dataset; then
+  if harbor_uses_native_runner; then
     monitor_args+=(
       --harbor-job-dir-file "$HARBOR_JOB_DIR_FILE"
       --harbor-pid-file "$HARBOR_BENCHMARK_PID_FILE"
@@ -486,8 +486,16 @@ harbor_rollback_analyzer_startup() {
 
 harbor_validate_task_selection
 
+if [[ "$HARBOR_NATIVE_CONCURRENCY" != "0" ]]; then
+  if [[ "$HARBOR_NATIVE_CONCURRENCY" != "1" || "$ROLLOUT" == "1" \
+    || ! "$HARBOR_N_CONCURRENT" =~ ^[1-9][0-9]*$ ]]; then
+    echo "[ERROR] HARBOR_NATIVE_CONCURRENCY=1 requires benchmark mode and positive HARBOR_N_CONCURRENT" >&2
+    exit 2
+  fi
+fi
+
 harbor_init_run_dirs
-if [[ "$ROLLOUT" != "1" ]] && harbor_uses_registry_dataset; then
+if [[ "$ROLLOUT" != "1" ]] && harbor_uses_native_runner; then
   : > "$HARBOR_JOB_DIR_FILE"
   rm -f "$HARBOR_BENCHMARK_PID_FILE" "$HARBOR_BENCHMARK_EXIT_FILE"
 fi
@@ -578,7 +586,9 @@ if [[ "$ROLLOUT" == "1" ]]; then
   exec "$RL_UTILS_DIR/run_rl_rollout_server.sh"
 fi
 
-if harbor_uses_registry_dataset; then
+if [[ "$HARBOR_NATIVE_CONCURRENCY" == "1" ]]; then
+  "$SCRIPT_DIR/gen_harbor_zellij_layout.sh" "$LAYOUT_FILE"
+elif harbor_uses_registry_dataset; then
   "$SCRIPT_DIR/gen_harbor_registry_zellij_layout.sh" "$LAYOUT_FILE"
 else
   "$SCRIPT_DIR/gen_harbor_zellij_layout.sh" "$LAYOUT_FILE"

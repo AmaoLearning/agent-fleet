@@ -49,6 +49,24 @@ def url_hostname(value: str) -> str:
     return urlparse(value).hostname or ""
 
 
+def native_task_config(root: Path, task_file: Path, limit: str = "") -> dict:
+    names = [name.strip() for name in task_file.read_text().splitlines() if name.strip()]
+    if limit:
+        if int(limit) < 1:
+            raise ValueError("HARBOR_LIMIT must be positive")
+        names = names[:int(limit)]
+    if not names:
+        raise ValueError("native task selection is empty")
+    root = root.resolve()
+    tasks = []
+    for name in names:
+        path = (root / name).resolve()
+        if not path.is_relative_to(root) or not (path / "task.toml").is_file():
+            raise ValueError(f"not a Harbor task under {root}: {name}")
+        tasks.append({"path": str(path)})
+    return {"tasks": tasks}
+
+
 def readonly_mounts(
     specifications: Sequence[tuple[Path, str, str]],
 ) -> list[dict[str, object]]:
@@ -92,6 +110,10 @@ def build_parser() -> argparse.ArgumentParser:
     hostname.add_argument("url")
     mounts = subparsers.add_parser("readonly-mounts")
     mounts.add_argument("--mount", nargs=3, action="append", default=[])
+    native = subparsers.add_parser("native-task-config")
+    native.add_argument("root", type=Path)
+    native.add_argument("task_file", type=Path)
+    native.add_argument("limit", nargs="?", default="")
     return parser
 
 
@@ -118,6 +140,8 @@ def main() -> int:
         print(json_string_field(args.raw, args.field))
     elif args.command == "url-hostname":
         print(url_hostname(args.url))
+    elif args.command == "native-task-config":
+        print(json.dumps(native_task_config(args.root, args.task_file, args.limit)))
     else:
         specifications = [
             (Path(source), target, policy) for source, target, policy in args.mount

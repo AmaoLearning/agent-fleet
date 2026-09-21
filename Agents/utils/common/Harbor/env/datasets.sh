@@ -152,6 +152,10 @@ harbor_uses_registry_dataset() {
   harbor_registry_dataset_name >/dev/null
 }
 
+harbor_uses_native_runner() {
+  [[ "$HARBOR_NATIVE_CONCURRENCY" == "1" ]] || harbor_uses_registry_dataset
+}
+
 harbor_registry_task_name() {
   local task_name="$1"
   if [[ "$(harbor_registry_dataset_name 2>/dev/null || true)" == "$HARBOR_TERMINALBENCH21_REGISTRY_ID" ]] \
