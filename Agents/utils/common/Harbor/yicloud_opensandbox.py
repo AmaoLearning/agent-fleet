@@ -1047,6 +1047,7 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
         self._s3_downloader_ready = False
 
     async def _handle_start_failure(self) -> None:
+        await self._close_async_commands()
         sandbox_id = self._sandbox_id
         if not sandbox_id:
             return
@@ -1739,6 +1740,7 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
             runtime.state = "READY"
 
     async def start(self, force_build: bool) -> None:
+        self._async_commands_stopping = False
         if force_build:
             self.logger.warning(
                 "YiCloud OpenSandbox ignores force_build and uses prebuilt images"
@@ -1769,6 +1771,7 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
                 await self._upload_environment_dir_after_start()
                 await self._materialize_read_only_mounts()
             except BaseException:
+                await self._close_async_commands()
                 await self._delete_service_group()
                 raise
             return
@@ -1872,6 +1875,19 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
             self._detach_sandbox()
 
     async def stop(self, delete: bool) -> None:
+        try:
+            await self._close_async_commands()
+        finally:
+            await self._stop_sandbox(delete)
+
+    async def _close_async_commands(self) -> None:
+        self._async_commands_stopping = True
+        runner = getattr(self, "_async_command_runner", None)
+        if runner is not None:
+            await runner.close()
+            self._async_command_runner = None
+
+    async def _stop_sandbox(self, delete: bool) -> None:
         if self._bundle is not None:
             if delete:
                 await self._delete_service_group()
@@ -2637,6 +2653,27 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
         )
         return None
 
+    async def _run_command_async(
+        self,
+        command: str,
+        cwd: str | None,
+        env: dict[str, str] | None,
+        timeout_sec: int | None,
+        uid: int | None = None,
+    ) -> ExecResult:
+        from opensandbox_async import AsyncCommandRunner
+
+        if getattr(self, "_async_commands_stopping", False):
+            raise RuntimeError("YiCloud async command environment is stopping")
+        if not self._command_url or not self._access_token:
+            raise RuntimeError("YiCloud Sandbox is not running")
+        if getattr(self, "_async_command_runner", None) is None:
+            self._async_command_runner = AsyncCommandRunner(self)
+        stdout, stderr, code = await self._async_command_runner.run(
+            command, cwd, env, timeout_sec, uid,
+        )
+        return ExecResult(stdout=stdout, stderr=stderr, return_code=code)
+
     async def exec(
         self,
         command: str,
@@ -2652,7 +2689,12 @@ class YiCloudOpenSandboxEnvironment(BaseEnvironment):
             self._merge_env(env),
         )
         args = (command, effective_cwd, effective_env, timeout_sec, uid)
-        if os.environ.get("HARBOR_NATIVE_CONCURRENCY") == "1":
+        command_mode = os.environ.get("HARBOR_OPENSANDBOX_COMMAND_MODE", "sync")
+        if command_mode not in {"sync", "async"}:
+            raise ValueError("HARBOR_OPENSANDBOX_COMMAND_MODE must be sync or async")
+        if command_mode == "async":
+            result = await self._run_command_async(*args)
+        elif os.environ.get("HARBOR_NATIVE_CONCURRENCY") == "1":
             result = await asyncio.get_running_loop().run_in_executor(
                 _native_command_pool(), contextvars.copy_context().run,
                 self._run_command_sync, *args,

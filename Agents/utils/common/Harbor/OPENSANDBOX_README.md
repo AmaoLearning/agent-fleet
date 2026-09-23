@@ -24,6 +24,38 @@ and privileged/capability requests are rejected before any Sandbox is created.
 
 ## Configure
 
+### Opt-in asynchronous commands
+
+Set `HARBOR_OPENSANDBOX_COMMAND_MODE=async` to use one native-background
+command path for every timeout, including `None`. The default remains `sync`
+for comparison and rollback. An async failure never falls back to replaying a
+command through the synchronous path.
+
+The async path submits once, polls execd status without a command worker
+thread, and downloads separate stdout/stderr files with validated byte ranges.
+It preserves newlines and the full generic `ExecResult` text contract; large
+return values still require proportional memory. Existing agent log artifacts,
+bounded agent-output capture and completion callbacks remain in use. This
+minimal version does not add a new realtime Zellij log observer.
+
+The deadline includes queueing, submission, waiting and output collection;
+`None` means 3600 seconds and non-positive values are rejected. Cancellation
+interrupts the remote command and checks its terminal state before propagating.
+A deadline returns 124 only after termination is confirmed (partial output is
+not returned in this first version). Recovery has a separate 15-second bound.
+An ambiguous submission without an execution ID retires the environment;
+subsequent exec calls there fail rather than duplicate the command. Use zero
+trial retries for initial validation and confirm Sandbox deletion before any
+manual retry. Closing a terminal window or forcibly killing a host process
+does not by itself prove remote cleanup.
+
+This changes the main Sandbox's execd commands only. Control-plane SDK calls,
+uploads and sidecar execution retain their existing implementations. Complex
+detached descendants and long-duration/multi-worker failure recovery need
+separate validation before making async the default.
+
+### Provider configuration
+
 Copy the committed configuration template, then keep all credentials in the
 git-ignored local file:
 
