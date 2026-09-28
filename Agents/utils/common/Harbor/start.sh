@@ -522,6 +522,9 @@ if [[ "${RESET_RUN:-0}" == "1" ]]; then
   fi
 fi
 
+# Clear the previous lifecycle before any completion hook can run, even on resume.
+rm -f "$OUTPUT_PATH/benchmark-summary/.analyzer-lifecycle-complete"
+
 if [[ $# -gt 0 ]]; then
   if [[ "$ROLLOUT" != "1" ]] && ! harbor_uses_registry_dataset; then
     harbor_prepare_task_file

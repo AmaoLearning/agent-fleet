@@ -60,7 +60,10 @@ class AutoSummaryTests(unittest.TestCase):
 
         self.model.side_effect = model
         context = multiprocessing.get_context("fork")
-        workers = [context.Process(target=auto_summary.auto_summary, args=(self.root,)) for _ in range(3)]
+        workers = [context.Process(
+            target=auto_summary.auto_summary, args=(self.root,),
+            kwargs={"defer_analyzer": index > 0},
+        ) for index in range(3)]
         for worker in workers:
             worker.start()
         for worker in workers:
@@ -71,6 +74,10 @@ class AutoSummaryTests(unittest.TestCase):
             self.assertEqual(worker.exitcode, 0)
         self.assertEqual(counter.read_text(), "called\n")
         self.assertTrue((self.root / "benchmark-summary/summary-output.json").is_file())
+
+    def test_concurrent_analyzer_and_queue_hooks_publish_only_once(self):
+        os.environ["HARBOR_ANALYZER_ENABLED"] = "1"
+        self.test_concurrent_completion_hooks_publish_only_once()
 
     def test_new_terminal_report_is_not_hidden_by_previous_completion_marker(self):
         self.assertTrue(auto_summary.auto_summary(self.root))
@@ -97,6 +104,21 @@ class AutoSummaryTests(unittest.TestCase):
         (self.root / "summary.txt").unlink()
         self.assertFalse(auto_summary.auto_summary(self.root))
         self.model.assert_not_called()
+
+    def test_detached_queue_publishes_when_raw_report_arrives_after_analyzer(self):
+        os.environ["HARBOR_ANALYZER_ENABLED"] = "1"
+        raw = self.root / "summary.txt"
+        report = raw.read_text()
+        raw.unlink()
+        # The detached supervisor finishes before the queue-monitor pane.
+        self.assertFalse(auto_summary.auto_summary(self.root))
+        self.model.assert_not_called()
+        raw.write_text(report)
+        self.assertTrue(auto_summary.auto_summary(self.root, defer_analyzer=True))
+        self.assertTrue((self.root / "summary.md").is_file())
+        self.assertFalse(auto_summary.auto_summary(self.root, defer_analyzer=True))
+        self.assertFalse(auto_summary.auto_summary(self.root))
+        self.model.assert_called_once()
 
     def test_disabled_analyzer_ignores_even_malformed_existing_artifacts(self):
         analyzer = self.root / "analyzer"

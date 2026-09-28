@@ -11,6 +11,7 @@ cat > "$FAKE_BIN/zellij" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 
+[[ ! -e "$OUTPUT_PATH/benchmark-summary/.analyzer-lifecycle-complete" ]]
 mkdir -p "$OUTPUT_PATH" "$(dirname "$HARBOR_BENCHMARK_EXIT_FILE")"
 cat > "$OUTPUT_PATH/summary.txt" <<EOF
 status:      ${FAKE_SUMMARY_STATUS:-complete}
@@ -33,6 +34,8 @@ run_start() {
   shift 2
 
   rm -rf "$output"
+  mkdir -p "$output/benchmark-summary"
+  touch "$output/benchmark-summary/.analyzer-lifecycle-complete"
   env -i \
     HOME="$TEST_TMP_DIR/home" \
     PATH="$FAKE_BIN:/usr/bin:/bin" \

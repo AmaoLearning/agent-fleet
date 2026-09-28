@@ -21,17 +21,21 @@ def auto_summary(run_dir: Path, *, defer_analyzer: bool = False) -> bool:
     if os.environ.get("HARBOR_FIXER_VERIFICATION_RERUN", "0") == "1":
         return False
     analyzer_enabled = os.environ.get("HARBOR_ANALYZER_ENABLED", "0") == "1"
-    if defer_analyzer and analyzer_enabled:
-        # The lifecycle supervisor drains opted-in analysis before publishing.
-        return False
-    if not (run_dir / "summary.txt").is_file():
-        return False
     summary_dir = run_dir / "benchmark-summary"
     summary_dir.mkdir(parents=True, exist_ok=True)
     with (summary_dir / ".auto-summary.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        analyzer_complete = summary_dir / ".analyzer-lifecycle-complete"
+        if analyzer_enabled:
+            if defer_analyzer and not analyzer_complete.is_file():
+                return False
+            if not defer_analyzer:
+                # Remember the drained lifecycle even if the queue report is late.
+                analyzer_complete.touch()
         marker = summary_dir / ".auto-summary-complete"
         raw_summary = run_dir / "summary.txt"
+        if not raw_summary.is_file():
+            return False
         generation = hashlib.sha256(raw_summary.read_bytes()).hexdigest()
         generation += f":{raw_summary.stat().st_mtime_ns}\n"
         if (marker.is_file() and marker.read_text(encoding="utf-8") == generation
