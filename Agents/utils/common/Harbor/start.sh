@@ -363,9 +363,7 @@ harbor_wait_for_analyzer_drain() {
 }
 
 harbor_write_benchmark_summary() {
-  local summary_args=(--run-dir "$OUTPUT_PATH" --analyzer-output "$HARBOR_ANALYZER_OUTPUT_DIR" --run-id "$RUN_ID")
-  [[ "$HARBOR_ANALYZER_ENABLED" == "1" ]] || summary_args+=(--deterministic)
-  python3 "$SCRIPT_DIR/scripts/write_benchmark_summary.py" "${summary_args[@]}" \
+  python3 "$SCRIPT_DIR/scripts/auto_summary.py" --run-dir "$OUTPUT_PATH" \
     || echo "[WARN] failed to write Harbor benchmark summary" >&2
 }
 
@@ -528,6 +526,9 @@ if [[ "${RESET_RUN:-0}" == "1" ]]; then
   fi
 fi
 
+# Clear the previous lifecycle before any completion hook can run, even on resume.
+rm -f "$OUTPUT_PATH/benchmark-summary/.analyzer-lifecycle-complete"
+
 if [[ $# -gt 0 ]]; then
   if [[ "$ROLLOUT" != "1" ]] && ! harbor_uses_registry_dataset; then
     harbor_prepare_task_file
@@ -652,6 +653,7 @@ if ! harbor_start_analyzer_if_enabled; then
   harbor_rollback_analyzer_startup
   exit 1
 fi
+harbor_start_detached_analyzer_supervisor_if_enabled
 trap 'harbor_finish_analyzer_lifecycle' EXIT
 trap 'zellij kill-session "$ZELLIJ_SESSION_NAME" >/dev/null 2>&1 || true; exit 129' HUP
 trap 'zellij kill-session "$ZELLIJ_SESSION_NAME" >/dev/null 2>&1 || true; exit 130' INT
