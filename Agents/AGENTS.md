@@ -81,6 +81,16 @@ image preparation, runtime delivery, or provider configuration:
 Reusable Python runtime construction belongs in `python_runtime.py`;
 dataset-specific verifier composition belongs in `verifier_runtime/`.
 
+Windows KubeVirt runs use the separate
+[`run_kubevirt_windows.sh`](utils/common/Harbor/run_kubevirt_windows.sh) launcher
+and [Windows backend contract](utils/common/Harbor/KUBEVIRT_WINDOWS_README.md).
+The shared Linux fleet launcher does not dispatch this backend. The first target
+is an imported WAA-V2 Windows image with its guest HTTP service on port 5000;
+SSH/WinRM and other benchmark images are outside this backend. Agents can be
+image-provided or provisioned with the optional pinned local preparation
+manifest. Benchmark adapters belong to the
+consuming project. Do not route Windows runs through the Linux runtime installers.
+
 ### Monitor, Analyzer, and Fixer
 
 Fixed benchmark runs start the monitor and publish a Pi-backed summary by default.
