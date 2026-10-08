@@ -15,6 +15,8 @@ make_runner() {
 #!/usr/bin/env bash
 if [[ "\${3:-}" == "harbor" ]]; then
   printf '%s\n' '$harbor_version'
+elif [[ "\${3:-}" == "httpx" ]]; then
+  printf '%s\n' '0.28.1'
 elif [[ "\${3:-}" == "e2b" ]]; then
   printf '%s\n' '2.32.1'
 elif [[ "\${3:-}" == "opik" ]]; then

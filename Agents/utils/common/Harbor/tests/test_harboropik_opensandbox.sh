@@ -49,20 +49,8 @@ printf 'FROM alpine:3.20\n' > "$tmp/dataset/1/environment/Dockerfile"
 printf 'fake package\n' > "$tmp/deps/claude.tgz"
 printf 'fake wheel\n' > "$tmp/deps/wheels/dependency.whl"
 printf '# fake Claude Opik hook\n' > "$tmp/deps/claude_realtime_trace.py"
-mkdir -p "$tmp/verifier-bundle/agent-fleet-swe-rebench-v2-verifier-bundle/bin"
-printf 'target-system-libraries\n' \
-  > "$tmp/verifier-bundle/agent-fleet-swe-rebench-v2-verifier-bundle/.harbor-python-runtime-v2"
-printf '#!/bin/sh\nexit 0\n' \
-  > "$tmp/verifier-bundle/agent-fleet-swe-rebench-v2-verifier-bundle/bin/python3.12"
-printf '#!/bin/sh\nexit 0\n' \
-  > "$tmp/verifier-bundle/agent-fleet-swe-rebench-v2-verifier-bundle/bin/harbor-verifier-bundle-check"
-chmod +x \
-  "$tmp/verifier-bundle/agent-fleet-swe-rebench-v2-verifier-bundle/bin/python3.12" \
-  "$tmp/verifier-bundle/agent-fleet-swe-rebench-v2-verifier-bundle/bin/harbor-verifier-bundle-check"
-ln -s python3.12 "$tmp/verifier-bundle/agent-fleet-swe-rebench-v2-verifier-bundle/bin/python3"
-ln -s python3.12 "$tmp/verifier-bundle/agent-fleet-swe-rebench-v2-verifier-bundle/bin/python"
-tar -czf "$tmp/cache/verifier-runtimes/agent-fleet-swe-rebench-v2-verifier-bundle.tar.gz" \
-  -C "$tmp/verifier-bundle" agent-fleet-swe-rebench-v2-verifier-bundle
+"$MANAGER_PYTHON" "$HARBOR_DIR/tests/make_verifier_bundle_fixture.py" \
+  "$tmp/cache/verifier-runtimes/agent-fleet-swe-rebench-v2-verifier-bundle.tar.gz"
 bundled_web_mcp="$(python3 "$HARBOR_DIR/../mcp/build.py" "$tmp/deps/wheels")"
 printf 'fake python runtime\n' > "$tmp/deps/wheels/dsh-sdk-minimal-python3.12-runtime.tar.gz"
 printf 'fake sdk minimal runtime\n' > "$tmp/deps/wheels/dsh-sdk-minimal-runtime-dsh-v0.1.3-alpha.1.tar.gz"
