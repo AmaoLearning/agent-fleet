@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import re
 import sys
 import unittest
@@ -15,7 +16,55 @@ from opensandbox_async import (  # noqa: E402
     AsyncCommandRunner,
     CommandProtocolError,
     CommandSubmissionUnknown,
+    _SharedTransport,
 )
+
+
+class SharedConnectionCapacityTest(unittest.IsolatedAsyncioTestCase):
+    async def test_128_control_requests_can_hold_connections_together(self):
+        arrived = 0
+        all_arrived = asyncio.Event()
+        release = asyncio.Event()
+
+        async def serve(reader, writer):
+            nonlocal arrived
+            try:
+                headers = await reader.readuntil(b"\r\n\r\n")
+                if headers.startswith(b"GET /hold "):
+                    arrived += 1
+                    if arrived == 128:
+                        all_arrived.set()
+                    await release.wait()
+                writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK")
+                await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        server = await asyncio.start_server(serve, "127.0.0.1", 0, backlog=256)
+        port = server.sockets[0].getsockname()[1]
+        with patch.dict(os.environ, HARBOR_N_CONCURRENT="128"):
+            transport = _SharedTransport()
+        # Initialize HTTPX's lazy networking backend before timing admission.
+        await transport.control.get(f"http://127.0.0.1:{port}/warmup")
+        requests = []
+        for _ in range(128):
+            requests.append(asyncio.create_task(transport.control.get(f"http://127.0.0.1:{port}/hold")))
+            await asyncio.sleep(.01)
+        try:
+            try:
+                await asyncio.wait_for(all_arrived.wait(), timeout=5)
+            except TimeoutError:
+                pass
+        finally:
+            held_connections = arrived
+            release.set()
+            responses = await asyncio.gather(*requests, return_exceptions=True)
+            await transport.close()
+            server.close()
+            await server.wait_closed()
+        self.assertEqual(held_connections, 128, f"First response: {responses[0]!r}")
+        self.assertTrue(all(isinstance(r, httpx.Response) and r.status_code == 200 for r in responses))
 
 
 class BrokenStream(httpx.AsyncByteStream):

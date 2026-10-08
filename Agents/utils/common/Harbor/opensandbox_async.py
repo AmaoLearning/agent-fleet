@@ -37,7 +37,7 @@ class _SharedTransport:
         concurrency = max(1, int(os.environ.get("HARBOR_N_CONCURRENT", "32")))
         self.commands = asyncio.Semaphore(concurrency)
         # Separate pools reserve capacity for cancellation while output is read.
-        limits = httpx.Limits(max_connections=min(concurrency + 2, 32),
+        limits = httpx.Limits(max_connections=min(concurrency + 2, 128),
                               max_keepalive_connections=8, keepalive_expiry=5)
         self.control = httpx.AsyncClient(trust_env=False, limits=limits, timeout=10)
         self.files = httpx.AsyncClient(trust_env=False, limits=limits, timeout=10)
