@@ -21,6 +21,24 @@ from opensandbox_async import (  # noqa: E402
 
 
 class SharedConnectionCapacityTest(unittest.IsolatedAsyncioTestCase):
+    async def test_control_and_files_requests_propagate_60_second_timeouts(self):
+        observed = []
+
+        async def handle(request):
+            observed.append(request.extensions["timeout"])
+            return httpx.Response(200)
+
+        client = httpx.AsyncClient
+        with patch("opensandbox_async.httpx.AsyncClient", side_effect=lambda **kwargs:
+                   client(transport=httpx.MockTransport(handle), **kwargs)):
+            transport = _SharedTransport()
+        try:
+            await transport.control.get("https://sandbox.invalid/command/status/test")
+            await transport.files.get("https://sandbox.invalid/files/download")
+        finally:
+            await transport.close()
+        self.assertEqual(observed, [{"connect": 60, "read": 60, "write": 60, "pool": 60}] * 2)
+
     async def test_128_control_requests_can_hold_connections_together(self):
         arrived = 0
         all_arrived = asyncio.Event()

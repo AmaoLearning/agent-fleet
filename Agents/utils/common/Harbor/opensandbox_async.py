@@ -39,8 +39,8 @@ class _SharedTransport:
         # Separate pools reserve capacity for cancellation while output is read.
         limits = httpx.Limits(max_connections=min(concurrency + 2, 128),
                               max_keepalive_connections=8, keepalive_expiry=5)
-        self.control = httpx.AsyncClient(trust_env=False, limits=limits, timeout=10)
-        self.files = httpx.AsyncClient(trust_env=False, limits=limits, timeout=10)
+        self.control = httpx.AsyncClient(trust_env=False, limits=limits, timeout=60)
+        self.files = httpx.AsyncClient(trust_env=False, limits=limits, timeout=60)
         self.users = 0
 
     async def close(self):
