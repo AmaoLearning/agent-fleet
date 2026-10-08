@@ -328,9 +328,9 @@ grep -F -- "$tmp/cache/verifier-runtimes/agent-fleet-swe-rebench-v2-verifier-bun
 docker_rebench_opencode="$(run_dry \
   '' "$tmp/does-not-exist.py" '{}' agent-fleet-swe-rebench-v2 docker 0 \
   opencode)"
-grep -F -- "\"source\":\"$tmp/cache/verifier-runtimes/agent-fleet-swe-rebench-v2-verifier-bundle.tar.gz\"" \
+grep -F -- "\"source\": \"$tmp/cache/verifier-runtimes/agent-fleet-swe-rebench-v2-verifier-bundle.tar.gz\"" \
   <<< "$docker_rebench_opencode" >/dev/null
-grep -F -- '"target":"/opt/agent-fleet/verifier-runtimes/agent-fleet-swe-rebench-v2-verifier-bundle.tar.gz"' \
+grep -F -- '"target": "/opt/agent-fleet/verifier-runtimes/agent-fleet-swe-rebench-v2-verifier-bundle.tar.gz"' \
   <<< "$docker_rebench_opencode" >/dev/null
 
 e2b_rebench="$(run_dry \
