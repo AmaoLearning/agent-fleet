@@ -7,6 +7,12 @@ HARBOR_SCRIPT_DIR="${HARBOR_SCRIPT_DIR:-$(cd "$RL_SCRIPT_DIR/../common/Harbor" &
 
 if [[ "$HARBOR_NATIVE_CONCURRENCY" == "1" ]]; then
   : "${RL_NATIVE_TRIAL_CONFIG:?prepared Harbor TrialConfig is required}"
+  case "$HARBOR_OPENSANDBOX_COMMAND_MODE" in
+    sync|async) ;;
+    *) echo "[ERROR] HARBOR_OPENSANDBOX_COMMAND_MODE must be sync or async" >&2; exit 2 ;;
+  esac
+  # This host setting applies to every trial; requests cannot select a transport.
+  export HARBOR_OPENSANDBOX_COMMAND_MODE
   export HARBOR_N_CONCURRENT="$RL_MAX_CONCURRENT"
   export PYTHONPATH="$HARBOR_SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
   exec "$HARBOR_OPIK_PYTHON" "$RL_SCRIPT_DIR/native_rollout_worker.py"

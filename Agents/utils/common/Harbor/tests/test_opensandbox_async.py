@@ -183,6 +183,26 @@ class AsyncCommandTest(unittest.IsolatedAsyncioTestCase):
         await self.extra_runner.close()
         self.assertTrue(self.extra_runner.transport.control.is_closed)
 
+    async def test_128_native_environments_share_transport_and_survive_sibling_close(self):
+        runners = [AsyncCommandRunner(SimpleNamespace(**vars(self.env))) for _ in range(127)]
+        transport = self.runner.transport
+        try:
+            self.assertEqual(transport.users, 128)
+            self.assertTrue(all(r.transport is transport for r in runners))
+            await asyncio.gather(*(r.close() for r in runners))
+            self.assertEqual(transport.users, 1)
+            self.assertFalse(transport.control.is_closed)
+            self.assertEqual((await self.runner.run("true", None, None, 30, None))[2], 7)
+            await self.runner.close()
+            self.assertTrue(transport.control.is_closed)
+            self.assertTrue(transport.files.is_closed)
+            # A later trial on the same event loop must get fresh clients.
+            self.extra_runner = AsyncCommandRunner(self.env)
+            self.assertIsNot(self.extra_runner.transport, transport)
+            self.assertFalse(self.extra_runner.transport.control.is_closed)
+        finally:
+            await asyncio.gather(*(r.close() for r in runners))
+
     async def test_stop_cancels_inflight_command_and_closes_clients(self):
         self.running = True
         task = asyncio.create_task(self.runner.run("sleep 100", None, None, 300, None))

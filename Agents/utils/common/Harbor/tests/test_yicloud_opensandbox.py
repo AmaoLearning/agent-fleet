@@ -74,6 +74,49 @@ class Request:
 
 
 class NativeCommandPoolTest(unittest.IsolatedAsyncioTestCase):
+    async def test_native_async_128_commands_bypass_command_pool_and_preserve_context(self):
+        context = contextvars.ContextVar("native-task")
+        release = asyncio.Event()
+        admitted = asyncio.Event()
+        running = peak = 0
+        instance = object.__new__(yicloud_opensandbox.YiCloudOpenSandboxEnvironment)
+        instance.task_env_config = SimpleNamespace(workdir="/app")
+        instance._merge_env = lambda env: env or {}
+        instance._output_callback = lambda: None
+
+        async def command(*args):
+            nonlocal running, peak
+            running += 1
+            peak = max(peak, running)
+            if running == 128:
+                admitted.set()
+            try:
+                await release.wait()
+                return SimpleNamespace(stdout=context.get(), stderr="", return_code=0)
+            finally:
+                running -= 1
+
+        instance._run_command_async = command
+        instance._run_command_sync = Mock(side_effect=AssertionError("sync replay"))
+        with patch.dict(os.environ, HARBOR_NATIVE_CONCURRENCY="1", HARBOR_N_CONCURRENT="128",
+                        HARBOR_OPENSANDBOX_COMMAND_MODE="async"), \
+                patch.object(yicloud_opensandbox, "_native_command_pool") as pool:
+            tasks = []
+            try:
+                for value in range(128):
+                    context.set(str(value))
+                    tasks.append(asyncio.create_task(instance.exec("test")))
+                await asyncio.wait_for(admitted.wait(), 5)
+                self.assertEqual(peak, 128)
+                release.set()
+                results = await asyncio.gather(*tasks)
+                self.assertEqual([r.stdout for r in results], [str(i) for i in range(128)])
+                pool.assert_not_called()
+                instance._run_command_sync.assert_not_called()
+            finally:
+                release.set()
+                await asyncio.gather(*tasks, return_exceptions=True)
+
     async def test_commands_do_not_starve_control_plane_and_preserve_context(self):
         loop = asyncio.get_running_loop()
         loop.set_default_executor(ThreadPoolExecutor(max_workers=1))

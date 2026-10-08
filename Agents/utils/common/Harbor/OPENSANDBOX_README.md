@@ -54,6 +54,17 @@ uploads and sidecar execution retain their existing implementations. Complex
 detached descendants and long-duration/multi-worker failure recovery need
 separate validation before making async the default.
 
+Native trial concurrency and command transport are independent. Set
+`HARBOR_NATIVE_CONCURRENCY=1 HARBOR_N_CONCURRENT=128` with command mode `sync`
+for a single Harbor process with a shared 128-thread command executor, or
+command mode `async` for the same trial concurrency without that executor.
+The async environments share bounded HTTP clients within one event loop;
+SDK and file operations still use its default executor. Native RL uses
+`RL_MAX_CONCURRENT=128` and a prepared `RL_NATIVE_TRIAL_CONFIG`, retaining the
+host-selected command mode for every request. Client closure is reference
+counted across environments, so retiring one trial does not close another
+trial's transport. These settings limit admission, not guaranteed throughput.
+
 ### Provider configuration
 
 Copy the committed configuration template, then keep all credentials in the
