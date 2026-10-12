@@ -13,6 +13,7 @@ from harbor.environments.capabilities import (
     EnvironmentResourceCapabilities,
 )
 from harbor.models.task.config import TaskOS
+from kubevirt_windows.ale import ALETransport
 from kubevirt_windows.transport import WAATransport, windows_path
 from windows_guest import WindowsGuestIO
 
@@ -20,8 +21,8 @@ from .control import DockerControl, Settings
 
 
 class DockerWindowsEnvironment(WindowsGuestIO, BaseEnvironment):
-    def __init__(self, *args, **kwargs):
-        self.settings = Settings.from_env()
+    def __init__(self, *args, settings=None, **kwargs):
+        self.settings = settings if settings is not None else Settings.from_env()
         self.token = uuid.uuid4().hex
         self.vm_name = "hf-dockur-" + self.token[:24]
         self.control = DockerControl(self.settings)
@@ -45,7 +46,7 @@ class DockerWindowsEnvironment(WindowsGuestIO, BaseEnvironment):
         if self.os != TaskOS.WINDOWS or self.task_env_config.network_mode.value != "public":
             raise ValueError("Dockur requires Windows tasks with public network mode")
         if self.task_env_config.docker_image or self.task_env_config.storage_mb is not None:
-            raise ValueError("Configure prepared Dockur image/storage using HARBOR_WAA_DOCKER_* settings")
+            raise ValueError("Configure prepared Dockur image/storage using the benchmark image map or Docker settings")
         if any((self.environment_dir / name).exists() for name in
                ("Dockerfile", "compose.yml", "compose.yaml", "docker-compose.yml", "docker-compose.yaml")):
             raise ValueError("Dockur uses a prepared Windows disk; task builds are unsupported")
@@ -66,7 +67,7 @@ class DockerWindowsEnvironment(WindowsGuestIO, BaseEnvironment):
                 self._local_dir = tempfile.TemporaryDirectory(prefix="harbor-dockur-")
                 self.trial_paths.trial_dir.mkdir(parents=True, exist_ok=True)
                 metadata = {"container": self.vm_name, "owner": self.token[:12],
-                            "image": self.settings.image, "golden_storage": str(self.settings.storage),
+                            "image": self.settings.image, "guest_protocol": self.settings.guest_protocol, "golden_storage": str(self.settings.storage),
                             "trial_storage": str(self.control.instance(self.vm_name) / "storage")}
                 (self.trial_paths.trial_dir / "docker-windows.json").write_text(json.dumps(metadata, indent=2) + "\n")
                 self._create_attempted = True
@@ -78,8 +79,9 @@ class DockerWindowsEnvironment(WindowsGuestIO, BaseEnvironment):
                 (self.trial_paths.trial_dir / "docker-windows.json").write_text(json.dumps(metadata, indent=2) + "\n")
                 from urllib.parse import urlsplit
 
-                address = urlsplit(endpoints[5000])
-                self.transport = WAATransport(self.settings, self.vm_name, address.hostname,
+                address = urlsplit(endpoints[self.settings.guest_port])
+                transport_class = ALETransport if self.settings.guest_protocol == "ale" else WAATransport
+                self.transport = transport_class(self.settings, self.vm_name, address.hostname,
                                               self._local_dir.name, guest_port=address.port)
                 while True:
                     try:

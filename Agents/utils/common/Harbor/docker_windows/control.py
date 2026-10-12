@@ -29,10 +29,12 @@ class Settings:
     waa_port: int = 5000
 
     @classmethod
-    def from_env(cls):
-        source = os.environ.get("HARBOR_WAA_DOCKER_STORAGE", "")
+    def from_env(cls, *, prefix="HARBOR_WAA_DOCKER", storage=None, guest_protocol="waa", cache_name="waa"):
+        if guest_protocol not in ("waa", "ale"):
+            raise ValueError("Dockur guest protocol must be waa or ale")
+        source = storage if storage is not None else os.environ.get(prefix + "_STORAGE", "")
         if not source:
-            raise ValueError("HARBOR_WAA_DOCKER_STORAGE must name a shut-down, prepared Dockur storage directory")
+            raise ValueError(f"{prefix}_STORAGE must name a shut-down, prepared Dockur storage directory")
         storage = Path(source).expanduser().resolve()
         if not storage.is_dir() or not any((storage / name).is_file() for name in ("data.img", "data.qcow2")):
             raise ValueError("Dockur storage requires an existing data.img or self-contained data.qcow2")
@@ -47,24 +49,24 @@ class Settings:
         if any(path.is_symlink() for path in storage.rglob("*")):
             raise ValueError("Golden Dockur storage must not contain symlinks")
         cache = Path(os.environ.get("AGENT_FLEET_CACHE_DIR", "~/.cache/agent-fleet")).expanduser()
-        instances = Path(os.environ.get("HARBOR_WAA_DOCKER_INSTANCES", str(cache / "waa/docker"))).expanduser().resolve()
+        instances = Path(os.environ.get(prefix + "_INSTANCES", str(cache / cache_name / "docker"))).expanduser().resolve()
         if instances.is_relative_to(storage) or storage.is_relative_to(instances):
             raise ValueError("Dockur golden storage and trial directories must be separate")
         if any("," in str(path) for path in (storage, instances)):
             raise ValueError("Dockur bind mount paths must not contain commas")
-        image = os.environ.get("HARBOR_WAA_DOCKER_IMAGE", DEFAULT_IMAGE)
+        image = os.environ.get(prefix + "_IMAGE", DEFAULT_IMAGE)
         if not image or image.startswith("-") or any(c.isspace() for c in image):
-            raise ValueError("HARBOR_WAA_DOCKER_IMAGE must be a Docker image reference")
-        timeouts = {key: int(os.environ.get("HARBOR_WAA_DOCKER_" + key.upper(), default))
+            raise ValueError(f"{prefix}_IMAGE must be a Docker image reference")
+        timeouts = {key: int(os.environ.get(prefix + "_" + key.upper(), default))
                     for key, default in (("start_timeout", 1800), ("command_timeout", 3600), ("transfer_timeout", 300))}
         if any(value <= 0 for value in timeouts.values()):
             raise ValueError("Dockur timeouts must be positive")
-        boot_env = {key: os.environ["HARBOR_WAA_DOCKER_" + key]
+        boot_env = {key: os.environ[prefix + "_" + key]
                     for key in ("VERSION", "BOOT_MODE", "DISK_TYPE", "DISK_FMT", "DISK_SIZE")
-                    if "HARBOR_WAA_DOCKER_" + key in os.environ}
+                    if prefix + "_" + key in os.environ}
         boot_env.setdefault("DISK_FMT", "qcow2" if (storage / "data.qcow2").exists() else "raw")
         return cls(image=image, storage=storage, instances=instances,
-                   boot_env=tuple(boot_env.items()), **timeouts)
+                   boot_env=tuple(boot_env.items()), guest_protocol=guest_protocol, **timeouts)
 
 
 async def run(*argv, timeout=120, missing_ok=False):
@@ -119,6 +121,10 @@ class DockerControl:
                         if source.is_relative_to(self.settings.storage) or self.settings.storage.is_relative_to(source):
                             raise ValueError("Golden Dockur storage is mounted writable by a running container")
 
+    @property
+    def guest_ports(self):
+        return GUEST_PORTS if self.settings.guest_protocol == "waa" else (self.settings.guest_port,)
+
     def instance(self, name):
         if not name.startswith("hf-dockur-") or not name.removeprefix("hf-dockur-").isalnum():
             raise ValueError("Invalid Dockur trial name")
@@ -142,7 +148,7 @@ class DockerControl:
         (root / "shared").mkdir()
         # Never hardlink guest disks. Reflinks copy on write when supported;
         # otherwise GNU cp preserves sparse files in a full independent copy.
-        await run("cp", "-a", "--reflink=auto", "--sparse=always", "--no-preserve=ownership", "--",
+        await run("cp", "-a", "--reflink=auto", "--sparse=auto", "--no-preserve=ownership", "--",
                   str(self.settings.storage) + "/.", storage, timeout=self.settings.start_timeout)
         args = ["docker", "create", "--name", name, "--platform", "linux/amd64",
                 "--label", f"{OWNER_LABEL}={owner}", "--restart", "no", "--stop-timeout", "120",
@@ -150,7 +156,7 @@ class DockerControl:
                 "--env", f"CPU_CORES={cpus or 4}", "--env", f"RAM_SIZE={memory_mb or 8192}M",
                 "--mount", f"type=bind,src={storage},dst=/storage",
                 "--mount", f"type=bind,src={root / 'shared'},dst=/shared"]
-        for port in GUEST_PORTS:
+        for port in self.guest_ports:
             args += ["--publish", f"127.0.0.1::{port}/tcp"]
         for key, value in self.settings.boot_env:
             args += ["--env", f"{key}={value}"]
@@ -164,7 +170,7 @@ class DockerControl:
         if container is None or not container["State"]["Running"]:
             raise RuntimeError("Dockur container exited before guest readiness; see docker.log")
         ports = container["NetworkSettings"]["Ports"]
-        return {port: "http://127.0.0.1:" + ports[f"{port}/tcp"][0]["HostPort"] for port in GUEST_PORTS}
+        return {port: "http://127.0.0.1:" + ports[f"{port}/tcp"][0]["HostPort"] for port in self.guest_ports}
 
     async def delete(self, name, *, owner, delete=True):
         container = await self.inspect(name, owner=owner)

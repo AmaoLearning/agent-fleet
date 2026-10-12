@@ -744,5 +744,7 @@ support `ale`, `ale-command` (default), custom `module:Class` Harbor agents and
 exact `--task` selection. The dedicated `Tasks/AgentsLastExam/run.sh` also accepts
 `--all`, `--domain`, `--os`, `--workers`, `--model` and `--output`.
 It covers Linux and Windows CPU tasks and excludes GPU tasks; Linux prefers SBX
-with Docker fallback and Windows uses the shared KubeVirt backend.
-See [ALE setup, images, runs and resume](../Tasks/AgentsLastExam/README.md).
+with Docker fallback and Windows defaults to the shared KubeVirt backend.
+Set `HARBOR_ALE_WINDOWS_BACKEND=docker` to run Windows tasks on local
+Docker/Dockur using each snapshot's `docker_storage` image-map field. Linux keeps
+SBX with Docker fallback. See [ALE setup, images, runs and resume](../Tasks/AgentsLastExam/README.md).

@@ -35,6 +35,8 @@ def parser():
     cli.add_argument("--output", type=Path, default=Path(output) if output else None)
     cli.add_argument("--task-data-source", default="baked_in_sandbox")
     cli.add_argument("--linux-backend", choices=("auto", "sbx", "docker"), default="auto")
+    cli.add_argument("--windows-backend", "--backend", choices=("kubevirt", "docker"),
+                     default=os.environ.get("HARBOR_ALE_WINDOWS_BACKEND", "kubevirt"))
     cli.add_argument("--dry-run", action="store_true")
     cli.add_argument("harbor_args", nargs=argparse.REMAINDER)
     return cli
@@ -57,7 +59,8 @@ def command(args):
             "--ek", f"native_python={args.native_python.absolute()}",
             "--ek", f"image_map={args.image_map.resolve()}",
             "--ek", f"task_data_source={args.task_data_source}",
-            "--ek", f"linux_backend={args.linux_backend}"]
+            "--ek", f"linux_backend={args.linux_backend}",
+            "--ek", f"windows_backend={getattr(args, 'windows_backend', 'kubevirt')}"]
     cmd += ["--n-concurrent", str(getattr(args, "workers", 1))]
     if model := getattr(args, "model", None):
         cmd += ["--model", model]
@@ -76,6 +79,8 @@ def command(args):
 def main():
     cli = parser()
     args = cli.parse_args()
+    if args.windows_backend not in ("kubevirt", "docker"):
+        cli.error("HARBOR_ALE_WINDOWS_BACKEND must be kubevirt or docker")
     if args.workers < 1:
         cli.error("--workers must be positive")
     if args.cache is not None:
@@ -108,7 +113,7 @@ def main():
     except ValueError as error:
         cli.error(str(error))
     for definition in selected:
-        select_image(json.loads(definition.read_text()), mapping)
+        select_image(json.loads(definition.read_text()), mapping, args.windows_backend)
     if args.domain or args.task or args.os:
         args.selected = selected
     cmd = command(args)
@@ -118,7 +123,7 @@ def main():
                   for os_type in ("linux", "windows")}
         print(json.dumps({"benchmark": "ale-cpu", "tasks": len(selected), "os": counts,
                           "selected": [path.parent.parent.name for path in selected],
-                          "agent": args.agent, "revision": REVISION}))
+                          "agent": args.agent, "windows_backend": args.windows_backend, "revision": REVISION}))
         return
     os.execvpe(cmd[0], cmd, os.environ)
 

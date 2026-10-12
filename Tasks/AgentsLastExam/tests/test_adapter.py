@@ -142,6 +142,14 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "QEMU"):
             select_image(native, {"cpu-free": {**profile, "qemu": {"disk_source": "/data/disk"}}})
 
+    def test_windows_mapping_is_backend_specific(self):
+        profile = {"image_family": "ale-win10", "docker_storage": "/srv/ale/golden/storage"}
+        self.assertEqual(select_image(record(), {"cpu-free": profile}, "docker"), profile)
+        with self.assertRaisesRegex(ValueError, "pvc"):
+            select_image(record(), {"cpu-free": profile})
+        with self.assertRaisesRegex(ValueError, "docker_storage"):
+            select_image(record(), {"cpu-free": {"image_family": "ale-win10", "pvc": "golden"}}, "docker")
+
     def test_source_rejects_wrong_revision_and_fingerprints_helpers(self):
         with patch("ale_adapter.source.subprocess.check_output", return_value="different\n"), \
                 self.assertRaisesRegex(ValueError, "pinned"):
@@ -219,8 +227,8 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         (directory / "ale.json").write_text(json.dumps(native))
         image_map = self.root / "images.json"
         image_map.write_text(json.dumps({
-            "cpu-free": {"pvc": "cpu-pvc", "image_family": "ale-win10"},
-            "cpu-license": {"pvc": "licensed-pvc", "image_family": "ale-win10"},
+            "cpu-free": {"pvc": "cpu-pvc", "docker_storage": str(self.root / "free-storage"), "image_family": "ale-win10"},
+            "cpu-license": {"pvc": "licensed-pvc", "docker_storage": str(self.root / "licensed-storage"), "image_family": "ale-win10"},
             "gpu-free": {"pvc": "gpu-pvc", "image_family": "ale-win10", "gpu_device": "nvidia.com/test-gpu"},
         }))
         return ALEEnvironment(
@@ -348,6 +356,21 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.settings.image, "default-pvc")
         with self.assertRaises(ValueError):
             self.environment(True)
+
+    def test_docker_selects_free_and_licensed_storage_without_cluster_settings(self):
+        from docker_windows.environment import DockerWindowsEnvironment
+        for name in ("free-storage", "licensed-storage"):
+            storage = self.root / name
+            storage.mkdir()
+            (storage / "data.img").write_bytes(b"golden")
+        with patch("kubevirt_windows.environment.Settings.from_env", side_effect=AssertionError("Kubernetes accessed")):
+            for snapshot, storage in (("cpu-free", "free-storage"), ("cpu-license", "licensed-storage")):
+                environment = self.environment(snapshot=snapshot, windows_backend="docker")
+                self.assertIsInstance(environment.backend, DockerWindowsEnvironment)
+                self.assertEqual(environment.backend.settings.storage, self.root / storage)
+                self.assertEqual(environment.backend.settings.guest_protocol, "ale")
+        with self.assertRaisesRegex(ValueError, "GPU"):
+            self.environment(gpu=True, windows_backend="docker")
 
     def test_overlay_preserves_free_and_licensed_snapshot_selection(self):
         with patch("kubevirt_windows.control.Settings.from_env", return_value=replace(

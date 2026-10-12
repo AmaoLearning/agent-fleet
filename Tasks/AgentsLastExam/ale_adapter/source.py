@@ -8,12 +8,14 @@ REPOSITORY = "https://github.com/rdi-berkeley/agents-last-exam.git"
 REVISION = "d9abc0734b56ea34116c5bfcbdd0b808269ab9e2"
 
 
-def select_image(native, mapping):
+def select_image(native, mapping, windows_backend="kubevirt"):
     if native["requires_gpu"]:
         raise ValueError("GPU ALE tasks are excluded")
     profile = mapping[native["snapshot"]]
-    if native["os"] == "windows" and (not isinstance(profile.get("pvc"), str) or not profile["pvc"]):
-        raise ValueError("Mapped ALE image requires a golden PVC name")
+    if native["os"] == "windows":
+        key = "docker_storage" if windows_backend == "docker" else "pvc"
+        if not isinstance(profile.get(key), str) or not profile[key]:
+            raise ValueError(f"Mapped ALE Windows image requires {key} for {windows_backend}")
     if profile["image_family"] != native["image_family"]:
         raise ValueError("Mapped ALE image family differs from the native task")
     if native["os"] == "linux":

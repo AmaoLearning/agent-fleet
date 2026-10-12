@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import struct
@@ -14,11 +15,13 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import httpx
 from docker_windows import control
 from docker_windows.control import OWNER_LABEL, DockerControl, Settings
 from docker_windows.environment import DockerWindowsEnvironment
 from harbor.models.task.config import EnvironmentConfig
 from harbor.models.trial.paths import TrialPaths
+from kubevirt_windows.ale import ALETransport
 
 
 class Fixture:
@@ -55,6 +58,18 @@ class SettingsTests(Fixture, unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "backing files"):
             Settings.from_env()
 
+    def test_ale_settings_are_independent_of_waa_and_publish_only_cua(self):
+        with patch.dict(os.environ, {"HARBOR_WAA_DOCKER_IMAGE": "waa:fake",
+                "HARBOR_ALE_DOCKER_IMAGE": "ale:fake", "HARBOR_ALE_DOCKER_COMMAND_TIMEOUT": "42"}):
+            settings = Settings.from_env(prefix="HARBOR_ALE_DOCKER", storage=str(self.storage),
+                                         guest_protocol="ale", cache_name="ale")
+        self.assertEqual(settings.image, "ale:fake")
+        self.assertEqual(settings.command_timeout, 42)
+        self.assertEqual(settings.instances.name, "docker")
+        self.assertEqual(settings.instances.parent.name, "ale")
+        self.assertEqual(DockerControl(settings).guest_ports, (5000,))
+        self.assertEqual(DockerControl(Settings.from_env()).guest_ports, (5000, 9222, 8080))
+
     def test_qcow2_format_and_boot_hardware_settings(self):
         (self.storage / "data.img").unlink()
         (self.storage / "data.qcow2").write_bytes(b"QFI\xfb" + struct.pack(">IQI", 3, 0, 0))
@@ -82,6 +97,7 @@ class ControlTests(Fixture, unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(cloned.stat().st_ino, (self.storage / "data.img").stat().st_ino)
         cloned.write_bytes(b"changed")
         self.assertEqual((self.storage / "data.img").read_bytes(), b"golden")
+        self.assertIn("--sparse=auto", calls[0])
         create = calls[-1]
         self.assertIn("127.0.0.1::9222/tcp", create)
         self.assertIn("127.0.0.1::8080/tcp", create)
@@ -182,6 +198,48 @@ class EnvironmentTests(Fixture, unittest.IsolatedAsyncioTestCase):
             await env.start()
         env.control.delete.assert_awaited_once_with(env.vm_name, owner=env.token[:12], delete=True)
         self.assertFalse(env._create_attempted)
+
+    async def test_ale_protocol_readiness_transfer_and_log_recovery(self):
+        settings = Settings.from_env(prefix="HARBOR_ALE_DOCKER", storage=str(self.storage), guest_protocol="ale", cache_name="ale")
+        env = DockerWindowsEnvironment(environment_dir=self.root / "environment", environment_name="ale",
+            session_id="trial", trial_paths=TrialPaths(self.root / "trial"), settings=settings,
+            task_env_config=EnvironmentConfig(os="windows"))
+        self.addCleanup(lambda: env._log_snapshot.cleanup() if env._log_snapshot else None)
+        env.control = AsyncMock()
+        env.control.instance = lambda name: self.root / name
+        env.control.guest_endpoints.return_value = {5000: "http://127.0.0.1:12345"}
+        requests = []
+        content = bytes(range(256))
+
+        def response(request):
+            requests.append(request.url.path)
+            if request.method == "GET":
+                return httpx.Response(200, json={"status": "ok"})
+            payload = json.loads(request.content)
+            result = {"success": True, "return_code": 0, "stdout": "", "stderr": ""}
+            if payload["command"] == "read_bytes":
+                result["content_b64"] = base64.b64encode(content).decode()
+            elif payload["command"] == "run_command":
+                script = base64.b64decode(payload["params"]["command"].split()[-1]).decode("utf-16-le")
+                if "ConvertTo-Json" in script:
+                    result["stdout"] = base64.b64encode(b'["result.bin"]').decode()
+            return httpx.Response(200, content=("data: " + json.dumps(result) + "\n\n").encode())
+
+        client_class = httpx.AsyncClient
+        with patch("kubevirt_windows.transport.httpx.AsyncClient",
+                   side_effect=lambda **kwargs: client_class(transport=httpx.MockTransport(response), **kwargs)):
+            await env.start()
+            self.assertIsInstance(env.transport, ALETransport)
+            await env.download_file("C:/workspace/result.bin", self.root / "download.bin")
+            self.assertEqual((self.root / "download.bin").read_bytes(), content)
+            metadata = json.loads((env.trial_paths.trial_dir / "docker-windows.json").read_text())
+            self.assertEqual(metadata["guest_protocol"], "ale")
+            await env.stop()
+        self.assertEqual(requests[0], "/status")
+        self.assertEqual(set(requests), {"/status", "/cmd"})
+        await env.download_dir("C:/logs/agent", self.root / "recovered")
+        self.assertEqual((self.root / "recovered/result.bin").read_bytes(), content)
+        env.control.delete.assert_awaited_once_with(env.vm_name, owner=env.token[:12], delete=True)
 
     async def test_network_policy_and_task_images_fail_closed(self):
         for kwargs in ({"network_mode": "none"}, {"docker_image": "example/windows:fake"}, {"storage_mb": 1}):

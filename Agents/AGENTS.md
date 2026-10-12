@@ -96,6 +96,10 @@ outside this backend. Agents can be
 image-provided or provisioned with the optional pinned local preparation
 manifest. The native ALE Linux/Windows CPU benchmark adapter and launch commands
 live in [Tasks/AgentsLastExam](../Tasks/AgentsLastExam/README.md).
+ALE can also select the shared Docker/Dockur Windows backend with
+`HARBOR_ALE_WINDOWS_BACKEND=docker`, using ALE CUA and per-snapshot golden storage.
+Guest execution/transfer and log recovery are shared in `windows_guest.py`; Docker
+owns its labeled container and independent storage copy.
 Do not route Windows runs through the Linux runtime installers.
 
 WAA/WAA2 also support local Docker/Dockur through the dedicated task launcher:

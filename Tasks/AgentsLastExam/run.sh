@@ -12,7 +12,10 @@ Usage: Tasks/AgentsLastExam/run.sh --all [--workers N] [--output DIR] [-- HARBOR
 
 Run the full ALE CPU benchmark (Linux and Windows; GPU tasks excluded).
 Run setup.sh first and configure HARBOR_ALE_IMAGE_MAP. Use --os linux|windows
-to select one OS. The default ale-command agent uses image-provided entrypoints.
+to select one OS. Use --windows-backend docker for local Dockur Windows guests
+or HARBOR_ALE_WINDOWS_BACKEND=docker for fleet/FleetSpec launches. KubeVirt remains
+the Windows default; Linux uses SBX with Docker fallback. The default ale-command
+agent uses image-provided entrypoints.
 Pass native Harbor options after --. Example: -- --max-retries 2
 Resume with Harbor: <ALE_ENV>/bin/harbor jobs resume --job-path DIR.
 HELP

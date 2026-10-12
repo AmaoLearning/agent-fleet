@@ -9,7 +9,7 @@ tasks stay outside this repository.
 
 Harbor owns concurrency, trials, timeouts, retries, resume and result reporting.
 `ALEEnvironment` provisions a fresh sandbox per trial: the existing SBX (qz) sandbox
-provider by default, with Docker fallback for Ubuntu and a KubeVirt PVC clone for Windows. ALE's `TaskDriver`
+provider by default, with Docker fallback for Ubuntu and either KubeVirt or Docker/Dockur for Windows. ALE's `TaskDriver`
 sets up and grades the same guest that the Harbor agent uses. `ALEVerifier`
 stages references only after agent execution, preserves zero, fractional and
 negative scores, and saves the native result. Missing scores and grader failures
@@ -86,6 +86,77 @@ read-only golden PVC (`HARBOR_KUBEVIRT_DISK_MODE=overlay`) to avoid per-trial
 cloning; see the backend guide. Retained overlay trials stay running because a
 platform-level VM stop discards the layer. Free/licensed PVC mappings still apply.
 
+### Windows on Docker / Dockur
+
+Use the same `--backend docker` option as WAA (`--windows-backend docker` is
+an alias), or set
+`HARBOR_ALE_WINDOWS_BACKEND=docker` for the unified launcher, FleetSpec and prompt
+mode. The Windows default remains `kubevirt`. Linux keeps its independent
+`--linux-backend auto|sbx|docker` choice, and GPU tasks remain excluded.
+
+Run `./Tasks/AgentsLastExam/setup.sh` first, prepare the golden storage and image
+map, then use `run.sh --backend docker --all --os windows --dry-run` before the
+first one-worker run. Setup owns host dependencies; launch only validates the
+prepared environment. Harbor owns concurrency, retries, results and resume, as
+in [WAA's Docker workflow](../WindowsAgentArena/README.md#docker--dockur).
+ALE uses that same shared Dockur lifecycle and guest I/O, selecting ALE's CUA
+protocol and each task's mapped snapshot.
+
+Use a native x86_64 Linux host with local rootful Docker, GNU `cp`, `/dev/kvm`
+and `/dev/net/tun`. Prepare **separate, shut-down golden Dockur storage** for the
+free and licensed ALE Windows snapshots. Preserve the matching Windows disk,
+firmware/TPM state, logged-in desktop, ALE applications/licenses, `E:\agenthle`,
+Python, CUA server on port 5000, and agent entrypoint. The public Dockur runtime
+contains no ALE software/data. A standalone qcow2 needs to be imported and
+boot-validated in Dockur before becoming golden storage; follow
+[Dockur's storage instructions](https://github.com/dockur/windows). Disks must
+have no backing files; symlinks and storage mounted writable by a running
+container are rejected. Before freezing an imported UEFI guest, register/preserve Windows Boot Manager
+(`bcdboot C:\Windows /p` from an elevated guest shell), then shut Windows down
+cleanly. The pinned runtime checks this firmware entry; a disk-only import can
+hit its boot timeout even while Windows starts.
+
+Add `docker_storage` to each Windows image-map profile (shown below). A Docker
+run requires this field; a KubeVirt run requires `pvc`. Both may coexist in one
+map. Snapshot selection stays per trial, so licensed tasks never silently use
+free storage. Keep golden storage outside the trial directory tree.
+
+```bash
+docker pull dockurr/windows@sha256:0cff9eb0e7aee9953e55bc682852ca4fdca233145a58ae1ec94f0b0c01a2ed30
+export HARBOR_ALE_IMAGE_MAP=/data/ale-images.json
+export HARBOR_WINDOWS_AGENT_COMMAND='C:\Agent\run-agent.cmd'
+./Tasks/AgentsLastExam/run.sh --backend docker --all --os windows --dry-run
+./Tasks/AgentsLastExam/run.sh --backend docker --all --os windows --workers 1
+HARBOR_ALE_WINDOWS_BACKEND=docker ./scripts/run_fleet.sh --taskset ale --workers 2
+```
+
+Each Windows trial copies its complete mapped storage with reflinks when
+supported, otherwise independent sparse files. Allow disk capacity and boot
+time for every worker. The container gets KVM/TUN devices and `NET_ADMIN`, with
+CPU/RAM from native task metadata. Only guest port 5000 is published, at a
+random host port on `127.0.0.1`. ALE's `/status` and `/cmd` SSE protocol is used
+for native setup/grading and Harbor guest I/O. Docker Windows trials need no
+Kubernetes credentials. Remote and rootless Docker are unsupported.
+
+| Setting | Default / purpose |
+| --- | --- |
+| `HARBOR_ALE_WINDOWS_BACKEND` | `kubevirt`; choose `docker` for Windows Dockur |
+| `HARBOR_ALE_DOCKER_IMAGE` | Pinned public Dockur digest above; pull it before startup |
+| `HARBOR_ALE_DOCKER_INSTANCES` | `${AGENT_FLEET_CACHE_DIR:-~/.cache/agent-fleet}/ale/docker` |
+| `HARBOR_ALE_DOCKER_START_TIMEOUT` | 1800 seconds, including copy and boot |
+| `HARBOR_ALE_DOCKER_COMMAND_TIMEOUT` | 3600 seconds |
+| `HARBOR_ALE_DOCKER_TRANSFER_TIMEOUT` | 300 seconds |
+| `HARBOR_ALE_DOCKER_VERSION`, `BOOT_MODE`, `DISK_TYPE`, `DISK_FMT`, `DISK_SIZE` | Full `HARBOR_ALE_DOCKER_` prefix on each; optional settings matching the prepared guest; disk format inferred by default |
+
+These Docker settings are independent of WAA's settings. Storage comes from the
+snapshot's image map. `docker-windows.json` records ownership, protocol, paths
+and endpoint; `docker.log` saves boot output. Logs are recovered before cleanup.
+`delete=False` stops and retains the trial's disk/container for inspection;
+retained trials cannot restart as fresh benchmark sessions. After a hard kill,
+check the metadata and matching `agent-fleet.windows-owner` label before deleting
+that trial's container/storage. Keep golden storage. Resume uses normal Harbor
+commands below with the same backend settings.
+
 Create an operator-owned image map, for example `/data/ale-images.json`:
 
 ```json
@@ -96,8 +167,14 @@ Create an operator-owned image map, for example `/data/ale-images.json`:
     "docker_image": "your-registry/ale-ubuntu22:prepared",
     "docker": {"privileged": true, "enable_dind": true}
   },
-  "cpu-free": {"pvc": "ale-cpu-free", "image_family": "ale-win10"},
-  "cpu-license": {"pvc": "ale-cpu-license", "image_family": "ale-win10"}
+  "cpu-free": {
+    "pvc": "ale-cpu-free", "docker_storage": "/srv/ale/free/golden/storage",
+    "image_family": "ale-win10"
+  },
+  "cpu-license": {
+    "pvc": "ale-cpu-license", "docker_storage": "/srv/ale/licensed/golden/storage",
+    "image_family": "ale-win10"
+  }
 }
 ```
 
@@ -178,7 +255,7 @@ the selected Linux backend. Resume with
 (default environment: `$HOME/.cache/agent-fleet/ale/venv`) and the same configuration and
 `PYTHONPATH=.:Tasks/AgentsLastExam:Agents/utils/common/Harbor`.
 Cancellation stops native phases before guest cleanup. Hard termination may
-leave resources: inspect `kubevirt.json` for Windows and `ale-linux.json` for
+leave resources: inspect `kubevirt.json` or `docker-windows.json` for Windows and `ale-linux.json` for
 Linux. Inspect Docker's Harbor project or the SBX sandbox using its backend logs.
 
 ## Checks
@@ -195,3 +272,9 @@ ALE_TEST_SOURCE=/path/to/pinned/ale ALE_TEST_PYTHON=/path/to/native-env/bin/pyth
 Portable and loopback tests do not establish live benchmark parity. A complete
 run needs a prepared ALE SBX template or Docker image, Windows CPU/licensed images, native task
 data, judge credentials and agent entrypoints. These are operator-provided assets.
+
+The original Docker canary booted an independent copy of the local ALE Windows disk with
+prepared UEFI state on the pinned public Dockur runtime, using normal startup
+settings. Command exit codes, binary transfer, log recovery after stop, and
+container/storage deletion passed. This checks the Windows runtime and ALE CUA
+transport; it does not establish full benchmark scores or licensed-image parity.

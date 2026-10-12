@@ -7,6 +7,8 @@ import signal
 from dataclasses import replace
 from pathlib import Path
 
+from docker_windows.control import Settings as DockerSettings
+from docker_windows.environment import DockerWindowsEnvironment
 from harbor.environments.base import BaseEnvironment
 from harbor.environments.capabilities import (
     EnvironmentCapabilities,
@@ -22,7 +24,7 @@ from .source import REVISION, select_image, source_digest, validate_source
 
 class ALEEnvironment(BaseEnvironment):
     def __init__(self, *args, source, native_python, image_map,
-                 task_data_source="baked_in_sandbox", linux_backend="auto", **kwargs):
+                 task_data_source="baked_in_sandbox", linux_backend="auto", windows_backend=None, **kwargs):
         self.source = str(validate_source(source))
         self.native_python = str(Path(native_python).absolute())  # Preserve the virtualenv symlink.
         if not Path(self.native_python).is_file():
@@ -31,6 +33,9 @@ class ALEEnvironment(BaseEnvironment):
             raise ValueError("ALE supports baked data and native gs/s3/oss staging")
         if linux_backend not in ("auto", "sbx", "docker"):
             raise ValueError("ALE Linux backend must be auto, sbx or docker")
+        self.windows_backend = windows_backend if windows_backend is not None else os.environ.get("HARBOR_ALE_WINDOWS_BACKEND", "kubevirt")
+        if self.windows_backend not in ("kubevirt", "docker"):
+            raise ValueError("ALE Windows backend must be kubevirt or docker")
         self.linux_backend, self.backend_kwargs = linux_backend, kwargs
         self.worker, self.backend, self.proxy = None, None, None
         self._started = False
@@ -45,13 +50,18 @@ class ALEEnvironment(BaseEnvironment):
         relative = Path(self.native["task"])
         if relative.is_absolute() or ".." in relative.parts or not relative.parts or relative.parts[0] != "tasks":
             raise ValueError("Invalid native ALE task path")
-        profile = select_image(self.native, json.loads(Path(image_map).read_text()))
+        profile = select_image(self.native, json.loads(Path(image_map).read_text()), self.windows_backend)
         self.spec = {**self.native, "source": self.source, "profile": profile, "task_data_source": task_data_source}
         if self.os == TaskOS.WINDOWS:
-            validate_image(profile["pvc"])
-            self.backend = KubeVirtWindowsEnvironment(*args, **kwargs)
-            self.backend.settings = replace(self.backend.settings, image=profile["pvc"])
-            self.backend.control.settings = self.backend.settings
+            if self.windows_backend == "docker":
+                settings = DockerSettings.from_env(prefix="HARBOR_ALE_DOCKER", storage=profile["docker_storage"],
+                                                   guest_protocol="ale", cache_name="ale")
+                self.backend = DockerWindowsEnvironment(*args, settings=settings, **kwargs)
+            else:
+                validate_image(profile["pvc"])
+                self.backend = KubeVirtWindowsEnvironment(*args, **kwargs)
+                self.backend.settings = replace(self.backend.settings, image=profile["pvc"])
+                self.backend.control.settings = self.backend.settings
             if self.backend.settings.guest_protocol != "ale":
                 raise ValueError("ALE Windows requires the ALE CUA command protocol")
 

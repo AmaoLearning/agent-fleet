@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 from ale_adapter.source import REVISION, source_digest
+from docker_windows.environment import DockerWindowsEnvironment
 from harbor.environments.base import ExecResult
 from harbor.models.trial.config import TrialConfig
 from harbor.trial.trial import Trial
@@ -29,6 +30,9 @@ PYTHON = os.environ.get("ALE_TEST_PYTHON")
 class NativeTrialTests(unittest.IsolatedAsyncioTestCase):
     async def test_windows_native_trial(self):
         await self.native_trial("windows")
+
+    async def test_windows_docker_native_trial(self):
+        await self.native_trial("windows", backend_mode="docker-windows")
 
     async def test_linux_native_trial(self):
         await self.native_trial("linux")
@@ -91,9 +95,12 @@ async def evaluate(task, session):
                       "resolution": [1024, 768], "timeout": 60,
                       "revision": REVISION, "source_sha256": source_digest(source)}
             (task / "environment/ale.json").write_text(json.dumps(native))
+            storage = root / "golden"
+            storage.mkdir()
+            (storage / "data.img").write_bytes(b"fixture")
             mapping = root / "images.json"
             mapping.write_text(json.dumps({
-                "cpu-free": {"pvc": "ale-cpu-free", "image_family": "ale-win10"},
+                "cpu-free": {"pvc": "ale-cpu-free", "docker_storage": str(storage), "image_family": "ale-win10"},
                 "cpu-free-ubuntu": {"image_family": "ale-ubuntu22", "docker_image": "example/ale:fixture", "cua_port": 5000}}))
             files, phases = {}, []
 
@@ -185,7 +192,8 @@ async def evaluate(task, session):
                 "trial_name": "ale-native-fixture", "trials_dir": str(root / "trials"),
                 "task": {"path": str(task)},
                 "environment": {"import_path": "ale_adapter.environment:ALEEnvironment", "kwargs": {
-                    "source": str(source), "native_python": PYTHON, "image_map": str(mapping)}},
+                    "source": str(source), "native_python": PYTHON, "image_map": str(mapping),
+                    "windows_backend": "docker" if backend_mode == "docker-windows" else "kubevirt"}},
                 "agent": {"import_path": "Agents.AgentsLastExam.agent:ALECommandAgent", "model_name": "fake-model",
                           "kwargs": {"command": "C:\\Agent\\run.cmd", "linux_command": "/opt/agent/run.sh"}},
                 "verifier": {"import_path": "ale_adapter.verifier:ALEVerifier"},
@@ -243,14 +251,15 @@ async def evaluate(task, session):
             linux.download_dir_filtered = AsyncMock(side_effect=download_logs)
             linux.download_dir = AsyncMock(side_effect=download_logs)
 
+            windows_class = DockerWindowsEnvironment if backend_mode == "docker-windows" else KubeVirtWindowsEnvironment
             with patch("kubevirt_windows.environment.Settings.from_env", return_value=settings if windows else None) as cluster, \
                     patch("ale_adapter.environment.sbx_configured", return_value=backend_mode == "sbx"), \
                     patch("ale_adapter.environment.create_backend", return_value=(backend_mode, linux)), \
-                    patch.object(KubeVirtWindowsEnvironment, "start", start), \
-                    patch.object(KubeVirtWindowsEnvironment, "stop", stop), \
+                    patch.object(windows_class, "start", start), \
+                    patch.object(windows_class, "stop", stop), \
                     patch.dict(os.environ, {"ALE_REFERENCE_ARCHIVE_PASSWORD": "fake-reference-password"}):
                 result = await (await Trial.create(config)).run()
-            if not windows:
+            if not windows or backend_mode == "docker-windows":
                 cluster.assert_not_called()
             trial = root / "trials/ale-native-fixture"
             if fail_setup or cancel_setup:
