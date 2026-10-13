@@ -73,7 +73,104 @@ class Request:
         self.__dict__.update(kwargs)
 
 
+class DirectoryPackingDispatchTest(unittest.IsolatedAsyncioTestCase):
+    async def test_only_native_async_offloads_http_packing(self):
+        instance = object.__new__(yicloud_opensandbox.YiCloudOpenSandboxEnvironment)
+        instance._upload_file_http = AsyncMock()
+        instance.exec = AsyncMock(return_value=SimpleNamespace(return_code=0))
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder)
+            (source / "data").write_text("payload")
+            for native, mode in (("1", "sync"), ("0", "async"), ("1", "async")):
+                with self.subTest(native=native, mode=mode), patch.dict(os.environ, {
+                    "HARBOR_NATIVE_CONCURRENCY": native,
+                    "HARBOR_OPENSANDBOX_COMMAND_MODE": mode,
+                }), patch.object(yicloud_opensandbox, "pack_directory_async",
+                    new=AsyncMock(side_effect=lambda src, dst: dst.write_bytes(b"archive"))) as pack:
+                    await instance._upload_dir_http(source, "/opt/deps")
+                    self.assertEqual(pack.await_count, int(native == "1" and mode == "async"))
+
+
 class NativeCommandPoolTest(unittest.IsolatedAsyncioTestCase):
+    async def test_start_configures_shared_auxiliary_threads_before_sdk_calls(self):
+        loop = asyncio.get_running_loop()
+        admitted, release = asyncio.Event(), threading.Event()
+        lock = threading.Lock()
+        started = 0
+
+        def work():
+            nonlocal started
+            with lock:
+                started += 1
+                if started == 3:
+                    loop.call_soon_threadsafe(admitted.set)
+            if not release.wait(5):
+                raise TimeoutError("auxiliary worker was not released")
+
+        async def control_call(*_):
+            tasks = [asyncio.create_task(asyncio.to_thread(work)) for _ in range(6)]
+            try:
+                await asyncio.wait_for(admitted.wait(), 1)
+                # A sibling trial must keep using this event loop's existing pool.
+                yicloud_opensandbox._configure_auxiliary_pool()
+                tasks.append(asyncio.create_task(asyncio.to_thread(work)))
+                await asyncio.sleep(.02)
+                self.assertEqual(started, 3)
+            finally:
+                release.set()
+                await asyncio.gather(*tasks)
+            raise RuntimeError("control-plane probe complete")
+
+        instance = object.__new__(yicloud_opensandbox.YiCloudOpenSandboxEnvironment)
+        instance._validate_definition = instance._initialize_service = Mock()
+        instance._sandbox_service = object()
+        instance._retry_control_plane_auth = control_call
+        with patch.dict(os.environ, HARBOR_OPENSANDBOX_AUX_THREADS="3"), \
+                self.assertRaisesRegex(RuntimeError, "control-plane probe complete"):
+            await instance.start(False)
+
+    async def test_invalid_auxiliary_threads_fail_before_startup(self):
+        instance = object.__new__(yicloud_opensandbox.YiCloudOpenSandboxEnvironment)
+        for value in ("0", "-1", "invalid"):
+            with self.subTest(value=value), patch.dict(os.environ, HARBOR_OPENSANDBOX_AUX_THREADS=value), \
+                    self.assertRaisesRegex(ValueError, "HARBOR_OPENSANDBOX_AUX_THREADS"):
+                await instance.start(False)
+
+    async def test_native_async_128_commands_bypass_command_pool_and_preserve_context(self):
+        context = contextvars.ContextVar("native-task")
+        release = asyncio.Event()
+        admitted = asyncio.Event()
+        started = []
+        instance = object.__new__(yicloud_opensandbox.YiCloudOpenSandboxEnvironment)
+        instance.task_env_config = SimpleNamespace(workdir="/app")
+        instance._merge_env = lambda env: env or {}
+        instance._output_callback = lambda: None
+
+        async def command(*args):
+            started.append(context.get())
+            if len(started) == 128:
+                admitted.set()
+            await release.wait()
+            return SimpleNamespace(stdout=context.get(), stderr="", return_code=0)
+
+        instance._run_command_async = command
+        instance._run_command_sync = Mock(side_effect=AssertionError("sync replay"))
+        with patch.dict(os.environ, HARBOR_NATIVE_CONCURRENCY="1", HARBOR_N_CONCURRENT="128",
+                        HARBOR_OPENSANDBOX_COMMAND_MODE="async"):
+            tasks = []
+            try:
+                for value in range(128):
+                    context.set(str(value))
+                    tasks.append(asyncio.create_task(instance.exec("test")))
+                await asyncio.wait_for(admitted.wait(), 5)
+                self.assertEqual(started, [str(i) for i in range(128)])
+                release.set()
+                results = await asyncio.gather(*tasks)
+                self.assertEqual([r.stdout for r in results], [str(i) for i in range(128)])
+            finally:
+                release.set()
+                await asyncio.gather(*tasks, return_exceptions=True)
+
     async def test_commands_do_not_starve_control_plane_and_preserve_context(self):
         loop = asyncio.get_running_loop()
         loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
