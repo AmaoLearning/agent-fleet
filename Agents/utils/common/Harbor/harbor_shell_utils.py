@@ -49,6 +49,47 @@ def url_hostname(value: str) -> str:
     return urlparse(value).hostname or ""
 
 
+class OpenCodeBaseURLRequired(ValueError):
+    """The selected provider needs an explicit endpoint for its exception."""
+
+
+def agent_model_host(environ: Mapping[str, str] | None = None) -> str:
+    """Return only the configured active model host, never URL credentials."""
+    values = os.environ if environ is None else environ
+    agent = values.get("AGENT", "")
+    base_url = values.get("HARBOR_ANTHROPIC_BASE_URL", "")
+    if agent == "dsh-sdk-minimal":
+        base_url = values.get("BASE_URL", "")
+    elif agent == "opencode":
+        raw = values.get("OPENCODE_CONFIG_CONTENT", "")
+        provider = values.get("HARBOR_MODEL", "").partition("/")[0]
+        config = json.loads(raw) if raw else {}
+        options = config.get("provider", {}).get(provider, {}).get("options", {})
+        # Built-in providers can ignore ANTHROPIC_BASE_URL. Require an explicit
+        # selected-provider endpoint instead of inferring another gateway.
+        if "baseURL" not in options:
+            raise OpenCodeBaseURLRequired
+        base_url = options["baseURL"]
+    elif agent == "pi":
+        raw = values.get("PI_MODELS_CONFIG", "")
+        if raw:
+            model_provider, separator, _ = values.get("HARBOR_MODEL", "").partition("/")
+            # AgentFleetPi.run selects the provider from its qualified model.
+            provider = model_provider if separator else values.get("PI_PROVIDER", "")
+            config = json.loads(raw).get("providers", {}).get(provider, {})
+            base_url = config.get("baseUrl", base_url)
+    elif agent != "claude-code":
+        return ""
+    if not base_url:
+        return ""
+    parsed = urlparse(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        # Empty gateway settings can render a relative /v1 provider URL.
+        # Endpoint validation belongs to preflight; there is no host to add.
+        return ""
+    return parsed.hostname
+
+
 def native_task_config(root: Path, task_file: Path, limit: str = "") -> dict:
     names = [name.strip() for name in task_file.read_text().splitlines() if name.strip()]
     if limit:
@@ -108,6 +149,7 @@ def build_parser() -> argparse.ArgumentParser:
     field.add_argument("field")
     hostname = subparsers.add_parser("url-hostname")
     hostname.add_argument("url")
+    subparsers.add_parser("agent-model-host")
     mounts = subparsers.add_parser("readonly-mounts")
     mounts.add_argument("--mount", nargs=3, action="append", default=[])
     native = subparsers.add_parser("native-task-config")
@@ -140,6 +182,15 @@ def main() -> int:
         print(json_string_field(args.raw, args.field))
     elif args.command == "url-hostname":
         print(url_hostname(args.url))
+    elif args.command == "agent-model-host":
+        try:
+            print(agent_model_host())
+        except OpenCodeBaseURLRequired:
+            print("Set options.baseURL for the selected OpenCode provider", file=sys.stderr)
+            return 1
+        except (ValueError, TypeError, AttributeError):
+            print("Invalid model gateway configuration", file=sys.stderr)
+            return 1
     elif args.command == "native-task-config":
         print(json.dumps(native_task_config(args.root, args.task_file, args.limit)))
     else:

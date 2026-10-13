@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -76,6 +77,7 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
                     "DATASET_NAME": "auto",
                     "HARBOR_DRY_RUN": "1" if dry_run else "0",
                     "HARBOR_OPIK_BIN": str(fake_harbor),
+                    "HARBOR_OPIK_PYTHON": str(fake_harbor),
                     "HARBOR_CLI_BIN": str(fake_harbor),
                     "HARBOR_RUNNER_PREPARE": "0",
                     "HARBOR_SKIP_DOCKERHUB_PREFLIGHT": "1",
@@ -124,6 +126,7 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
         self.assertIn("--env e2b", completed.stdout)
         self.assertIn("-a oracle", completed.stdout)
         self.assertIn("harbor run", completed.stdout)
+        self.assertNotIn("--allow-agent-host", completed.stdout)
         self.assertNotIn("opik harbor run", completed.stdout.lower())
         self.assertNotIn("--mounts-json", completed.stdout)
         self.assertNotIn("--extra-docker-compose", completed.stdout)
@@ -159,6 +162,54 @@ class HarborOpikE2BSmokeTest(unittest.TestCase):
             completed.stdout,
         )
         self.assertIn("use HARBOR_ENVIRONMENT_TYPE=docker", completed.stdout)
+
+    def test_opencode_requires_the_selected_provider_endpoint(self) -> None:
+        for base_url in (None, "https://actual.example:8443/v1"):
+            with self.subTest(base_url=base_url):
+                options = {"baseURL": base_url} if base_url else {}
+                completed = self.run_dry_run("docker", "opencode", dry_run=False, extra_env={
+                    "HARBOR_MODEL": "minimax/model",
+                    "OPENCODE_CONFIG_CONTENT": json.dumps({"provider": {"minimax": {"options": options}}}),
+                })
+                self.assertEqual(completed.returncode == 0, bool(base_url), completed.stdout)
+                if base_url:
+                    self.assertIn("FAKE_HARBOR_ARG=--allow-agent-host\nFAKE_HARBOR_ARG=actual.example",
+                                  completed.stdout)
+                else:
+                    self.assertIn("Set options.baseURL for the selected OpenCode provider", completed.stdout)
+                    self.assertNotIn("FAKE_HARBOR_ARG=run", completed.stdout)
+                self.assertNotIn("FAKE_HARBOR_ARG=--allow-agent-host\nFAKE_HARBOR_ARG=model.example",
+                                 completed.stdout)
+
+    def test_pi_exception_uses_model_provider_with_conflicting_provider_setting(self) -> None:
+        completed = self.run_dry_run("docker", "pi", dry_run=False, extra_env={
+            "HARBOR_MODEL": "selected/test-model", "PI_PROVIDER": "unused",
+            "PI_MODELS_CONFIG": '{"providers":{'
+                '"selected":{"baseUrl":"https://selected.example:8443/v1"},'
+                '"unused":{"baseUrl":"https://unused.example/v1"}}}',
+        })
+        self.assertEqual(completed.returncode, 0, completed.stdout)
+        self.assertIn("FAKE_HARBOR_ARG=--allow-agent-host\nFAKE_HARBOR_ARG=selected.example",
+                      completed.stdout)
+        for name in ("NO_PROXY", "no_proxy"):
+            value = next(line.split("=", 2)[2] for line in completed.stdout.splitlines()
+                         if line.startswith(f"FAKE_HARBOR_ARG={name}="))
+            self.assertIn("selected.example", value.split(","))
+            self.assertNotIn("unused.example", value.split(","))
+            self.assertNotIn("model.example", value.split(","))
+
+    def test_rollout_request_endpoints_do_not_add_agent_network_exceptions(self) -> None:
+        for agent in ("claude-code", "opencode"):
+            with self.subTest(agent=agent):
+                completed = self.run_dry_run("docker", agent, dry_run=False, extra_env={
+                    "ROLLOUT": "1", "RL_AGENT": agent,
+                    "RL_API_BASE": "https://caller.example/v1",
+                    "BASE_URL": "https://caller.example",
+                    "HARBOR_ANTHROPIC_BASE_URL": "https://caller.example",
+                })
+                self.assertEqual(completed.returncode, 0, completed.stdout)
+                self.assertIn("FAKE_HARBOR_ARG=run", completed.stdout)
+                self.assertNotIn("--allow-agent-host", completed.stdout)
 
     def test_pi_docker_dry_run_still_builds_command(self) -> None:
         completed = self.run_dry_run("docker", "pi")
