@@ -1,9 +1,10 @@
 import os
 import subprocess
 import tempfile
-import textwrap
 import unittest
 from pathlib import Path
+
+from workflow_helpers import step_script
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOWS = [
@@ -12,10 +13,6 @@ WORKFLOWS = [
 ]
 FIXTURE = (ROOT / '.github/scripts/tests/fixtures/harbor-joint-summary.md').read_text()
 
-
-def step_script(workflow, name):
-    step = workflow.read_text().split(f'      - name: {name}\n', 1)[1]
-    return textwrap.dedent(step.split('\n      - name:', 1)[0].split('        run: |\n', 1)[1])
 
 
 class SummaryPublishingTest(unittest.TestCase):
@@ -32,6 +29,7 @@ class SummaryPublishingTest(unittest.TestCase):
         return {
             'API_KEY': 'fake-llm-secret-for-test', 'OPIK_API_KEY': 'fake-opik-secret-for-test',
             'GITHUB_WORKSPACE': str(ROOT), 'RUNNER_TEMP': str(root),
+            'GITHUB_ENV': str(root / 'env'),
             'OUTPUT_PATH': str(run), 'GITHUB_OUTPUT': str(root / 'outputs'),
             'GITHUB_STEP_SUMMARY': str(root / 'summary.md'),
             'HEALTH_SUMMARY': str(root / 'health.md'), 'JOB_STATUS': 'failure',
@@ -40,16 +38,18 @@ class SummaryPublishingTest(unittest.TestCase):
             'RUN_URL': 'https://example.invalid/run', 'PREPARED_SUMMARY': '',
         }
 
-    def test_workflows_use_the_same_summary_preparation_and_presentation(self):
-        for step in ('Prepare run summary', 'Publish run summary'):
-            self.assertEqual(step_script(WORKFLOWS[0], step), step_script(WORKFLOWS[1], step))
+    def test_stages_redacted_downloads_without_modifying_originals(self):
         for workflow in WORKFLOWS:
-            text = workflow.read_text()
-            self.assertLess(text.index('- name: Prepare run summary'), text.index('- name: Stage and redact artifacts'))
-            self.assertIn('PREPARED_SUMMARY: ${{ steps.summary.outputs.path }}', text)
-            preparation = text.split('- name: Prepare run summary')[1].split('- name: Stage and redact artifacts')[0]
-            self.assertIn("!cancelled() && steps.harbor.outcome != 'skipped'", preparation)
-            self.assertNotIn('steps.stage.outcome', preparation)
+            with self.subTest(workflow=workflow.name), tempfile.TemporaryDirectory() as tmp:
+                env = self.environment(Path(tmp))
+                source = Path(env['OUTPUT_PATH']) / 'summary.txt'
+                original = env['API_KEY'] + ' ' + env['OPIK_API_KEY'] + '\n'
+                source.write_text(original)
+                result = self.run_step(workflow, 'Stage and redact artifacts', env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                staged = Path(Path(env['GITHUB_ENV']).read_text().strip().split('=', 1)[1])
+                self.assertEqual((staged / 'summary.txt').read_text(), '*** ***\n')
+                self.assertEqual(source.read_text(), original)
 
     def test_failed_artifact_staging_still_publishes_the_redacted_joint_report(self):
         for workflow in WORKFLOWS:
