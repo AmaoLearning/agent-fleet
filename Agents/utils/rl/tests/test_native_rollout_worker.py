@@ -54,6 +54,7 @@ class NativeRolloutTest(unittest.TestCase):
                 "ROLLOUT": "1", "HARBOR_NATIVE_CONCURRENCY": "1",
                 "HARBOR_OPIK_PYTHON": sys.executable, "OPIK_URL": "",
                 "RL_NATIVE_TRIAL_CONFIG": str(config), "RL_MAX_CONCURRENT": "2",
+                "HARBOR_OPENSANDBOX_COMMAND_MODE": "async",
                 "RL_QUEUE_DIR": str(queue), "JOBS_ROOT": str(root / "trials"),
                 "OUTPUT_ROOT": str(root / "output"),
             }
@@ -80,6 +81,31 @@ class NativeRolloutTest(unittest.TestCase):
                 if worker.poll() is None:
                     worker.kill()
                     worker.communicate()
+
+    def test_native_launcher_preserves_transport_and_concurrency_and_rejects_invalid_mode(self):
+        script = Path(__file__).resolve().parents[1] / "run_rl_rollout_worker.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "capture-python"
+            executable.write_text(
+                '#!/bin/sh\nprintf "%s|%s|%s|%s\\n" "$HARBOR_OPENSANDBOX_COMMAND_MODE" '
+                '"$HARBOR_N_CONCURRENT" "$HARBOR_OPENSANDBOX_AUX_THREADS" "$HARBOR_OPENSANDBOX_PACKING_THREADS"\n'
+            )
+            executable.chmod(0o755)
+            env = {"PATH": os.environ["PATH"], "HOME": str(root),
+                   "AGENT_FLEET_CONFIG_LOADED_ROOT": str(script.parents[3]),
+                   "ROLLOUT": "1", "HARBOR_NATIVE_CONCURRENCY": "1", "OPIK_URL": "",
+                   "HARBOR_OPIK_PYTHON": str(executable), "RL_NATIVE_TRIAL_CONFIG": "prepared.json",
+                   "RL_MAX_CONCURRENT": "128", "OUTPUT_ROOT": str(root / "output")}
+            for mode, code in (("sync", 0), ("async", 0), ("invalid", 2)):
+                settings = {"HARBOR_OPENSANDBOX_COMMAND_MODE": mode}
+                if mode == "async":
+                    settings.update(HARBOR_OPENSANDBOX_AUX_THREADS="7", HARBOR_OPENSANDBOX_PACKING_THREADS="2")
+                result = subprocess.run(["bash", str(script), "1"], env=env | settings,
+                                        capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode, code, result.stdout + result.stderr)
+                if code == 0:
+                    self.assertEqual(result.stdout.strip(), f"{mode}|128|7|2" if mode == "async" else "sync|128||4")
 
     def test_isolated_model_session_and_original_config(self):
         before = self.template.model_dump_json()

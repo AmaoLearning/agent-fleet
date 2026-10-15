@@ -63,6 +63,7 @@ class RunnerValidationTest(unittest.TestCase):
             "#!/bin/sh\n"
             f"[ \"$#\" = 2 ] && echo {python_version} && exit 0\n"
             f"[ \"$3\" = harbor ] && echo {harbor_version} && exit 0\n"
+            "[ \"$3\" = httpx ] && echo 0.28.1 && exit 0\n"
             "[ \"$3\" = e2b ] && echo 2.32.1 && exit 0\n"
             "[ \"$3\" = dockerfile-parse ] && echo 2.0.1 && exit 0\n"
             "[ \"$3\" = opik ] && echo 2.1.32 && exit 0\n"
@@ -79,6 +80,7 @@ class RunnerValidationTest(unittest.TestCase):
             MODULE.load_requirements(self.requirements),
             [
                 ("harbor", "0.18.0"),
+                ("httpx", "0.28.1"),
                 ("e2b", "2.32.1"),
                 ("dockerfile-parse", "2.0.1"),
                 ("opik", "2.1.32"),

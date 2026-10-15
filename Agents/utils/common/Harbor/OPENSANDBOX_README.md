@@ -24,6 +24,75 @@ and privileged/capability requests are rejected before any Sandbox is created.
 
 ## Configure
 
+### Opt-in asynchronous commands
+
+Set `HARBOR_OPENSANDBOX_COMMAND_MODE=async` to use one native-background
+command path for every timeout, including `None`. The default remains `sync`
+for comparison and rollback. An async failure never falls back to replaying a
+command through the synchronous path.
+
+The async path submits once, polls execd status without a command worker
+thread, and downloads separate stdout/stderr files with validated byte ranges.
+It preserves newlines and the full generic `ExecResult` text contract; large
+return values still require proportional memory. Existing agent log artifacts,
+bounded agent-output capture and completion callbacks remain in use. This
+minimal version does not add a new realtime Zellij log observer.
+
+The deadline includes queueing, submission, waiting and output collection;
+`None` means 3600 seconds and non-positive values are rejected. Cancellation
+interrupts the remote command and checks its terminal state before propagating.
+A deadline returns 124 only after termination is confirmed (partial output is
+not returned in this first version). Recovery has a separate 15-second bound.
+An ambiguous submission without an execution ID retires the environment;
+subsequent exec calls there fail rather than duplicate the command. Use zero
+trial retries for initial validation and confirm Sandbox deletion before any
+manual retry. Closing a terminal window or forcibly killing a host process
+does not by itself prove remote cleanup.
+
+This changes the main Sandbox's execd commands only. Control-plane SDK calls,
+uploads and sidecar execution retain their existing implementations. Complex
+detached descendants and long-duration/multi-worker failure recovery need
+separate validation before making async the default.
+
+Native trial concurrency and command transport are independent. Set
+`HARBOR_NATIVE_CONCURRENCY=1 HARBOR_N_CONCURRENT=128` with command mode `sync`
+for a single Harbor process with a shared 128-thread command executor, or
+command mode `async` for the same trial concurrency without that executor.
+The async environments share bounded HTTP clients within one event loop.
+Control and output clients each allow up to 128 connections, with 60-second
+HTTP timeouts; the command deadline still covers the entire operation.
+SDK and file operations share the event loop's default executor. Set
+`HARBOR_OPENSANDBOX_AUX_THREADS` to a positive integer to size this auxiliary
+pool before OpenSandbox startup. Empty or unset retains Python 3.12's default:
+`min(32, (os.cpu_count() or 1) + 4)`. Native RL uses
+`RL_MAX_CONCURRENT=128` and a prepared `RL_NATIVE_TRIAL_CONFIG`, retaining the
+host-selected command mode for every request. Client closure is reference
+counted across environments, so retiring one trial does not close another
+trial's transport. Shutdown finishes command recovery and client closure before
+propagating cancellation. These settings limit admission, not guaranteed throughput.
+
+Native concurrency with async commands also packs HTTP directory uploads in a
+separate, lazy executor sized by `HARBOR_OPENSANDBOX_PACKING_THREADS` (positive
+integer, default `4`). Admission uses the same limit before submission;
+tar/gzip work therefore leaves the command event loop responsive without
+consuming the default control/file executor. Cancellation waits for the pack
+writer before deleting its temporary archive. Sync command mode and non-native
+runs retain the original synchronous packing path; archive format and upload
+transport are unchanged.
+
+Both settings can be saved in `config.local.env` or supplied as environment
+variables; fixed Harbor and native RL launchers export them to the runner.
+Pools read their settings when first initialized; restart the runner after
+changing them. For example:
+
+```bash
+HARBOR_OPENSANDBOX_AUX_THREADS=16 HARBOR_OPENSANDBOX_PACKING_THREADS=2 \
+HARBOR_NATIVE_CONCURRENCY=1 HARBOR_OPENSANDBOX_COMMAND_MODE=async \
+  bash Agents/utils/common/Harbor/start.sh --detach
+```
+
+### Provider configuration
+
 Copy the committed configuration template, then keep all credentials in the
 git-ignored local file:
 
