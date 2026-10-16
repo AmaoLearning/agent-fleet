@@ -14,7 +14,7 @@ if [[ "$HARBOR_NATIVE_CONCURRENCY" == "1" ]]; then
   # This host setting applies to every trial; requests cannot select a transport.
   export HARBOR_OPENSANDBOX_COMMAND_MODE
   export HARBOR_N_CONCURRENT="$RL_MAX_CONCURRENT"
-  export PYTHONPATH="$HARBOR_SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+  export PYTHONPATH="$HARBOR_CLAUDE_CODE_DIR:$HARBOR_SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
   exec "$HARBOR_OPIK_PYTHON" "$RL_SCRIPT_DIR/native_rollout_worker.py"
 fi
 

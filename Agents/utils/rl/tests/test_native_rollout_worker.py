@@ -38,6 +38,12 @@ class NativeRolloutTest(unittest.TestCase):
         script = Path(__file__).resolve().parents[1] / "run_rl_rollout_worker.sh"
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            agent_bootstrap = root / "agent-bootstrap"
+            agent_bootstrap.mkdir()
+            marker = root / "agent-bootstrap-loaded"
+            (agent_bootstrap / "sitecustomize.py").write_text(
+                f"from pathlib import Path\nPath({str(marker)!r}).touch()\n"
+            )
             config = root / "config.json"
             config.write_text(self.template.model_dump_json())
             queue = root / "queue"
@@ -57,6 +63,7 @@ class NativeRolloutTest(unittest.TestCase):
                 "HARBOR_OPENSANDBOX_COMMAND_MODE": "async",
                 "RL_QUEUE_DIR": str(queue), "JOBS_ROOT": str(root / "trials"),
                 "OUTPUT_ROOT": str(root / "output"),
+                "HARBOR_CLAUDE_CODE_DIR": str(agent_bootstrap),
             }
             worker = subprocess.Popen(
                 ["bash", str(script), "1"], cwd=root, env=env,
@@ -73,6 +80,7 @@ class NativeRolloutTest(unittest.TestCase):
                     worker.terminate()
                 output, _ = worker.communicate(timeout=10)
                 self.assertTrue(ready, output)
+                self.assertTrue(marker.is_file(), "native worker skipped the agent startup hooks")
                 self.assertEqual(worker.returncode, 0, output)
                 result = json.loads(result_file.read_text())
                 self.assertFalse(result["ok"])
