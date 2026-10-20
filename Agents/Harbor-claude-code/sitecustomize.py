@@ -290,6 +290,21 @@ def _patch_claude_code_realtime_hooks() -> None:
                 if opensandbox_runtime
                 else "! command -v npm >/dev/null 2>&1"
             )
+            node_runtime_error = (
+                "echo 'OpenSandbox Node runtime is missing or unusable; "
+                "check the cached archive or CC_NODE_DIST_URL. "
+                "Refusing to install system Node/npm.' >&2; exit 1; "
+            )
+            node_package_fallback = node_runtime_error if opensandbox_runtime else (
+                "  if command -v apk >/dev/null 2>&1; then "
+                "    apk add --no-cache nodejs npm bash curl; "
+                "  elif command -v apt-get >/dev/null 2>&1; then "
+                "    apt-get -o Acquire::ForceIPv4=true update -qq && "
+                "    apt-get install -y -qq nodejs npm; "
+                "  elif command -v yum >/dev/null 2>&1; then "
+                "    yum install -y nodejs npm; "
+                "  fi; "
+            )
             return (
                 "set -euo pipefail; "
                 f"if [ ! -f {claude_tgz_path} ] && [ -n {claude_tgz_url} ]; then "
@@ -302,7 +317,9 @@ def _patch_claude_code_realtime_hooks() -> None:
                 "else "
                 f"  claude_tgz_path={claude_tgz_path}; "
                 "fi; "
+                "node_cache_failed=0; "
                 "node_runtime_required() { "
+                "  [ \"$node_cache_failed\" = 0 ] || return 0; "
                 "  if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then "
                 "    return 0; "
                 "  fi; "
@@ -312,7 +329,8 @@ def _patch_claude_code_realtime_hooks() -> None:
                 # Prefer the offline Node runtime prepared by monitor_harbor.sh.
                 # Task images may lack npm or carry a Node release too old for
                 # Claude Code. In both cases the S3-materialized runtime is the
-                # authoritative Node environment; apt is only a final fallback.
+                # authoritative Node environment; do not repair task system Node
+                # when that isolated runtime is broken.
                 f"if {node_runtime_condition}; then "
                 "  node_dir=\"$(mktemp -d /tmp/tb-node-XXXXXX)\"; "
                 "  node_extract_ok=0; "
@@ -322,7 +340,7 @@ def _patch_claude_code_realtime_hooks() -> None:
                 " \"$node_dir\"\n"
                 "import sys, tarfile\n"
                 "with tarfile.open(sys.argv[1]) as archive:\n"
-                "    archive.extractall(sys.argv[2])\n"
+                "    archive.extractall(sys.argv[2], **({'filter': 'data'} if hasattr(tarfile, 'data_filter') else {}))\n"
                 "PY\n"
                 "    then node_extract_ok=1; fi; "
                 "  elif command -v tar >/dev/null 2>&1 && "
@@ -344,6 +362,7 @@ def _patch_claude_code_realtime_hooks() -> None:
                 "    export PATH=\"$node_runtime_bin:$HOME/.local/bin:$PATH\"; "
                 "    hash -r 2>/dev/null || true; "
                 "    echo \"Using S3 Node runtime: $(node --version)\" >&2; "
+                f"{'  else node_cache_failed=1; ' if opensandbox_runtime else ''}"
                 "  fi; "
                 "fi; "
                 # Sandboxes without host mounts can get Node from an explicitly
@@ -363,7 +382,7 @@ def _patch_claude_code_realtime_hooks() -> None:
                 "    if python3 - <<'PY' \"$node_dist_tgz\" \"$node_dir\"\n"
                 "import sys, tarfile\n"
                 "with tarfile.open(sys.argv[1]) as archive:\n"
-                "    archive.extractall(sys.argv[2])\n"
+                "    archive.extractall(sys.argv[2], **({'filter': 'data'} if hasattr(tarfile, 'data_filter') else {}))\n"
                 "PY\n"
                 "    then "
                 "      node_bin=\"$(find \"$node_dir\" -type f -path '*/bin/node' -print -quit 2>/dev/null)\"; "
@@ -375,6 +394,7 @@ def _patch_claude_code_realtime_hooks() -> None:
                 "        ln -sf \"$node_runtime_bin/npx\" \"$HOME/.local/bin/npx\" 2>/dev/null || true; "
                 "        export PATH=\"$HOME/.local/bin:$node_runtime_bin:$PATH\"; "
                 "        hash -r 2>/dev/null || true; "
+                "        node_cache_failed=0; "
                 "      fi; "
                 "    fi; "
                 "  fi; "
@@ -393,14 +413,7 @@ def _patch_claude_code_realtime_hooks() -> None:
                 "  return 1; "
                 "}; "
                 f"if {node_fallback_condition}; then "
-                "  if command -v apk >/dev/null 2>&1; then "
-                "    apk add --no-cache nodejs npm bash curl; "
-                "  elif command -v apt-get >/dev/null 2>&1; then "
-                "    apt-get -o Acquire::ForceIPv4=true update -qq && "
-                "    apt-get install -y -qq nodejs npm; "
-                "  elif command -v yum >/dev/null 2>&1; then "
-                "    yum install -y nodejs npm; "
-                "  fi; "
+                f"{node_package_fallback}"
                 "fi; "
                 "mkdir -p \"$HOME/.local/bin\"; "
                 "if command -v npm >/dev/null 2>&1; then npm config set prefix \"$HOME/.local\" >/dev/null 2>&1 || true; fi; "
@@ -452,16 +465,11 @@ def _patch_claude_code_realtime_hooks() -> None:
             if command and "apt-get" in command:
                 original_command = f"set -euo pipefail; {_apt_fix}{command}"
                 if opensandbox_runtime:
-                    local_runtime_guard = (
-                        f"[ -f {shlex.quote(local_claude_tgz)} ] && "
-                        f"[ -f {shlex.quote(local_node_runtime)} ]"
-                    )
                     command = (
-                        f"if {local_runtime_guard}; then "
                         "if command -v bash >/dev/null 2>&1 && "
                         "command -v ps >/dev/null 2>&1 && "
                         "command -v pgrep >/dev/null 2>&1; then "
-                        "echo 'OpenSandbox local Claude runtime and system prerequisites ready; skip package bootstrap' >&2; "
+                        "echo 'OpenSandbox system prerequisites ready; skip package bootstrap' >&2; "
                         "elif command -v apk >/dev/null 2>&1; then "
                         "apk add --no-cache bash procps; "
                         "elif command -v apt-get >/dev/null 2>&1; then "
@@ -469,10 +477,9 @@ def _patch_claude_code_realtime_hooks() -> None:
                         "elif command -v yum >/dev/null 2>&1; then "
                         "yum install -y bash procps-ng; "
                         "else "
-                        "echo 'OpenSandbox local Claude runtime requires bash, ps, and pgrep' >&2; "
+                        "echo 'OpenSandbox requires bash, ps, and pgrep' >&2; "
                         "exit 1; "
-                        "fi; "
-                        f"else {original_command}; fi"
+                        "fi"
                     )
                 else:
                     command = original_command

@@ -3139,9 +3139,30 @@ class BoundedDownloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.commands[-1].startswith("rm -f -- /tmp/harbor-download-"))
 
     async def test_tar_failure_is_reported_and_remote_archive_cleaned(self):
-        with self.assertRaisesRegex(RuntimeError, "failed to archive"):
+        with self.assertRaisesRegex(RuntimeError, "failed to archive.*return_code=2") as raised:
             await self.instance.download_dir(str(self.root / "missing"), self.root / "out")
+        self.assertIn("missing", str(raised.exception))
+        self.assertFalse(any("dd if=" in command for command in self.commands))
         self.assertTrue(self.commands[-1].startswith("rm -f -- /tmp/harbor-download-"))
+
+    async def test_tar_error_preserves_bounded_output_without_accepting_failure(self):
+        for stdout, stderr, expected in (
+            ("", "x" * 3000 + "tar: missing source", "x" * 1981 + "tar: missing source"),
+            ("command unavailable", "", "command unavailable"),
+            ("", "", "no output"),
+        ):
+            with self.subTest(expected=expected[-40:]):
+                self.instance.exec = AsyncMock(side_effect=[
+                    SimpleNamespace(return_code=1, stdout=stdout, stderr=stderr),
+                    SimpleNamespace(return_code=0, stdout="", stderr=""),
+                ])
+                with patch.object(self.instance, "_download_file_chunks", new_callable=AsyncMock) as download:
+                    with self.assertRaises(RuntimeError) as raised:
+                        await self.instance.download_dir("/logs/verifier", self.root / "out")
+                    self.assertEqual(str(raised.exception),
+                                     f"failed to archive directory '/logs/verifier': return_code=1; {expected}")
+                    download.assert_not_awaited()
+                self.assertTrue(self.instance.exec.await_args_list[-1].args[0].startswith("rm -f -- "))
 
     async def test_cancelled_transfer_cleans_part_and_remote_archive(self):
         source = self.root / "source"
